@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>유비샵 라벨 미리보기/편집기 테스트</title>
+  <!-- 실제 확장과 동일한 모듈을 그대로 로드(양식 드리프트 방지) -->
+  <script src="vendor/JsBarcode.all.min.js"></script>
+  <script src="src/config.js"></script>
+  <script src="src/font.js"></script>
+  <script src="src/barcode.js"></script>
+  <script src="src/label.js"></script>
+  <script src="src/print.js"></script>
+  <script src="src/editor.js"></script>
+  <style>
+    body { font-family: "Malgun Gothic", sans-serif; margin: 0; background: #2b2b2b; color: #eee; }
+    .bar { padding: 14px 16px; background: #1c1c1c; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .bar h1 { font-size: 15px; margin: 0; }
+    .bar button { padding: 8px 14px; cursor: pointer; font-size: 13px; border: 0; border-radius: 5px; background: #2563eb; color: #fff; }
+    .note { font-size: 12px; color: #aaa; }
+    #stage { padding: 24px; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <h1>유비샵 라벨 — 미리보기/위치 편집기 테스트</h1>
+    <button onclick="openEd()">미리보기/편집기 열기</button>
+    <span class="note">설치 없이 모달·드래그·수치조정·저장(localStorage)·인쇄 경로를 테스트합니다. 실데이터는 확장에서 자동 수집.</span>
+  </div>
+  <div id="stage"></div>
+
+  <script>
+    // 기획서 5절 사진 기준 목 데이터 (필드 채움 vs 일부 빈 케이스)
+    const MOCK = [
+      {
+        company: '(주)D102', itemName: 'F-볼륨하트언발체인', itemNo: 'F-BF-Q-YG-ZZ-0096', price: 1830000,
+        barcode: '2606RL', barcodePrefix: window.UBCFG.barcodePrefix,
+        metal: '18K', diameter: '17', weight: '4.36g',
+        category: 'FASHION', partner: '백*심9932/G', setNo: '',
+        brandTop: window.UBCFG.fixed.brandTop, brandUrl: window.UBCFG.fixed.brandUrl
+      },
+      {
+        company: '(주)D102', itemName: 'F-클라라N', itemNo: 'F-N5-Q-PB-QB-0084', price: 1450000,
+        barcode: '2606KF', barcodePrefix: window.UBCFG.barcodePrefix,
+        metal: '14K', diameter: '', weight: '4.68g',
+        category: 'FASHION', partner: '윤호현5012/쿠', setNo: '',
+        brandTop: window.UBCFG.fixed.brandTop, brandUrl: window.UBCFG.fixed.brandUrl
+      }
+    ];
+    function openEd() { window.UBEditor.open(MOCK); }
+
+    // 정적 미리보기도 함께 표시(편집기 없이 양식 확인용)
+    const style = document.createElement('style');
+    style.textContent = window.UBLabel.baseCss({ pxmm: 13 });
+    document.head.appendChild(style);
+    document.getElementById('stage').innerHTML =
+      MOCK.map(d => window.UBLabel.buildLabel(d, { pxmm: 13 })).join('<div style="height:12px"></div>');
+  </script>
+</body>
+</html>
