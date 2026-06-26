@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "유비샵 바코드 라벨 인쇄 (ActiveX 대체)",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "스윙브라우저/ActiveX 없이 일반 크롬에서 유비샵 주얼리 바코드 라벨을 인쇄한다. 옵션 위치설정·라이브 자동업데이트(GitHub). (Zebra GX430t / 60×10mm)",
   "permissions": ["storage"],
   "options_ui": {
