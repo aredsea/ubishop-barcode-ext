@@ -5,7 +5,27 @@
 (프린터: Zebra GX430t / 3분할 긴 택 ≈ 60×10mm)
 
 기획서: `유비샵-바코드-크롬확장-기획서.md`
-버전: **v1.2.0** (이전 버전은 `../dist/` 에 zip 으로 보관)
+버전: **v1.3.0** (이전 버전은 `../dist/` 에 zip 으로 보관)
+저장소: https://github.com/aredsea/ubishop-barcode-ext
+
+## 자동 업데이트 (라이브 로더)
+
+설치본에는 **로더 + JsBarcode + 폰트**(고정 자산)만 들어간다. 실제 로직(config/
+barcode/collector/label/print/editor/content)은 매 페이지 로드 시 **GitHub 에서
+실시간으로 가져와 실행**한다.
+
+- **코드 수정 → `git push` → 매장 PC가 다음 페이지 열 때 자동 반영**(GitHub raw 캐시
+  때문에 ~5분 내). 재설치·레지스트리 불필요.
+- 오프라인이면 마지막으로 성공한 캐시(localStorage)로 동작. **최초 1회만 인터넷 필요.**
+- 로드할 파일 목록은 `app-files.json` 에서 관리(모듈 추가 시 여기에 줄 추가 → push).
+- 저장소 주소는 `src/loader.js` 상단 `REPO` 에. (현재 `aredsea/ubishop-barcode-ext`)
+
+### 내가 코드 고치는 법
+```bash
+# 코드 수정 후
+git add -A && git commit -m "수정 내용" && git push
+# 끝. 매장 PC는 다음 페이지 열 때 자동으로 새 코드를 받음.
+```
 
 ---
 
@@ -14,7 +34,9 @@
 ```
 ubishop-barcode-ext/
 ├── manifest.json          # MV3, world:MAIN 로 목록 페이지에 주입
+├── app-files.json         # ★ 로더가 원격 로드할 파일 목록(자동업데이트 대상)
 ├── src/
+│   ├── loader.js          # ★ 라이브 자동업데이트 로더(설치본에 포함)
 │   ├── config.js          # ★ 모든 설정 + 라벨 위치 "기본값"(layout)
 │   ├── font.js            # Pretendard woff2(Regular+Bold) base64 임베드(오프라인)
 │   ├── barcode.js         # JsBarcode 래퍼 (SVG, 박스에 맞춤)
@@ -34,7 +56,8 @@ ubishop-barcode-ext/
 |---|---|
 | v1.0.0 | 초기 구현. 바코드인쇄 → 곧바로 크롬 인쇄. 3분할 flex 양식. |
 | v1.1.0 | 미리보기/위치편집 모달. 라벨 좌표(mm) 기반 전환 → 드래그·수치 조정·저장. 60×10mm 확정. |
-| **v1.2.0** | **① 즉시인쇄**(모달 없이 바로, `--kiosk-printing` 시 크롬창도 없음) **② 위치설정 분리**(우하단 버튼) **③ 데이터 실측 확정**(상품명·거래처·금속·중량·호수 정확 파싱, 응답 UTF-8) **④ Pretendard 인쇄 폰트** 임베드. |
+| v1.2.0 | ① 즉시인쇄(`--kiosk-printing` 시 크롬창도 없음) ② 위치설정 분리 ③ 데이터 실측 확정(상품명·거래처·금속·중량·호수, UTF-8) ④ Pretendard 폰트 임베드. |
+| **v1.3.0** | **라이브 자동업데이트**: 설치본은 로더만, 로직은 GitHub raw 에서 실시간 로드 → push 하면 매장 PC 자동 반영. |
 
 ## 요구사항
 

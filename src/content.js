@@ -77,6 +77,6 @@
 
   installSettingsButton();
 
-  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.2.0)', 'color:#0a7;font-weight:bold');
+  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.3.0)', 'color:#0a7;font-weight:bold');
   console.log('[UB] 바코드인쇄=즉시인쇄, 우하단 "라벨위치"=위치설정. 설정: window.UBCFG');
 })();
