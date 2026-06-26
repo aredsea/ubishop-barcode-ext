@@ -313,18 +313,26 @@
         state.editMode = !state.editMode;
         if (state.editMode && !state.selKey) state.selKey = state.layout[0].key;
         render(); break;
-      case 'save':
-        window.UBLabel.saveLayout(state.layout);
-        toast('저장됨 — 이후 인쇄에 적용됩니다.');
-        if (state.opts && state.opts.firstRun) {
-          const b = state.root.querySelector('[data-el=banner]');
-          if (b) { b.style.background = '#ecfdf5'; b.style.color = '#047857';
-                   b.style.borderColor = '#a7f3d0';
-                   b.textContent = '✔ 저장 완료! 이제 "✕"로 닫고 바코드인쇄 하면 이 위치로 인쇄됩니다.'; }
-          // 저장됐으니 바깥/ESC 닫기 다시 허용
-          document.addEventListener('keydown', escClose, true);
+      case 'save': {
+        const ok = window.UBLabel.saveLayout(state.layout);
+        // 저장 확인을 눈에 띄게: 배너로 표시
+        const b = state.root.querySelector('[data-el=banner]');
+        if (b) {
+          b.style.display = 'block';
+          if (ok) {
+            b.style.background = '#ecfdf5'; b.style.color = '#047857'; b.style.borderColor = '#a7f3d0';
+            b.textContent = state.opts && state.opts.firstRun
+              ? '✔ 저장 완료! "✕"로 닫고 바코드인쇄 하면 이 위치로 인쇄됩니다.'
+              : '✔ 저장 완료 — 이후 인쇄에 이 위치가 적용됩니다.';
+          } else {
+            b.style.background = '#fef2f2'; b.style.color = '#b91c1c'; b.style.borderColor = '#fecaca';
+            b.textContent = '⚠ 저장 실패(localStorage 차단). 시크릿/쿠키 차단 설정을 확인하세요.';
+          }
         }
+        toast(ok ? '저장됨 — 이후 인쇄에 적용됩니다.' : '저장 실패');
+        if (state.opts && state.opts.firstRun) document.addEventListener('keydown', escClose, true);
         break;
+      }
       case 'reset':
         if (confirm('라벨 위치를 기본값으로 되돌릴까요? (저장된 위치 삭제)')) {
           window.UBLabel.resetLayout();

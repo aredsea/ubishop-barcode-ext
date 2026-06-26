@@ -14,20 +14,20 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const won = (n) => (n == null || n === '') ? '' : Number(n).toLocaleString('ko-KR');
 
-  /* ---- 저장소 추상화 -------------------------------------------------------
-   *  레이아웃 저장값의 단일 소스 = chrome.storage.local['UB_LAYOUT'].
-   *  - 옵션페이지/ISOLATED: chrome.storage 직접
-   *  - 콘텐츠(MAIN world): chrome 접근 불가 → bridge.js 가 window.__UB_SAVED_LAYOUT
-   *    에 주입해 둔 값을 읽고, 저장은 postMessage 로 bridge 에 위임
-   *  - 구버전(브리지 없음): localStorage 폴백 (재설치 전까지 동작 유지)
+  /* ---- 저장소: localStorage 단일 소스(유비샵 origin) ----------------------
+   *  콘텐츠(인쇄 페이지)는 MAIN world 라 chrome.storage 접근 불가.
+   *  편집기 저장과 인쇄 읽기를 같은 localStorage 로 통일 → 항상 동기·일치.
+   *  (chrome.storage/bridge/옵션페이지 의존 제거 → 재설치 없이 확실히 반영)
+   *  옵션페이지(확장 origin)는 origin 이 달라 이 값을 직접 못 본다 → 위치 설정은
+   *  반드시 유비샵 페이지의 "🏷 라벨위치" 버튼(또는 최초실행 편집기)에서 한다.
    * ----------------------------------------------------------------------- */
-  function hasChromeStorage() {
-    try { return !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local); }
-    catch (e) { return false; }
-  }
-  function readLocal() {
+  function readSaved() {
     try { const r = localStorage.getItem(window.UBCFG.storageKey); return r ? JSON.parse(r) : null; }
     catch (e) { return null; }
+  }
+  function writeSaved(slim) {
+    try { localStorage.setItem(window.UBCFG.storageKey, JSON.stringify(slim)); return true; }
+    catch (e) { console.error('[UB] 위치 저장 실패:', e); return false; }
   }
   function slimLayout(layout) {
     return layout.map(f => ({
@@ -36,12 +36,7 @@
     }));
   }
 
-  // 현재 저장된 레이아웃(없으면 null). 동기.
-  function savedLayout() {
-    if (window.__UB_SAVED_LAYOUT !== undefined) return window.__UB_SAVED_LAYOUT; // 브리지/옵션이 주입
-    return readLocal();                                                          // 구버전 폴백
-  }
-  // 설정 완료 여부(최초 실행 판별용)
+  function savedLayout() { return readSaved(); }                 // 동기. 없으면 null
   function isConfigured() {
     const s = savedLayout();
     return Array.isArray(s) && s.length > 0;
@@ -50,7 +45,7 @@
   function getLayout() {
     const CFG = window.UBCFG;
     const base = CFG.layout.map(f => ({ ...f }));
-    const saved = savedLayout();
+    const saved = readSaved();
     if (saved && Array.isArray(saved)) {
       const byKey = {};
       saved.forEach(s => { if (s && s.key) byKey[s.key] = s; });
@@ -65,25 +60,9 @@
     return base;
   }
 
-  function persist(slim) {
-    window.__UB_SAVED_LAYOUT = slim;                       // 즉시 반영(렌더용)
-    if (hasChromeStorage()) {
-      try { chrome.storage.local.set({ UB_LAYOUT: slim }); } catch (e) {}
-    } else {
-      try { window.postMessage({ __ub: 1, type: 'save', layout: slim }, '*'); } catch (e) {} // bridge 위임
-    }
-    try { localStorage.setItem(window.UBCFG.storageKey, JSON.stringify(slim)); } catch (e) {} // 백업
-  }
-
-  function saveLayout(layout) { persist(slimLayout(layout)); }
+  function saveLayout(layout) { return writeSaved(slimLayout(layout)); }
 
   function resetLayout() {
-    window.__UB_SAVED_LAYOUT = null;
-    if (hasChromeStorage()) {
-      try { chrome.storage.local.remove('UB_LAYOUT'); } catch (e) {}
-    } else {
-      try { window.postMessage({ __ub: 1, type: 'reset' }, '*'); } catch (e) {}
-    }
     try { localStorage.removeItem(window.UBCFG.storageKey); } catch (e) {}
   }
 

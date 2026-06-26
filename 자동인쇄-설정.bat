@@ -1,9 +1,4 @@
 @echo off
-chcp 65001 >nul
-REM ============================================================================
-REM  유비샵 무다이얼로그 자동 인쇄 — 1회 설정 (더블클릭)
-REM  이거 한 번 실행하면, 이후엔 평소처럼 크롬을 켜기만 해도 인쇄창 없이 인쇄됨.
-REM ============================================================================
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup-autoprint.ps1"
-echo.
-pause
+REM One-time setup for UbiShop silent printing (no print dialog).
+REM Runs autoprint-setup.vbs (creates startup shortcut, patches Chrome shortcuts, background OFF).
+wscript.exe "%~dp0autoprint-setup.vbs"
