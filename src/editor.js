@@ -30,6 +30,9 @@
       .ub-ed-head h2{font-size:15px;margin:0;font-weight:600;}
       .ub-ed-head .sp{flex:1;}
       .ub-ed-pager{display:flex;align-items:center;gap:6px;font-size:13px;}
+      .ub-ed-zoom{display:flex;align-items:center;gap:6px;font-size:13px;margin-left:8px;}
+      .ub-ed-zoom span{min-width:42px;text-align:center;}
+      .ub-ed-canvaswrap{position:relative;}
       .ub-ed-btn{padding:6px 11px;border:0;border-radius:5px;cursor:pointer;font-size:13px;}
       .ub-ed-btn.ghost{background:#374151;color:#fff;}
       .ub-ed-btn.primary{background:#2563eb;color:#fff;font-weight:600;}
@@ -56,6 +59,7 @@
       .ub-ed-row{display:flex;align-items:center;gap:6px;margin:6px 0;}
       .ub-ed-row label{width:62px;color:#555;}
       .ub-ed-row input[type=number]{width:70px;padding:3px 5px;border:1px solid #cbd5e1;border-radius:4px;}
+      .ub-ed-row input[type=text]{flex:1;min-width:120px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:4px;}
       .ub-ed-row select{padding:3px;border:1px solid #cbd5e1;border-radius:4px;}
       .ub-ed-fieldlist{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;}
       .ub-ed-chip{padding:3px 7px;border:1px solid #cbd5e1;border-radius:11px;
@@ -86,6 +90,12 @@
             <span data-el="page">1 / 1</span>
             <button class="ub-ed-btn ghost" data-act="next">▶</button>
           </div>
+          <div class="ub-ed-zoom">
+            <button class="ub-ed-btn ghost" data-act="zoomout">－</button>
+            <span data-el="zoom">100%</span>
+            <button class="ub-ed-btn ghost" data-act="zoomin">＋</button>
+            <button class="ub-ed-btn ghost" data-act="zoomreset">맞춤</button>
+          </div>
           <div class="sp"></div>
           <button class="ub-ed-btn ghost" data-act="edit">✎ 위치 편집</button>
           <button class="ub-ed-btn ghost" data-act="save">저장</button>
@@ -105,10 +115,13 @@
     return root;
   }
 
+  /* ---- 현재 화면 배율(px/mm) = 기본 × 줌 ------------------------------ */
+  function curPxmm() { return window.UBCFG.editor.pxmm * ((state && state.zoom) || 1); }
+
   /* ---- 렌더 ------------------------------------------------------------ */
   function render() {
     const CFG = window.UBCFG;
-    const pxmm = CFG.editor.pxmm;
+    const pxmm = curPxmm();
     const canvas = state.root.querySelector('[data-el=canvas]');
     const d = state.data[state.idx];
 
@@ -133,6 +146,8 @@
 
     state.root.querySelector('[data-el=page]').textContent =
       (state.idx + 1) + ' / ' + state.data.length;
+    const zEl = state.root.querySelector('[data-el=zoom]');
+    if (zEl) zEl.textContent = Math.round(state.zoom * 100) + '%';
     state.root.querySelector('[data-act=edit]').classList.toggle('on', state.editMode);
     state.root.querySelector('[data-el=props]').style.display = state.editMode ? 'block' : 'none';
     if (state.editMode) renderProps();
@@ -153,6 +168,13 @@
         `<div class="ub-ed-row"><label>${lab}</label>
            <input type="number" step="${step}" data-prop="${prop}" value="${f[prop] != null ? f[prop] : ''}"> mm</div>`;
       body += `<h3>${f.name} <span style="color:#94a3b8">(${f.key})</span></h3>`;
+      // 편집가능 필드(브랜딩/회사명 등): 텍스트 직접 입력
+      if (f.editable) {
+        const d = state.data[state.idx] || {};
+        const def = d[f.key] != null ? d[f.key] : '';
+        body += `<div class="ub-ed-row"><label>텍스트</label>
+          <input type="text" data-prop="text" value="${escAttr(f.text != null ? f.text : '')}" placeholder="${escAttr(def)}"></div>`;
+      }
       body += numRow('X (가로)', 'x', 0.1);
       body += numRow('Y (세로)', 'y', 0.1);
       body += numRow('너비 W', 'w', 0.1);
@@ -189,7 +211,8 @@
         const p = inp.dataset.prop;
         if (inp.type === 'checkbox') f2[p] = inp.checked;
         else if (inp.tagName === 'SELECT') f2[p] = inp.value;
-        else f2[p] = parseFloat(inp.value);
+        else if (inp.type === 'number') f2[p] = parseFloat(inp.value);
+        else f2[p] = inp.value;   // 텍스트(문자열)
         render();
         // 입력 포커스 유지: 다시 같은 입력으로
         const again = state.root.querySelector(`[data-el=props] [data-prop="${p}"]`);
@@ -217,7 +240,7 @@
   /* ---- 드래그(이동) + 리사이즈(대각선) ------------------------------- */
   function bindDrag(canvas) {
     canvas.onmousedown = (e) => {
-      const pxmm = window.UBCFG.editor.pxmm;
+      const pxmm = curPxmm();
 
       // 1) 리사이즈 핸들 → 대각선 크기 조절
       if (e.target.classList.contains('ub-rz')) {
@@ -330,7 +353,6 @@
           }
         }
         toast(ok ? '저장됨 — 이후 인쇄에 적용됩니다.' : '저장 실패');
-        if (state.opts && state.opts.firstRun) document.addEventListener('keydown', escClose, true);
         break;
       }
       case 'reset':
@@ -340,6 +362,9 @@
           render(); toast('기본값으로 초기화됨');
         }
         break;
+      case 'zoomin':   state.zoom = clamp(round2(state.zoom * 1.25), 0.4, 10); render(); break;
+      case 'zoomout':  state.zoom = clamp(round2(state.zoom / 1.25), 0.4, 10); render(); break;
+      case 'zoomreset': state.zoom = 1; render(); break;
       case 'print':
         // 화면의 현재(미저장 포함) 레이아웃 그대로 인쇄
         window.UBPrint.printDocument(window.UBLabel.buildDocument(state.data, state.layout));
@@ -357,7 +382,9 @@
 
   /* ---- 유틸 ------------------------------------------------------------ */
   const round1 = (v) => Math.round(v * 10) / 10;
+  const round2 = (v) => Math.round(v * 100) / 100;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const escAttr = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
   /* ---- 열기/닫기 ------------------------------------------------------- */
   function open(dataArr, opts) {
@@ -371,7 +398,7 @@
     state = {
       root, data: dataArr, layout: window.UBLabel.getLayout(), idx: 0,
       editMode: firstRun, selKey: firstRun ? window.UBLabel.getLayout()[0].key : null,
-      opts: opts
+      zoom: 1, opts: opts
     };
 
     // 제목/배너
@@ -390,22 +417,26 @@
 
     root.querySelectorAll('[data-act]').forEach(b =>
       b.addEventListener('click', () => onAct(b.dataset.act)));
-    // 최초설정 중에는 바깥/ESC 로 무심코 닫히지 않게(저장 유도)
-    if (!firstRun) {
-      root.addEventListener('mousedown', (e) => { if (e.target === root) close(); });
-      document.addEventListener('keydown', escClose, true);
-    }
+
+    // 마우스 휠로 캔버스 확대/축소
+    const wrap = root.querySelector('.ub-ed-canvaswrap');
+    if (wrap) wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      state.zoom = clamp(round2(state.zoom * factor), 0.4, 10);
+      render();
+    }, { passive: false });
+
+    // ※ 바깥(배경) 클릭으로는 닫지 않는다 — 편집 중 실수로 꺼지는 문제 방지.
+    //   닫기는 ✕ 버튼으로만. (ESC 도 비활성 — 의도치 않은 닫힘 방지)
     document.addEventListener('keydown', onKey, true);
     render();
   }
-
-  function escClose(e) { if (e.key === 'Escape') close(); }
 
   function close() {
     const old = document.getElementById(ID);
     if (old) old.remove();
     document.removeEventListener('keydown', onKey, true);
-    document.removeEventListener('keydown', escClose, true);
     state = null;
   }
 

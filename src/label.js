@@ -32,7 +32,7 @@
   function slimLayout(layout) {
     return layout.map(f => ({
       key: f.key, x: f.x, y: f.y, w: f.w, h: f.h,
-      fs: f.fs, bold: f.bold, align: f.align, visible: f.visible
+      fs: f.fs, bold: f.bold, align: f.align, visible: f.visible, text: f.text
     }));
   }
 
@@ -52,7 +52,7 @@
       base.forEach(f => {
         const s = byKey[f.key];
         if (!s) return;
-        ['x', 'y', 'w', 'h', 'fs', 'bold', 'align', 'visible'].forEach(k => {
+        ['x', 'y', 'w', 'h', 'fs', 'bold', 'align', 'visible', 'text'].forEach(k => {
           if (s[k] !== undefined) f[k] = s[k];
         });
       });
@@ -128,7 +128,9 @@
           + `font-size:${u(f.fs)};`
           + `text-align:${f.align || 'left'};`
           + (f.bold ? 'font-weight:bold;' : '');
-        inner += `<div class="ub-f ub-text"${dk} style="${style}">${fieldValue(f.key, d)}</div>`;
+        // 편집기에서 직접 입력한 텍스트(f.text)가 있으면 그것을, 없으면 데이터값
+        const txt = (f.text != null && f.text !== '') ? esc(f.text) : fieldValue(f.key, d);
+        inner += `<div class="ub-f ub-text"${dk} style="${style}">${txt}</div>`;
       }
     });
 

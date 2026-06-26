@@ -100,7 +100,7 @@
      * ===================================================================== */
     layout: [
       // ── 패널 A (바코드/가격면) ──
-      { key: 'company',      name: '회사/매장',     type: 'text',    x: 0.6,  y: 0.2, w: 20,   fs: 1.9, bold: false, align: 'left',   visible: true },
+      { key: 'company',      name: '회사/매장',     type: 'text',    x: 0.6,  y: 0.2, w: 20,   fs: 1.9, bold: false, align: 'left',   visible: true, editable: true },
       { key: 'itemName',     name: '품명',          type: 'text',    x: 0.6,  y: 2.0, w: 20,   fs: 1.9, bold: false, align: 'left',   visible: true },
       { key: 'price',        name: '판매가',        type: 'text',    x: 0.6,  y: 3.8, w: 20,   fs: 2.6, bold: true,  align: 'left',   visible: true },
       { key: 'barcode',      name: '바코드',        type: 'barcode', x: 0.6,  y: 5.9, w: 20,   h: 2.9,  bold: false, align: 'left',   visible: true },
@@ -113,10 +113,10 @@
       { key: 'compCat',      name: '회사+구분',     type: 'text',    x: 22.6, y: 6.2, w: 18.5, fs: 1.8, bold: false, align: 'left',   visible: true },
       { key: 'namePartner',  name: '품명+거래처',   type: 'text',    x: 22.6, y: 8.1, w: 18.5, fs: 1.8, bold: false, align: 'left',   visible: true },
 
-      // ── 패널 C (브랜딩면) ──
-      { key: 'brandTop',     name: '브랜드상단',    type: 'text',    x: 42.6, y: 0.6, w: 16.8, fs: 1.7, bold: false, align: 'center', visible: true },
+      // ── 패널 C (브랜딩면) ── editable:true = 편집기에서 텍스트 직접 입력 가능
+      { key: 'brandTop',     name: '브랜드상단',    type: 'text',    x: 42.6, y: 0.6, w: 16.8, fs: 1.7, bold: false, align: 'center', visible: true, editable: true },
       { key: 'signbox',      name: '서명란',        type: 'box',     x: 43.0, y: 3.0, w: 16,   h: 3.6,  bold: false, align: 'left',   visible: true },
-      { key: 'brandUrl',     name: '브랜드URL',     type: 'text',    x: 42.6, y: 8.4, w: 16.8, fs: 1.7, bold: false, align: 'center', visible: true }
+      { key: 'brandUrl',     name: '브랜드URL',     type: 'text',    x: 42.6, y: 8.4, w: 16.8, fs: 1.7, bold: false, align: 'center', visible: true, editable: true }
     ]
   };
 

@@ -87,13 +87,14 @@
    *  localStorage 동기 조회라 즉시 판별 가능(브리지 대기 불필요).            */
   setTimeout(() => {
     try {
-      if (!window.UBLabel.isConfigured()) {
+      const editorOpen = !!document.getElementById('ub-ed-root');
+      if (!editorOpen && !window.UBLabel.isConfigured()) {
         log('최초 실행(저장된 위치 없음) → 위치 편집기 자동 오픈');
         window.UBEditor.open(sampleData(), { firstRun: true });
       }
     } catch (e) { console.warn('[UB] 최초실행 체크 오류:', e); }
   }, 600);
 
-  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.6.0)', 'color:#0a7;font-weight:bold');
+  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.7.0)', 'color:#0a7;font-weight:bold');
   console.log('[UB] 바코드인쇄=즉시인쇄, 우하단 "라벨위치"=위치설정. 설정: window.UBCFG');
 })();
