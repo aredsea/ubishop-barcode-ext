@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "유비샵 바코드 라벨 인쇄 (ActiveX 대체)",
-  "version": "1.2.0",
-  "description": "스윙브라우저/ActiveX 없이 일반 크롬에서 유비샵 주얼리 바코드 라벨을 인쇄한다. 즉시인쇄+위치설정+Pretendard 폰트. (Zebra GX430t / 60×10mm)",
+  "version": "1.3.0",
+  "description": "스윙브라우저/ActiveX 없이 일반 크롬에서 유비샵 주얼리 바코드 라벨을 인쇄한다. 라이브 자동업데이트(GitHub). (Zebra GX430t / 60×10mm)",
   "content_scripts": [
     {
       "matches": [
@@ -11,14 +11,8 @@
       ],
       "js": [
         "vendor/JsBarcode.all.min.js",
-        "src/config.js",
         "src/font.js",
-        "src/barcode.js",
-        "src/collector.js",
-        "src/label.js",
-        "src/print.js",
-        "src/editor.js",
-        "src/content.js"
+        "src/loader.js"
       ],
       "run_at": "document_idle",
       "all_frames": false,

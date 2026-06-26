@@ -1,0 +1,13 @@
+{
+  "version": "1.3.0",
+  "note": "loader.js 가 이 목록을 순서대로 가져와 합쳐 실행한다. 폰트/JsBarcode 는 설치본 로컬.",
+  "files": [
+    "src/config.js",
+    "src/barcode.js",
+    "src/collector.js",
+    "src/label.js",
+    "src/print.js",
+    "src/editor.js",
+    "src/content.js"
+  ]
+}
