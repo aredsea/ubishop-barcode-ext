@@ -60,6 +60,8 @@
       .ub-ed-chip.off{opacity:.45;text-decoration:line-through;}
       .ub-ed-foot{padding:8px 14px;background:#e5e7eb;font-size:11.5px;color:#555;}
       .ub-ed-hint{color:#94a3b8;font-size:11px;margin-top:4px;}
+      .ub-ed-banner{padding:9px 14px;background:#fffbeb;color:#92400e;font-size:13px;
+            border-bottom:1px solid #fde68a;font-weight:600;}
     `;
     const st = document.createElement('style');
     st.id = 'ub-ed-style';
@@ -87,6 +89,7 @@
           <button class="ub-ed-btn primary" data-act="print">🖨 인쇄</button>
           <button class="ub-ed-btn ghost" data-act="close">✕</button>
         </div>
+        <div class="ub-ed-banner" data-el="banner" style="display:none"></div>
         <div class="ub-ed-body">
           <div class="ub-ed-canvaswrap">
             <div class="ub-ed-canvas" data-el="canvas"></div>
@@ -256,7 +259,16 @@
         render(); break;
       case 'save':
         window.UBLabel.saveLayout(state.layout);
-        toast('저장됨 — 이후 인쇄에 적용됩니다.'); break;
+        toast('저장됨 — 이후 인쇄에 적용됩니다.');
+        if (state.opts && state.opts.firstRun) {
+          const b = state.root.querySelector('[data-el=banner]');
+          if (b) { b.style.background = '#ecfdf5'; b.style.color = '#047857';
+                   b.style.borderColor = '#a7f3d0';
+                   b.textContent = '✔ 저장 완료! 이제 "✕"로 닫고 바코드인쇄 하면 이 위치로 인쇄됩니다.'; }
+          // 저장됐으니 바깥/ESC 닫기 다시 허용
+          document.addEventListener('keydown', escClose, true);
+        }
+        break;
       case 'reset':
         if (confirm('라벨 위치를 기본값으로 되돌릴까요? (저장된 위치 삭제)')) {
           window.UBLabel.resetLayout();
@@ -284,19 +296,42 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
   /* ---- 열기/닫기 ------------------------------------------------------- */
-  function open(dataArr) {
+  function open(dataArr, opts) {
     if (!dataArr || !dataArr.length) return;
+    opts = opts || {};
     ensureStyle();
     close(); // 중복 방지
     const root = buildShell();
     document.body.appendChild(root);
-    state = { root, data: dataArr, layout: window.UBLabel.getLayout(), idx: 0, editMode: false, selKey: null };
+    const firstRun = !!opts.firstRun;
+    state = {
+      root, data: dataArr, layout: window.UBLabel.getLayout(), idx: 0,
+      editMode: firstRun, selKey: firstRun ? window.UBLabel.getLayout()[0].key : null,
+      opts: opts
+    };
+
+    // 제목/배너
+    if (opts.title) root.querySelector('h2').textContent = opts.title;
+    if (firstRun || opts.banner) {
+      const b = root.querySelector('[data-el=banner]');
+      b.style.display = 'block';
+      b.textContent = opts.banner ||
+        '⚠ 최초 설정: 항목을 드래그/수치로 라벨 위치에 맞춘 뒤 반드시 "저장"을 누르세요. 저장해야 인쇄에 적용됩니다.';
+    }
+    // 인쇄/페이저 숨김(옵션페이지 등 데이터 없는 곳)
+    if (opts.hidePrint) {
+      const pb = root.querySelector('[data-act=print]'); if (pb) pb.style.display = 'none';
+      const pg = root.querySelector('.ub-ed-pager'); if (pg && dataArr.length <= 1) pg.style.display = 'none';
+    }
 
     root.querySelectorAll('[data-act]').forEach(b =>
       b.addEventListener('click', () => onAct(b.dataset.act)));
-    root.addEventListener('mousedown', (e) => { if (e.target === root) close(); }); // 바깥 클릭 닫기
+    // 최초설정 중에는 바깥/ESC 로 무심코 닫히지 않게(저장 유도)
+    if (!firstRun) {
+      root.addEventListener('mousedown', (e) => { if (e.target === root) close(); });
+      document.addEventListener('keydown', escClose, true);
+    }
     document.addEventListener('keydown', onKey, true);
-    document.addEventListener('keydown', escClose, true);
     render();
   }
 

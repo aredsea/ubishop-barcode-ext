@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>유비샵 바코드 라벨 — 위치 설정</title>
+  <!-- 로컬 스크립트만(확장 페이지 CSP). 콘텐츠와 동일한 렌더 모듈 사용 -->
+  <script src="vendor/JsBarcode.all.min.js"></script>
+  <script src="src/font.js"></script>
+  <script src="src/config.js"></script>
+  <script src="src/barcode.js"></script>
+  <script src="src/label.js"></script>
+  <script src="src/editor.js"></script>
+  <style>
+    body{font-family:'Malgun Gothic',sans-serif;margin:0;background:#f3f4f6;color:#222;}
+    .wrap{max-width:680px;margin:0 auto;padding:28px 22px;}
+    h1{font-size:19px;margin:0 0 6px;}
+    p{font-size:13.5px;line-height:1.6;color:#444;}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:20px;margin-top:16px;}
+    .btn{padding:10px 18px;border:0;border-radius:6px;background:#2563eb;color:#fff;
+         font-size:14px;font-weight:600;cursor:pointer;}
+    .btn.sec{background:#374151;}
+    .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;}
+    .status{font-size:13px;margin-top:10px;}
+    .ok{color:#047857;font-weight:600;} .no{color:#b45309;font-weight:600;}
+    ul{font-size:13px;color:#555;line-height:1.7;}
+    code{background:#eef2ff;padding:1px 5px;border-radius:4px;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🏷 유비샵 바코드 라벨 — 위치 설정</h1>
+    <p>실물 라벨(60×10mm, 3분할)에 맞춰 각 항목의 위치·크기를 조정합니다.
+       저장하면 <b>모든 인쇄에 적용</b>됩니다. (이 PC 크롬 기준)</p>
+
+    <div class="card">
+      <div class="status" data-el="status">상태 확인 중…</div>
+      <div class="row">
+        <button class="btn" data-el="open">위치 설정 열기</button>
+        <button class="btn sec" data-el="reset">기본값으로 초기화</button>
+      </div>
+      <p style="margin-top:14px;color:#6b7280;font-size:12.5px">
+        편집기에서 <b>드래그</b> 또는 오른쪽 패널 <b>수치(mm)</b> 입력으로 맞춘 뒤
+        <b>저장</b>을 누르세요. 화살표키는 0.5mm(Shift 0.1mm) 미세이동.
+      </p>
+    </div>
+
+    <div class="card">
+      <h1 style="font-size:15px">인쇄창 없이 바로 인쇄하기</h1>
+      <ul>
+        <li>크롬은 확장만으로 인쇄창을 못 없앱니다. <code>--kiosk-printing</code> 으로 켜야 합니다.</li>
+        <li>확장 폴더의 <b>유비샵-인쇄모드.bat</b> 으로 크롬을 실행하세요.</li>
+        <li>Windows <b>기본 프린터 = Zebra GX430t</b>, 용지 60×10mm 로 지정.</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

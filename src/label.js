@@ -14,15 +14,43 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const won = (n) => (n == null || n === '') ? '' : Number(n).toLocaleString('ko-KR');
 
-  /* ---- 레이아웃 로드: 기본값 + localStorage 저장값 병합 ----------------- */
+  /* ---- 저장소 추상화 -------------------------------------------------------
+   *  레이아웃 저장값의 단일 소스 = chrome.storage.local['UB_LAYOUT'].
+   *  - 옵션페이지/ISOLATED: chrome.storage 직접
+   *  - 콘텐츠(MAIN world): chrome 접근 불가 → bridge.js 가 window.__UB_SAVED_LAYOUT
+   *    에 주입해 둔 값을 읽고, 저장은 postMessage 로 bridge 에 위임
+   *  - 구버전(브리지 없음): localStorage 폴백 (재설치 전까지 동작 유지)
+   * ----------------------------------------------------------------------- */
+  function hasChromeStorage() {
+    try { return !!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local); }
+    catch (e) { return false; }
+  }
+  function readLocal() {
+    try { const r = localStorage.getItem(window.UBCFG.storageKey); return r ? JSON.parse(r) : null; }
+    catch (e) { return null; }
+  }
+  function slimLayout(layout) {
+    return layout.map(f => ({
+      key: f.key, x: f.x, y: f.y, w: f.w, h: f.h,
+      fs: f.fs, bold: f.bold, align: f.align, visible: f.visible
+    }));
+  }
+
+  // 현재 저장된 레이아웃(없으면 null). 동기.
+  function savedLayout() {
+    if (window.__UB_SAVED_LAYOUT !== undefined) return window.__UB_SAVED_LAYOUT; // 브리지/옵션이 주입
+    return readLocal();                                                          // 구버전 폴백
+  }
+  // 설정 완료 여부(최초 실행 판별용)
+  function isConfigured() {
+    const s = savedLayout();
+    return Array.isArray(s) && s.length > 0;
+  }
+
   function getLayout() {
     const CFG = window.UBCFG;
     const base = CFG.layout.map(f => ({ ...f }));
-    let saved = null;
-    try {
-      const raw = localStorage.getItem(CFG.storageKey);
-      if (raw) saved = JSON.parse(raw);
-    } catch (e) { /* ignore */ }
+    const saved = savedLayout();
     if (saved && Array.isArray(saved)) {
       const byKey = {};
       saved.forEach(s => { if (s && s.key) byKey[s.key] = s; });
@@ -37,17 +65,25 @@
     return base;
   }
 
-  function saveLayout(layout) {
-    const CFG = window.UBCFG;
-    // type/name 같은 정적 메타는 빼고 위치/스타일만 저장
-    const slim = layout.map(f => ({
-      key: f.key, x: f.x, y: f.y, w: f.w, h: f.h,
-      fs: f.fs, bold: f.bold, align: f.align, visible: f.visible
-    }));
-    localStorage.setItem(CFG.storageKey, JSON.stringify(slim));
+  function persist(slim) {
+    window.__UB_SAVED_LAYOUT = slim;                       // 즉시 반영(렌더용)
+    if (hasChromeStorage()) {
+      try { chrome.storage.local.set({ UB_LAYOUT: slim }); } catch (e) {}
+    } else {
+      try { window.postMessage({ __ub: 1, type: 'save', layout: slim }, '*'); } catch (e) {} // bridge 위임
+    }
+    try { localStorage.setItem(window.UBCFG.storageKey, JSON.stringify(slim)); } catch (e) {} // 백업
   }
 
+  function saveLayout(layout) { persist(slimLayout(layout)); }
+
   function resetLayout() {
+    window.__UB_SAVED_LAYOUT = null;
+    if (hasChromeStorage()) {
+      try { chrome.storage.local.remove('UB_LAYOUT'); } catch (e) {}
+    } else {
+      try { window.postMessage({ __ub: 1, type: 'reset' }, '*'); } catch (e) {}
+    }
     try { localStorage.removeItem(window.UBCFG.storageKey); } catch (e) {}
   }
 
@@ -176,6 +212,7 @@
 
   window.UBLabel = {
     getLayout, saveLayout, resetLayout, fieldValue,
-    buildLabel, baseCss, buildDocument
+    buildLabel, baseCss, buildDocument,
+    isConfigured, savedLayout
   };
 })();

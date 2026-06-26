@@ -77,6 +77,23 @@
 
   installSettingsButton();
 
-  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.3.0)', 'color:#0a7;font-weight:bold');
+  /* ---- 최초 실행: 위치 편집기 자동 오픈(저장 전까지 매번) ------------- */
+  function whenLayoutReady(cb) {
+    if (window.__UB_LAYOUT_LOADED) return cb();
+    let done = false;
+    const run = () => { if (!done) { done = true; cb(); } };
+    window.addEventListener('ub-layout', run, { once: true });
+    setTimeout(run, 1800);  // 브리지 없거나 늦을 때 안전장치
+  }
+  whenLayoutReady(() => {
+    try {
+      if (!window.UBLabel.isConfigured()) {
+        log('최초 실행 → 위치 편집기 자동 오픈');
+        window.UBEditor.open(sampleData(), { firstRun: true });
+      }
+    } catch (e) { console.warn('[UB] 최초실행 체크 오류:', e); }
+  });
+
+  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.4.0)', 'color:#0a7;font-weight:bold');
   console.log('[UB] 바코드인쇄=즉시인쇄, 우하단 "라벨위치"=위치설정. 설정: window.UBCFG');
 })();
