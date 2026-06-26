@@ -31,15 +31,21 @@
 
   async function sendBarPrintReplacement() {
     try {
+      window.UBOverlay && window.UBOverlay.show('인쇄 준비 중…');   // 즉시 피드백(수집/네트워크 동안)
       const data = await window.UBCollector.collect();
-      if (!data || !data.length) return false;   // 미선택 시 collector 가 alert
+      if (!data || !data.length) {                 // 미선택 시 collector 가 alert
+        window.UBOverlay && window.UBOverlay.hide();
+        return false;
+      }
       log('라벨 데이터:', data);
       if (window.UBCFG.print.previewBeforePrint) {
-        window.UBEditor.open(data);              // 미리보기 후 모달에서 인쇄
+        window.UBOverlay && window.UBOverlay.hide();
+        window.UBEditor.open(data);               // 미리보기 후 모달에서 인쇄
       } else {
-        window.UBPrint.printDocument(window.UBLabel.buildDocument(data));  // 바로 인쇄
+        window.UBPrint.printDocument(window.UBLabel.buildDocument(data));  // 바로 인쇄(오버레이는 print.js 가 종료)
       }
     } catch (e) {
+      window.UBOverlay && window.UBOverlay.hide();
       console.error('[UB] sendBarPrint 처리 중 오류:', e);
       alert('바코드 인쇄 중 오류가 발생했습니다. 콘솔(F12)을 확인하세요.\n' + (e && e.message));
     }
@@ -94,6 +100,6 @@
     } catch (e) { console.warn('[UB] 최초실행 체크 오류:', e); }
   });
 
-  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.4.0)', 'color:#0a7;font-weight:bold');
+  console.log('%c[유비샵 바코드 라벨] 활성화됨 (v1.5.0)', 'color:#0a7;font-weight:bold');
   console.log('[UB] 바코드인쇄=즉시인쇄, 우하단 "라벨위치"=위치설정. 설정: window.UBCFG');
 })();

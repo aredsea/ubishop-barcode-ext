@@ -46,6 +46,10 @@
       .ub-ed-canvas.edit .ub-f:hover{outline:1px solid #2563eb;}
       .ub-ed-canvas .ub-f.sel{outline:2px solid #2563eb !important;
              box-shadow:0 0 0 2px rgba(37,99,235,.25);}
+      .ub-ed-canvas .ub-rz{position:absolute;width:13px;height:13px;background:#2563eb;
+             border:2px solid #fff;border-radius:3px;cursor:nwse-resize;z-index:6;
+             box-shadow:0 1px 3px rgba(0,0,0,.45);}
+      .ub-ed-canvas .ub-rz:hover{background:#1d4ed8;transform:scale(1.12);}
       .ub-ed-props{width:250px;background:#fff;border-left:1px solid #d1d5db;
              padding:12px;overflow:auto;font-size:12.5px;}
       .ub-ed-props h3{margin:0 0 8px;font-size:13px;}
@@ -118,11 +122,11 @@
     canvas.style.width = (CFG.label.wmm * pxmm) + 'px';
     canvas.style.height = (CFG.label.hmm * pxmm) + 'px';
 
-    // 선택 표시 + 드래그 바인딩
+    // 선택 표시 + 리사이즈 핸들 + 드래그 바인딩
     if (state.editMode) {
       if (state.selKey) {
         const sel = canvas.querySelector(`[data-key="${state.selKey}"]`);
-        if (sel) sel.classList.add('sel');
+        if (sel) { sel.classList.add('sel'); addHandle(canvas, sel); }
       }
       bindDrag(canvas);
     }
@@ -194,20 +198,71 @@
     });
   }
 
-  /* ---- 드래그 ---------------------------------------------------------- */
+  /* ---- 리사이즈 핸들 배치(선택 필드 우하단) -------------------------- */
+  function addHandle(canvas, sel) {
+    const old = canvas.querySelector('.ub-rz'); if (old) old.remove();
+    const h = document.createElement('div');
+    h.className = 'ub-rz';
+    h.style.left = (sel.offsetLeft + sel.offsetWidth - 7) + 'px';
+    h.style.top = (sel.offsetTop + sel.offsetHeight - 7) + 'px';
+    canvas.appendChild(h);
+    return h;
+  }
+  function moveHandle(canvas, sel) {
+    const h = canvas.querySelector('.ub-rz'); if (!h) return;
+    h.style.left = (sel.offsetLeft + sel.offsetWidth - 7) + 'px';
+    h.style.top = (sel.offsetTop + sel.offsetHeight - 7) + 'px';
+  }
+
+  /* ---- 드래그(이동) + 리사이즈(대각선) ------------------------------- */
   function bindDrag(canvas) {
     canvas.onmousedown = (e) => {
+      const pxmm = window.UBCFG.editor.pxmm;
+
+      // 1) 리사이즈 핸들 → 대각선 크기 조절
+      if (e.target.classList.contains('ub-rz')) {
+        e.preventDefault();
+        const f = field(state.selKey); if (!f) return;
+        const sel = canvas.querySelector(`[data-key="${state.selKey}"]`);
+        const isBox = (f.type === 'barcode' || f.type === 'box');
+        const sx = e.clientX, sy = e.clientY;
+        const ow = f.w, oh = (f.h != null ? f.h : 3), ofs = (f.fs != null ? f.fs : 2);
+        const rzMove = (ev) => {
+          const dx = (ev.clientX - sx) / pxmm;
+          const dy = (ev.clientY - sy) / pxmm;
+          f.w = clamp(round1(ow + dx), 2, window.UBCFG.label.wmm);
+          if (isBox) f.h = clamp(round1(oh + dy), 1, window.UBCFG.label.hmm);
+          else f.fs = clamp(round1(ofs + dy), 0.8, 9);
+          if (sel) {
+            sel.style.width = (f.w * pxmm) + 'px';
+            if (isBox) sel.style.height = (f.h * pxmm) + 'px';
+            else sel.style.fontSize = (f.fs * pxmm) + 'px';
+            moveHandle(canvas, sel);
+          }
+          syncNum('w', f.w); if (isBox) syncNum('h', f.h); else syncNum('fs', f.fs);
+        };
+        const rzUp = () => {
+          document.removeEventListener('mousemove', rzMove);
+          document.removeEventListener('mouseup', rzUp);
+          render();   // 최종 동기화(바코드 SVG 재맞춤 등)
+        };
+        document.addEventListener('mousemove', rzMove);
+        document.addEventListener('mouseup', rzUp);
+        return;
+      }
+
+      // 2) 필드 본체 → 이동
       const el = e.target.closest('[data-key]');
       if (!el) return;
       e.preventDefault();
       state.selKey = el.dataset.key;
       const f = field(state.selKey);
-      const pxmm = window.UBCFG.editor.pxmm;
       const startX = e.clientX, startY = e.clientY;
       const ox = f.x, oy = f.y;
-      renderProps();
       canvas.querySelectorAll('.ub-f').forEach(n => n.classList.remove('sel'));
       el.classList.add('sel');
+      addHandle(canvas, el);
+      renderProps();
 
       const move = (ev) => {
         const dx = (ev.clientX - startX) / pxmm;
@@ -216,6 +271,7 @@
         f.y = clamp(round1(oy + dy), 0, window.UBCFG.label.hmm - 0.3);
         el.style.left = (f.x * pxmm) + 'px';
         el.style.top = (f.y * pxmm) + 'px';
+        moveHandle(canvas, el);
         syncNum('x', f.x); syncNum('y', f.y);
       };
       const up = () => {

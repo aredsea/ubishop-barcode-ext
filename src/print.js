@@ -23,6 +23,8 @@
     fdoc.write(html);
     fdoc.close();
 
+    if (window.UBOverlay) window.UBOverlay.show('인쇄 중…');
+
     // SVG 바코드 렌더 + Pretendard 폰트 로드가 끝난 뒤 인쇄 트리거.
     const cfgWait = (window.UBCFG && window.UBCFG.print && window.UBCFG.print.waitFontsMs) || 200;
     const fire = () => {
@@ -33,6 +35,9 @@
           frame.contentWindow.print();   // --kiosk-printing 이면 다이얼로그 없이 즉시 인쇄
         } catch (e) {
           console.error('[UB] print 실패:', e);
+        } finally {
+          // 인쇄창(또는 무다이얼로그 인쇄) 처리 후 오버레이 제거
+          if (window.UBOverlay) setTimeout(() => window.UBOverlay.hide(), 600);
         }
       };
       // 폰트 로딩 완료를 기다린다(Pretendard 첫 인쇄 누락 방지)
