@@ -56,21 +56,57 @@
     return el ? el.value : '';
   }
 
+  /* ---- note 툴팁에서 상품명(한글) 추출 ---------------------------------- *
+   *  구조: <span ...>상품명 : </span>링오너먼트(랜덤)<br>
+   *  → "상품명" span 바로 다음 텍스트노드(br 전까지)를 정확히 가져온다.        */
+  function nameFromNote(note) {
+    if (!note) return '';
+    const spans = note.querySelectorAll('span');
+    for (const sp of spans) {
+      const t = (sp.textContent || '').replace(/\s+/g, '');
+      if (t.indexOf('상품명:') >= 0) {            // "매입처상품코드:" 등은 매칭 안 됨
+        let n = sp.nextSibling, out = '';
+        while (n && n.nodeName !== 'BR') {
+          out += (n.nodeType === 3 ? n.nodeValue : (n.textContent || ''));
+          n = n.nextSibling;
+        }
+        out = out.trim();
+        if (out) return out;
+      }
+    }
+    // 폴백: innerText 정규식
+    const ntx = (note.innerText || note.textContent || '');
+    return (ntx.match(/상품명\s*:\s*([^\n]+?)\s*(?:해리|배수|매입처|추가설명|각인|원산지|상세스톤|$)/) || [])[1] || '';
+  }
+
+  // 목록 행 → 연결된 note_N 툴팁 요소
+  function findRowNote(tr) {
+    const cell = tr.querySelector('[onmouseover*="note_"]');
+    if (cell) {
+      const m = (cell.getAttribute('onmouseover') || '').match(/note_\d+/);
+      if (m) { const el = document.getElementById(m[0]); if (el) return el; }
+    }
+    return tr.querySelector('div.tooltip2[id^=note]') || null;
+  }
+
   /* ====================================================================== *
    *  출처 B — 목록 행 스크래핑 (검증된 폴백)
    * ====================================================================== */
   function scrapeRow(cb) {
     const CFG = window.UBCFG;
-    const cells = [...cb.closest('tr').children];
+    const tr = cb.closest('tr');
+    const cells = [...tr.children];
     const txt = i => (cells[i] ? cells[i].innerText : '').trim();
 
     const d = emptyLabel(cb.value);
     d._source = 'list';
 
-    // 상품번호: itemNum 셀에서 바코드값이 아닌 줄
+    // 상품번호(영문코드): itemNum 셀에서 바코드값이 아닌 줄
     const lines = txt(CFG.cell.itemNum).split('\n').map(s => s.trim()).filter(Boolean);
     const itemNum = lines.find(x => x !== d.barcode) || '';
-    if (itemNum) d.itemName = d.itemName || itemNum;
+    d.itemNo = itemNum;
+    // 상품명(한글): 행 note 툴팁의 "상품명 :" → 없으면 상품번호 폴백
+    d.itemName = nameFromNote(findRowNote(tr)) || itemNum;
 
     // 판매가
     const price = txt(CFG.cell.price).replace(/[^\d]/g, '');
@@ -187,12 +223,8 @@
     d.weight   = wt ? wt + 'g' : '';
     d.diameter = (c6.match(/\((\d+)\)\s*$/) || [])[1] || '';   // 호수/외경
 
-    // 상품명(한글): note 툴팁 "상품명 : X 해리/배수"
-    if (note) {
-      const ntx = (note.innerText || note.textContent || '');
-      d.itemName = (ntx.match(/상품명\s*:\s*([^\n]+?)\s*(?:해리|배수|매입처|$)/) || [])[1] || '';
-    }
-    if (!d.itemName) d.itemName = d.itemNo;   // 상품명 없으면 상품번호로 폴백
+    // 상품명(한글): note 툴팁 "상품명 :" span 다음 텍스트
+    d.itemName = nameFromNote(note) || d.itemNo;   // 없으면 상품번호 폴백
 
     // 판매가
     const p = (txt(C.price).match(/[\d,]+/) || [])[0] || '';
