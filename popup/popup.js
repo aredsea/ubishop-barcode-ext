@@ -1,17 +1,30 @@
-/* 팝업 메뉴 — 유비샵 스킨모드 토글. 상태는 chrome.storage.local.ubSkin (기본 OFF). */
+/* 팝업 메뉴 — 유비샵 스킨모드(마스터) + 세부옵션(다크모드 / 썸네일수정).
+ * 상태: chrome.storage.local { ubSkin(기본OFF), ubDark(기본ON), ubThumbEdit(기본ON) }.
+ * 적용은 skin.js 가 ubSkin && 개별옵션 으로 게이팅. */
 (function () {
   'use strict';
-  const cb = document.getElementById('skin');
+  const skin = document.getElementById('skin');
+  const dark = document.getElementById('dark');
+  const thumb = document.getElementById('thumb');
+  const sub = document.getElementById('sub');
 
-  try {
-    document.getElementById('ver').textContent = 'v' + chrome.runtime.getManifest().version;
-  } catch (e) {}
+  try { document.getElementById('ver').textContent = 'v' + chrome.runtime.getManifest().version; } catch (e) {}
 
-  chrome.storage.local.get({ ubSkin: false }, d => { cb.checked = !!(d && d.ubSkin); });
+  function render(s) {
+    skin.checked = !!s.ubSkin;
+    dark.checked = !!s.ubDark;
+    thumb.checked = !!s.ubThumbEdit;
+    sub.classList.toggle('hidden', !s.ubSkin);   // 마스터 OFF면 세부 숨김
+    dark.disabled = !s.ubSkin;
+    thumb.disabled = !s.ubSkin;
+  }
 
-  cb.addEventListener('change', () => {
-    chrome.storage.local.set({ ubSkin: cb.checked });
-    // 열려 있는 유비샵 탭에 즉시 반영(스킨 콘텐츠 스크립트가 storage.onChanged 로도 받지만,
-    // 새 탭/프레임 보장을 위해 reload 안내는 popup.html 하단 문구로 처리).
+  chrome.storage.local.get({ ubSkin: false, ubDark: true, ubThumbEdit: true }, render);
+
+  skin.addEventListener('change', () => {
+    chrome.storage.local.set({ ubSkin: skin.checked });
+    chrome.storage.local.get({ ubSkin: false, ubDark: true, ubThumbEdit: true }, render);
   });
+  dark.addEventListener('change', () => chrome.storage.local.set({ ubDark: dark.checked }));
+  thumb.addEventListener('change', () => chrome.storage.local.set({ ubThumbEdit: thumb.checked }));
 })();
