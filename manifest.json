@@ -1,8 +1,21 @@
 {
   "manifest_version": 3,
   "name": "유비샵 바코드 라벨 (D102 인쇄 연동)",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "유비샵 바코드인쇄를 가로채 D102 인쇄 프로그램으로 보내 Zebra에 직접 인쇄(크롬 인쇄창 없음). 로직은 GitHub 자동업데이트.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "유비샵 바코드 라벨 (D102)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "host_permissions": [
     "http://127.0.0.1:17600/*",
     "http://localhost:17600/*"
@@ -14,7 +27,9 @@
     {
       "matches": [
         "http://ubdstore.ubshop.biz/info/item/infoItemList.do*",
-        "https://ubdstore.ubshop.biz/info/item/infoItemList.do*"
+        "https://ubdstore.ubshop.biz/info/item/infoItemList.do*",
+        "http://ubdstore.ubshop.biz/input/item/inputItemWriteForm.do*",
+        "https://ubdstore.ubshop.biz/input/item/inputItemWriteForm.do*"
       ],
       "js": ["src/localbridge.js"],
       "run_at": "document_idle",
@@ -24,7 +39,9 @@
     {
       "matches": [
         "http://ubdstore.ubshop.biz/info/item/infoItemList.do*",
-        "https://ubdstore.ubshop.biz/info/item/infoItemList.do*"
+        "https://ubdstore.ubshop.biz/info/item/infoItemList.do*",
+        "http://ubdstore.ubshop.biz/input/item/inputItemWriteForm.do*",
+        "https://ubdstore.ubshop.biz/input/item/inputItemWriteForm.do*"
       ],
       "js": ["src/loader.js"],
       "run_at": "document_idle",

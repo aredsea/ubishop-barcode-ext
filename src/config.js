@@ -43,6 +43,18 @@
      *   12=판매가.  상품명(한글)=note_N 툴팁의 "상품명 : … 해리/배수".          */
     barPrintCell: { itemNo: 4, gubun: 5, info: 6, price: 12 },
 
+    /* --- 상품입고 페이지(inputItemWriteForm.do) 매핑 (실측 확정 2026-06) -----
+     *  검색페이지와 레이아웃이 다르다. 이 페이지는 목록 행에 모든 데이터가 있고
+     *  note 툴팁에 "상품명 :"이 없으므로 목록 스크래핑만 사용한다(barPrint 엔드포인트는
+     *  inputItemBarPrint.do = 인쇄포맷뷰라 구조화 파싱 불가).
+     *  ⚠ idx 체크박스 value 는 복합("순번,바코드,코드") → 바코드는 셀2 첫 줄을 사용.
+     *  셀: 2=바코드/매입처코드/상품번호+상품명(줄바꿈), 3=구분,
+     *      4=매장명(고객명)+금속중량+호수(줄바꿈), 11=판매가.                       */
+    inbound: {
+      match: /input\/item\/inputItem/i,   // location.pathname 매칭
+      cell: { info2: 2, gubun: 3, store: 4, price: 11 }
+    },
+
     /* --- 라벨 물리 규격 (Zebra GX430t 300dpi) — 확정: 가로 60 × 세로 10 mm -- */
     label: { wmm: 60, hmm: 10 },
 

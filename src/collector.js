@@ -279,15 +279,73 @@
   }
 
   /* ====================================================================== *
+   *  고객명(거래처) 표시 규칙 — 인쇄 시 partner 에 적용 (공통)
+   *   1) 예물:  "이름/이름" (양쪽 2~4 한글, 숫자 없음) → 뒤쪽 이름만
+   *             예) 최원형/이보람 → 이보람
+   *   2) 일반:  "이름+숫자4개/문자1개" (한글|영문 1글자) → 이름+숫자까지
+   *             예) 이*영6877/G → 이*영6877,  구수진1266/S → 구수진1266
+   *   3) 그 외: 원문 전체 그대로
+   * ====================================================================== */
+  function customerName(raw) {
+    const s = (raw || '').trim();
+    if (!s) return s;
+    // 규칙 2 먼저(숫자 보유) → 규칙 1
+    let m = s.match(/^(.+\d{4})\/[A-Za-z가-힣]$/);
+    if (m) return m[1];
+    m = s.match(/^([가-힣*]{2,4})\/([가-힣*]{2,4})$/);
+    if (m) return m[2];
+    return s;
+  }
+
+  /* ====================================================================== *
+   *  출처 C — 상품입고 페이지(inputItemWriteForm.do) 목록 스크래핑
+   * ====================================================================== */
+  function isInboundPage() {
+    const cfg = window.UBCFG.inbound;
+    return !!(cfg && cfg.match && cfg.match.test(location.pathname));
+  }
+
+  function scrapeInboundRow(cb) {
+    const C = window.UBCFG.inbound.cell;
+    const tr = cb.closest('tr');
+    const cells = [...tr.children];
+    const lines = i => ((cells[i] && cells[i].innerText) || '')
+      .split('\n').map(s => s.trim()).filter(Boolean);
+
+    // 셀2: [바코드, 매입처코드, 상품번호+상품명]  (idx value 는 복합이라 셀2 첫 줄을 바코드로)
+    const c2 = lines(C.info2);
+    const d = emptyLabel(c2[0] || '');
+    d._source = 'inbound';
+
+    const codeName = c2[c2.length - 1] || '';        // 예) "B0492피어싱" / "B2359R"
+    const mm = codeName.match(/^([A-Za-z0-9-]+)([가-힣].*)?$/);
+    d.itemNo   = (mm && mm[1]) || codeName;
+    d.itemName = (mm && mm[2] ? mm[2].trim() : '') || d.itemNo;
+
+    // 셀4: line0="FASHION (이*영6877/G)", line1="18K 0.46 g ()"
+    const c4 = lines(C.store);
+    const head = c4[0] || '';
+    d.category = (head.match(/^([^(]+)/) || [])[1] ? head.match(/^([^(]+)/)[1].trim() : '';
+    d.partner  = (head.match(/\(([^)]*)\)/) || [])[1] || '';
+    const info = c4[1] || head;
+    const mk = info.match(/(\d+\s*K)/);
+    d.metal    = mk ? mk[1].replace(/\s+/g, '') : '';
+    const wt   = (info.match(/([\d.]+)\s*g/i) || [])[1] || '';
+    d.weight   = wt ? wt + 'g' : '';
+    d.diameter = ((info.match(/\(([^)]*)\)\s*$/) || [])[1] || '').trim();
+
+    // 셀11: 판매가
+    const p = (((cells[C.price] && cells[C.price].innerText) || '')).replace(/[^\d]/g, '');
+    if (p) d.price = Number(p);
+
+    return d;
+  }
+
+  /* ====================================================================== *
    *  공개 API
    * ====================================================================== */
-  async function collect() {
+  async function collectSearch(chosen) {
     const CFG = window.UBCFG;
-    const chosen = getCheckedBarcodes();
-    if (!chosen.length) {
-      alert('인쇄할 상품을 먼저 선택하세요.');
-      return null;
-    }
     const form = getForm2();
     const barcodes = chosen.map(b => b.value);
     log('선택 바코드:', barcodes, 'sKey:', getSKey(form));
@@ -327,6 +385,20 @@
       log('출처 A에 없음 → 목록 폴백:', bc);
       return listByBarcode[bc] || emptyLabel(bc);
     });
+    return result;
+  }
+
+  /* 페이지 종류에 따라 수집 경로를 고르고, 고객명을 공통 정규화한다. */
+  async function collect() {
+    const chosen = getCheckedBarcodes();
+    if (!chosen.length) {
+      alert('인쇄할 상품을 먼저 선택하세요.');
+      return null;
+    }
+    const result = isInboundPage()
+      ? chosen.map(scrapeInboundRow)            // 출처 C: 상품입고 목록
+      : await collectSearch(chosen);            // 출처 A/B: 검색 페이지
+    (result || []).forEach(d => { if (d && d.partner) d.partner = customerName(d.partner); });
     return result;
   }
 
