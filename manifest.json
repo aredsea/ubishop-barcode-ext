@@ -1,9 +1,26 @@
 {
   "manifest_version": 3,
   "name": "유비샵 바코드 라벨 (D102 인쇄 연동)",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "유비샵 바코드인쇄를 가로채 D102 인쇄 프로그램으로 보내 Zebra에 직접 인쇄(크롬 인쇄창 없음). 로직은 GitHub 자동업데이트.",
+  "host_permissions": [
+    "http://127.0.0.1:17600/*",
+    "http://localhost:17600/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
   "content_scripts": [
+    {
+      "matches": [
+        "http://ubdstore.ubshop.biz/info/item/infoItemList.do*",
+        "https://ubdstore.ubshop.biz/info/item/infoItemList.do*"
+      ],
+      "js": ["src/localbridge.js"],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "world": "ISOLATED"
+    },
     {
       "matches": [
         "http://ubdstore.ubshop.biz/info/item/infoItemList.do*",

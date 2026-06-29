@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "note": "loader.js 가 순서대로 가져와 실행. v2: 얇은 호출자(데이터만 프로그램에 POST). 렌더/편집 제거.",
   "files": [
     "src/config.js",
