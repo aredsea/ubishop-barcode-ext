@@ -19,11 +19,11 @@
     thumb.disabled = !s.ubSkin;
   }
 
-  chrome.storage.local.get({ ubSkin: false, ubDark: true, ubThumbEdit: true }, render);
+  chrome.storage.local.get({ ubSkin: false, ubDark: false, ubThumbEdit: true }, render);
 
   skin.addEventListener('change', () => {
     chrome.storage.local.set({ ubSkin: skin.checked });
-    chrome.storage.local.get({ ubSkin: false, ubDark: true, ubThumbEdit: true }, render);
+    chrome.storage.local.get({ ubSkin: false, ubDark: false, ubThumbEdit: true }, render);
   });
   dark.addEventListener('change', () => chrome.storage.local.set({ ubDark: dark.checked }));
   thumb.addEventListener('change', () => chrome.storage.local.set({ ubThumbEdit: thumb.checked }));

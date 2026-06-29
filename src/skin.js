@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const state = { ubSkin: false, ubDark: true, ubThumbEdit: true };
+  const state = { ubSkin: false, ubDark: false, ubThumbEdit: true };
   const dark = () => state.ubSkin && state.ubDark;
   const thumb = () => state.ubSkin && state.ubThumbEdit;
 
@@ -86,7 +86,7 @@
   }
 
   try {
-    chrome.storage.local.get({ ubSkin: false, ubDark: true, ubThumbEdit: true }, d => {
+    chrome.storage.local.get({ ubSkin: false, ubDark: false, ubThumbEdit: true }, d => {
       Object.assign(state, d || {});
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
       else init();

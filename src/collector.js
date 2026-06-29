@@ -92,6 +92,25 @@
     return (ntx.match(/상품명\s*:\s*([^\n]+?)\s*(?:해리|배수|매입처|추가설명|각인|원산지|상세스톤|$)/) || [])[1] || '';
   }
 
+  /* 검색 정보셀 파서 — "매장명 (고객명)금속 중량g (사이즈)" 한 칸에서 분리.
+   *  ⚠ 고객 괄호가 없는 품목(은925/다이아)에선 끝의 (사이즈) 괄호를 고객명으로
+   *    오인하면 안 되고, 매장명도 금속 앞까지만 잘라야 한다.                       */
+  function parseInfoCell(s) {
+    s = s || '';
+    const sm = s.match(/\d+\s*K|925|[\d.]+\s*ct/i);        // 금속/ct 스펙 시작 위치
+    const specIdx = sm ? sm.index : s.length;
+    const firstParen = s.indexOf('(');
+    const custBefore = firstParen >= 0 && firstParen < specIdx;  // 스펙 앞 괄호 = 고객명
+    const store = s.slice(0, custBefore ? firstParen : specIdx).trim();
+    let partner = '';
+    if (custBefore) { const pm = s.slice(firstParen).match(/\(([^)]*)\)/); partner = pm ? pm[1] : ''; }
+    const metal = (s.match(/(\d+\s*K|925)/) || [])[1] || '';
+    const wt = (s.match(/([\d.]+)\s*g/i) || [])[1] || '';
+    let diameter = ((s.match(/\(([^)]*)\)\s*$/) || [])[1] || '').trim();   // 끝의 (사이즈)
+    if (diameter && diameter === partner) diameter = '';                   // 고객괄호 오인 방지
+    return { store, partner, metal, weight: wt ? wt + 'g' : '', diameter };
+  }
+
   // 목록 행 → 연결된 note_N 툴팁 요소
   function findRowNote(tr) {
     const cell = tr.querySelector('[onmouseover*="note_"]');
@@ -125,16 +144,10 @@
     const price = txt(CFG.cell.price).replace(/[^\d]/g, '');
     if (price) d.price = Number(price);
 
-    // 매장명/고객명/금속/중량 (storeInfo 셀: "광주점 (김재완/김민정) 14K 0.59 g")
-    const si = txt(CFG.cell.storeInfo);
-    d.store    = (si.match(/^([^(]+)/) || [])[1] ? si.match(/^([^(]+)/)[1].trim() : '';
-    d.category = d.store;
-    d.partner  = (si.match(/\(([^)]*)\)/) || [])[1] || '';
-    const mw = si.match(/(\d+\s*K)\s*([\d.]+)\s*g/i);
-    if (mw) {
-      d.metal = (mw[1] || '').replace(/\s+/g, '');
-      d.weight = mw[2] ? mw[2] + 'g' : '';
-    }
+    // 매장명/고객명/금속/중량/사이즈 (storeInfo 셀) — 통합 파서
+    const si = parseInfoCell(txt(CFG.cell.storeInfo));
+    d.store = si.store; d.category = si.store;
+    d.partner = si.partner; d.metal = si.metal; d.weight = si.weight; d.diameter = si.diameter;
 
     // 매입처(다이아 지표) + 추가설명(다이아 상품명)
     d.vendor    = (txt(CFG.cell.vendor).match(/^[^\d]+/) || [])[0] ? txt(CFG.cell.vendor).match(/^[^\d]+/)[0].trim() : '';
@@ -231,16 +244,11 @@
     const cell4 = txt(C.itemNo);
     d.itemNo = (cell4.replace(barcode, '').match(/([A-Z][\w-]{3,})/) || [])[1] || '';
 
-    // 셀6: "광주점 (김재완/김민정)0.32 ct ()" / "FASHION (백*심9932/G)18K 4.36 g (17)"
-    //  → 괄호 앞=매장명, 괄호 안=고객명, 그 뒤=금속/중량/호수
-    const c6 = txt(C.info);
-    d.store    = (c6.match(/^([^(]+)/) || [])[1] ? c6.match(/^([^(]+)/)[1].trim() : '';
-    d.category = d.store;                                        // 회사+구분 표기엔 매장명 사용(기존 동일값)
-    d.partner  = (c6.match(/\(([^)]*)\)/) || [])[1] || '';
-    d.metal    = (c6.match(/(\d+\s*K)/) || [])[1] || '';
-    const wt   = (c6.match(/([\d.]+)\s*g/i) || [])[1] || '';
-    d.weight   = wt ? wt + 'g' : '';
-    d.diameter = (c6.match(/\((\d+)\)\s*$/) || [])[1] || '';   // 호수/외경
+    // 셀6: "광주점 (김재완/김민정)0.32 ct ()" / "D102본사925 0 g (39.5+5.5)"
+    //  → 통합 파서로 매장명/고객명/금속/중량/사이즈 분리(고객괄호 없는 은925·다이아 대응)
+    const info = parseInfoCell(txt(C.info));
+    d.store = info.store; d.category = info.store;
+    d.partner = info.partner; d.metal = info.metal; d.weight = info.weight; d.diameter = info.diameter;
 
     // 매입처(다이아 지표): 셀2 "본디26-06-05" → 날짜 앞 글자만
     d.vendor    = (txt(C.vendor).match(/^[^\d]+/) || [])[0] ? txt(C.vendor).match(/^[^\d]+/)[0].trim() : '';
@@ -378,7 +386,7 @@
     d.category = d.store;
     d.partner  = (head.match(/\(([^)]*)\)/) || [])[1] || '';
     const info = c4[1] || head;
-    const mk = info.match(/(\d+\s*K)/);
+    const mk = info.match(/(\d+\s*K|925)/);
     d.metal    = mk ? mk[1].replace(/\s+/g, '') : '';
     const wt   = (info.match(/([\d.]+)\s*g/i) || [])[1] || '';
     d.weight   = wt ? wt + 'g' : '';
