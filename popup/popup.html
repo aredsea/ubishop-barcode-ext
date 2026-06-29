@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<style>
+  :root { --bg:#fff; --fg:#1b1b1b; --sub:#6b7280; --line:#e5e7eb; --on:#35C5F0; }
+  * { box-sizing:border-box; font-family:'Pretendard','Malgun Gothic',sans-serif; }
+  body { width:260px; margin:0; padding:14px; color:var(--fg); background:var(--bg); }
+  .hd { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+  .hd img { width:24px; height:24px; }
+  .hd .t { font-size:13px; font-weight:700; }
+  .hd .v { font-size:11px; color:var(--sub); margin-left:auto; }
+  .row { display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line); }
+  .row .label { display:flex; flex-direction:column; }
+  .row .label .name { font-size:12.5px; font-weight:600; }
+  .row .label .desc { font-size:11px; color:var(--sub); }
+  .sw { margin-left:auto; position:relative; width:42px; height:24px; flex:none; }
+  .sw input { opacity:0; width:0; height:0; }
+  .track { position:absolute; inset:0; background:#cbd5e1; border-radius:999px; transition:.18s; cursor:pointer; }
+  .track::before { content:''; position:absolute; left:3px; top:3px; width:18px; height:18px; background:#fff; border-radius:50%; transition:.18s; box-shadow:0 1px 2px rgba(0,0,0,.25); }
+  .sw input:checked + .track { background:var(--on); }
+  .sw input:checked + .track::before { transform:translateX(18px); }
+  .foot { margin-top:10px; font-size:10.5px; color:var(--sub); line-height:1.5; }
+</style>
+</head>
+<body>
+  <div class="hd">
+    <img src="../icons/icon48.png" alt="">
+    <span class="t">유비샵 라벨 도구</span>
+    <span class="v" id="ver"></span>
+  </div>
+
+  <div class="row">
+    <div class="label">
+      <span class="name">유비샵 스킨모드</span>
+      <span class="desc">다크모드 (샘플)</span>
+    </div>
+    <label class="sw">
+      <input type="checkbox" id="skin">
+      <span class="track"></span>
+    </label>
+  </div>
+
+  <div class="foot">ON 시 유비샵 페이지가 다크모드로 표시됩니다. 적용 후 페이지 새로고침이 필요할 수 있어요.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

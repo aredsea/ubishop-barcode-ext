@@ -30,6 +30,9 @@
       category: '',
       partner: '',
       setNo: '',
+      store: '',        // 매장명(라벨 접두코드·다이아 매장표기용)
+      vendor: '',       // 매입처명(다이아 지표: 본디/캐럿)
+      extraDesc: '',    // 추가설명(다이아 상품명으로 사용)
       brandTop: F.brandTop,
       brandUrl: F.brandUrl,
       _source: ''
@@ -59,12 +62,16 @@
   /* ---- note 툴팁에서 상품명(한글) 추출 ---------------------------------- *
    *  구조: <span ...>상품명 : </span>링오너먼트(랜덤)<br>
    *  → "상품명" span 바로 다음 텍스트노드(br 전까지)를 정확히 가져온다.        */
-  function nameFromNote(note) {
+  // note 툴팁의 "<label> : 값<br>" 에서 값 추출(span 다음 텍스트노드~br).
+  // ⚠ '상품명' 은 '매입처상품코드' 끝에도 들어가므로 ":" 직전 글자로 정확 매칭.
+  function noteField(note, label) {
     if (!note) return '';
     const spans = note.querySelectorAll('span');
     for (const sp of spans) {
       const t = (sp.textContent || '').replace(/\s+/g, '');
-      if (t.indexOf('상품명:') >= 0) {            // "매입처상품코드:" 등은 매칭 안 됨
+      // "상품명:" 매칭이 "매입처상품코드:" 에 걸리지 않도록, 라벨이 정확히 그 토큰으로 시작/끝나게.
+      const idx = t.indexOf(label + ':');
+      if (idx >= 0 && (idx === 0 || !/[가-힣A-Za-z]/.test(t[idx - 1]))) {
         let n = sp.nextSibling, out = '';
         while (n && n.nodeName !== 'BR') {
           out += (n.nodeType === 3 ? n.nodeValue : (n.textContent || ''));
@@ -74,8 +81,14 @@
         if (out) return out;
       }
     }
+    return '';
+  }
+
+  function nameFromNote(note) {
+    const v = noteField(note, '상품명');
+    if (v) return v;
     // 폴백: innerText 정규식
-    const ntx = (note.innerText || note.textContent || '');
+    const ntx = (note && (note.innerText || note.textContent)) || '';
     return (ntx.match(/상품명\s*:\s*([^\n]+?)\s*(?:해리|배수|매입처|추가설명|각인|원산지|상세스톤|$)/) || [])[1] || '';
   }
 
@@ -112,16 +125,20 @@
     const price = txt(CFG.cell.price).replace(/[^\d]/g, '');
     if (price) d.price = Number(price);
 
-    // 금속/중량 (예: "14K 0.59 g")
-    const mw = txt(CFG.cell.storeInfo).match(/(\d+\s*K)\s*([\d.]+)\s*g/i);
+    // 매장명/고객명/금속/중량 (storeInfo 셀: "광주점 (김재완/김민정) 14K 0.59 g")
+    const si = txt(CFG.cell.storeInfo);
+    d.store    = (si.match(/^([^(]+)/) || [])[1] ? si.match(/^([^(]+)/)[1].trim() : '';
+    d.category = d.store;
+    d.partner  = (si.match(/\(([^)]*)\)/) || [])[1] || '';
+    const mw = si.match(/(\d+\s*K)\s*([\d.]+)\s*g/i);
     if (mw) {
       d.metal = (mw[1] || '').replace(/\s+/g, '');
       d.weight = mw[2] ? mw[2] + 'g' : '';
     }
 
-    // 구분
-    const g = txt(CFG.cell.gubun);
-    if (g) d.category = g;
+    // 매입처(다이아 지표) + 추가설명(다이아 상품명)
+    d.vendor    = (txt(CFG.cell.vendor).match(/^[^\d]+/) || [])[0] ? txt(CFG.cell.vendor).match(/^[^\d]+/)[0].trim() : '';
+    d.extraDesc = noteField(findRowNote(tr), '추가설명');
 
     return d;
   }
@@ -214,14 +231,21 @@
     const cell4 = txt(C.itemNo);
     d.itemNo = (cell4.replace(barcode, '').match(/([A-Z][\w-]{3,})/) || [])[1] || '';
 
-    // 셀6: "FASHION (백*심9932/G)18K 4.36 g (17)"
+    // 셀6: "광주점 (김재완/김민정)0.32 ct ()" / "FASHION (백*심9932/G)18K 4.36 g (17)"
+    //  → 괄호 앞=매장명, 괄호 안=고객명, 그 뒤=금속/중량/호수
     const c6 = txt(C.info);
-    d.category = (c6.match(/^([A-Za-z가-힣]+)/) || [])[1] || '';
+    d.store    = (c6.match(/^([^(]+)/) || [])[1] ? c6.match(/^([^(]+)/)[1].trim() : '';
+    d.category = d.store;                                        // 회사+구분 표기엔 매장명 사용(기존 동일값)
     d.partner  = (c6.match(/\(([^)]*)\)/) || [])[1] || '';
     d.metal    = (c6.match(/(\d+\s*K)/) || [])[1] || '';
     const wt   = (c6.match(/([\d.]+)\s*g/i) || [])[1] || '';
     d.weight   = wt ? wt + 'g' : '';
     d.diameter = (c6.match(/\((\d+)\)\s*$/) || [])[1] || '';   // 호수/외경
+
+    // 매입처(다이아 지표): 셀2 "본디26-06-05" → 날짜 앞 글자만
+    d.vendor    = (txt(C.vendor).match(/^[^\d]+/) || [])[0] ? txt(C.vendor).match(/^[^\d]+/)[0].trim() : '';
+    // 추가설명(다이아 상품명으로 사용)
+    d.extraDesc = noteField(note, '추가설명');
 
     // 상품명(한글): note 툴팁 "상품명 :" span 다음 텍스트
     d.itemName = nameFromNote(note) || d.itemNo;   // 없으면 상품번호 폴백
@@ -305,6 +329,31 @@
     return !!(cfg && cfg.match && cfg.match.test(location.pathname));
   }
 
+  // 입고장 헤더의 매입처명(행별 열이 없어 시트 단위). 다이아 지표(본디/캐럿)용 — best-effort.
+  let _inboundVendor;
+  function inboundVendor() {
+    if (_inboundVendor !== undefined) return _inboundVendor;
+    _inboundVendor = '';
+    const els = document.querySelectorAll('td,th,span,label,div');
+    for (const el of els) {
+      const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.nodeValue).join('').replace(/\s+/g, '');
+      if (own === '매입처' || own === '매입처:') {       // "매입처상품코드" 제외(정확매칭)
+        // 같은 행의 다음 셀 또는 형제에서 값
+        const tr = el.closest('tr');
+        let val = '';
+        if (tr) {
+          const tds = [...tr.children];
+          const i = tds.findIndex(td => td.contains(el));
+          for (let k = i + 1; k < tds.length && !val; k++) val = (tds[k].innerText || '').trim();
+        }
+        if (!val && el.nextElementSibling) val = (el.nextElementSibling.innerText || '').trim();
+        _inboundVendor = (val.match(/^[^\d(]+/) || [])[0] ? val.match(/^[^\d(]+/)[0].trim() : val.trim();
+        if (_inboundVendor) break;
+      }
+    }
+    return _inboundVendor;
+  }
+
   function scrapeInboundRow(cb) {
     const C = window.UBCFG.inbound.cell;
     const tr = cb.closest('tr');
@@ -325,7 +374,8 @@
     // 셀4: line0="FASHION (이*영6877/G)", line1="18K 0.46 g ()"
     const c4 = lines(C.store);
     const head = c4[0] || '';
-    d.category = (head.match(/^([^(]+)/) || [])[1] ? head.match(/^([^(]+)/)[1].trim() : '';
+    d.store    = (head.match(/^([^(]+)/) || [])[1] ? head.match(/^([^(]+)/)[1].trim() : '';
+    d.category = d.store;
     d.partner  = (head.match(/\(([^)]*)\)/) || [])[1] || '';
     const info = c4[1] || head;
     const mk = info.match(/(\d+\s*K)/);
@@ -333,6 +383,10 @@
     const wt   = (info.match(/([\d.]+)\s*g/i) || [])[1] || '';
     d.weight   = wt ? wt + 'g' : '';
     d.diameter = ((info.match(/\(([^)]*)\)\s*$/) || [])[1] || '').trim();
+
+    // 매입처(시트단위·다이아 지표) + 추가설명(다이아 상품명)
+    d.vendor    = inboundVendor();
+    d.extraDesc = noteField(findRowNote(tr), '추가설명');
 
     // 셀11: 판매가
     const p = (((cells[C.price] && cells[C.price].innerText) || '')).replace(/[^\d]/g, '');

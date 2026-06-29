@@ -41,7 +41,7 @@
      *  행별 셀:
      *   1=idx체크박스(바코드), 4=바코드+상품번호, 5=구분, 6=구분/거래처/금속/중량/호수,
      *   12=판매가.  상품명(한글)=note_N 툴팁의 "상품명 : … 해리/배수".          */
-    barPrintCell: { itemNo: 4, gubun: 5, info: 6, price: 12 },
+    barPrintCell: { vendor: 2, itemNo: 4, gubun: 5, info: 6, price: 12 },
 
     /* --- 상품입고 페이지(inputItemWriteForm.do) 매핑 (실측 확정 2026-06) -----
      *  검색페이지와 레이아웃이 다르다. 이 페이지는 목록 행에 모든 데이터가 있고

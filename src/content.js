@@ -17,7 +17,8 @@
     return data.map(d => ({
       barcode: d.barcode, itemName: d.itemName, itemNo: d.itemNo,
       price: d.price, metal: d.metal, diameter: d.diameter, weight: d.weight,
-      category: d.category, partner: d.partner, setNo: d.setNo
+      category: d.category, partner: d.partner, setNo: d.setNo,
+      store: d.store, vendor: d.vendor, extraDesc: d.extraDesc
     }));
   }
 
