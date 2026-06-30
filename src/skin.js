@@ -29,9 +29,15 @@
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
   const MAX_BARCODES = 12;
-  const BARCODE_RE = /\b\d{2,5}[A-Z]{1,3}\d{0,3}\b/g;   // 2606WH / 24010D / 230M56 등
+  // 정확한 바코드 패턴: 년도(21~26) + 영숫자 4자리(영문 ≥1).
+  // 예: 2606WH(26+06WH), 24010D(24+010D), 230M56(23+0M56).
+  // "14K" 같은 짧은 단어/금속표기는 제외(년도 prefix 강제).
+  const BARCODE_RE = /\b2[1-6][A-Z0-9]{4}\b/g;
+  // 클립보드 버튼 → navigator.clipboard 실패 시 fallback execCommand가
+  // 자체 copy 이벤트를 트리거 → addBarcodes 재진입으로 순서 어그러짐 방지.
+  let _suppressNextCopy = false;
 
-  try { console.log('[UB][skin] v2.7 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
+  try { console.log('[UB][skin] v2.8 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
 
   /* ==========================================================================
    *  1) 다크 테마 — invert 폐기, 실제 색상 매핑.
@@ -109,28 +115,50 @@
   function editUrl(seq) {
     return '/master/item/masterItemModifyForm.do?tcode=master_item&seq=' + encodeURIComponent(seq);
   }
+  // 썸네일 → 상품수정 새 창.
+  // ⚠ capture+preventDefault만으로는 일부 환경에서 javascript:imageView가
+  //   여전히 동작(원인 불명, v2.6 실측). 가장 확실한 방법: 부모 a.href를
+  //   우리 수정 URL로 덮어쓰고 target=_blank 설정 → chrome native가 새 탭.
+  //   추가로 click capture에서 직접 window.open으로 이중 보장.
+  function reapplyThumbHref(a, seq) {
+    if (!on('ubThumbEdit')) return;
+    a.href = editUrl(seq);
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.removeAttribute('onclick');   // 인라인 onclick 제거(있다면)
+  }
   function attachThumb(img, seq) {
     if (img.dataset.ubEdit) return;
     img.dataset.ubEdit = seq;
     img.style.cursor = 'pointer';
     img.title = '상품 수정 (새 창)';
-    const block = (e) => {
-      if (!on('ubThumbEdit')) return;
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (e.type === 'click') window.open(editUrl(seq), '_blank');
-    };
-    ['mousedown', 'mouseup', 'click'].forEach(ev => img.addEventListener(ev, block, true));
-    img.addEventListener('mouseenter', () => { if (on('ubThumbEdit')) img.style.outline = '2px solid #35C5F0'; });
-    img.addEventListener('mouseleave', () => { img.style.outline = ''; });
+
     const a = img.closest('a');
-    if (a && !a.dataset.ubEdit) {
+    if (a) {
       a.dataset.ubEdit = seq;
-      ['mousedown', 'mouseup', 'click'].forEach(ev => a.addEventListener(ev, (e) => {
+      if (!a.dataset.ubOrigHref) a.dataset.ubOrigHref = a.getAttribute('href') || '';
+      reapplyThumbHref(a, seq);
+      // 페이지가 href를 다시 javascript:imageView로 reset할 때 즉시 복원
+      const mo = new MutationObserver(() => reapplyThumbHref(a, seq));
+      try { mo.observe(a, { attributes: true, attributeFilter: ['href', 'target', 'onclick'] }); } catch (_) {}
+      // 이중 보장: click capture에서 강제 새 탭
+      a.addEventListener('click', (e) => {
+        if (!on('ubThumbEdit')) return;
+        // a.href가 우리 URL이면 chrome native가 알아서 새 탭, 그래도 명시적으로
+        // window.open 호출 + default 막아 race condition 제거.
+        e.preventDefault(); e.stopImmediatePropagation();
+        window.open(editUrl(seq), '_blank', 'noopener');
+      }, true);
+    } else {
+      // a 태그 없는 경우만 img 자체에 click attach (드문 케이스)
+      img.addEventListener('click', (e) => {
         if (!on('ubThumbEdit')) return;
         e.preventDefault(); e.stopImmediatePropagation();
-        if (e.type === 'click') window.open(editUrl(seq), '_blank');
-      }, true));
+        window.open(editUrl(seq), '_blank', 'noopener');
+      }, true);
     }
+    img.addEventListener('mouseenter', () => { if (on('ubThumbEdit')) img.style.outline = '2px solid #35C5F0'; });
+    img.addEventListener('mouseleave', () => { img.style.outline = ''; });
   }
   function bindThumbEdit(root) {
     if (!MASTER_RE.test(location.pathname)) return;
@@ -232,9 +260,12 @@
    * ========================================================================== */
   function extractBarcodes(text) {
     if (!text) return [];
-    const found = (text.match(BARCODE_RE) || []).map(s => s.toUpperCase());
-    // 너무 일반적인 패턴(예: 영문이 없는 순수 숫자) 제외 — 정규식이 [A-Z] 강제하니 이미 OK
-    return [...new Set(found)];
+    const raw = text.match(BARCODE_RE) || [];
+    // 추가 검증: 년도 뒤 4자리에 영문 ≥1개. "240630" 같은 순수 숫자 제외.
+    const codes = raw
+      .map(s => s.toUpperCase())
+      .filter(s => /[A-Z]/.test(s.slice(2)));
+    return [...new Set(codes)];
   }
   function addBarcodes(list) {
     if (!list.length) return false;
@@ -254,6 +285,9 @@
     return added;
   }
   function copyToClipboard(text) {
+    // 우리 버튼이 트리거하는 복사는 copy 이벤트에서 무시 → 리스트 순서 보존.
+    _suppressNextCopy = true;
+    setTimeout(() => { _suppressNextCopy = false; }, 250);
     try {
       navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
     } catch (_) { fallbackCopy(text); }
@@ -265,9 +299,15 @@
     try { document.execCommand('copy'); } catch (_) {}
     ta.remove();
   }
+  function removeBarcode(code) {
+    const cur = (Array.isArray(state.ubBarcodes) ? state.ubBarcodes : []).filter(b => b.c !== code);
+    state.ubBarcodes = cur;
+    try { chrome.storage.local.set({ ubBarcodes: cur }); } catch (_) {}
+  }
   function bindCopyListener() {
     document.addEventListener('copy', () => {
-      if (!on('ubSidebar')) return;   // 사이드바 OFF면 수집도 안 함
+      if (_suppressNextCopy) return;   // 우리 버튼 클릭은 무시(순서 보존)
+      if (!on('ubSidebar')) return;
       const sel = window.getSelection ? window.getSelection().toString() : '';
       const codes = extractBarcodes(sel);
       if (codes.length && addBarcodes(codes)) renderSidebar();
@@ -550,12 +590,28 @@
       showToast(bar, n ? '날짜 변경됨 (' + n + '개 필드)' : '날짜 필드를 찾지 못함');
     }));
 
-    // 바코드 버튼 — 클립보드 복사
-    bar.querySelectorAll('[data-bc]').forEach(b => b.addEventListener('click', () => {
-      const c = b.dataset.bc;
-      copyToClipboard(c);
-      showToast(bar, c + ' 복사됨');
-    }));
+    // 바코드 버튼 — 단일 클릭 = 복사, 더블 클릭 = 삭제.
+    // 200ms timeout으로 단/더블 분리. 더블 시 단일 클릭 timeout 취소.
+    bar.querySelectorAll('[data-bc]').forEach(b => {
+      let clickTimer = null;
+      b.addEventListener('click', () => {
+        if (clickTimer) return;   // dblclick listener가 곧 timeout 취소
+        clickTimer = setTimeout(() => {
+          clickTimer = null;
+          const c = b.dataset.bc;
+          copyToClipboard(c);
+          showToast(bar, c + ' 복사됨');
+        }, 220);
+      });
+      b.addEventListener('dblclick', () => {
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        const c = b.dataset.bc;
+        removeBarcode(c);
+        showToast(bar, c + ' 삭제됨');
+        renderSidebar();
+      });
+      b.title = '클릭: 복사 / 더블클릭: 삭제 — ' + b.dataset.bc;
+    });
     const clr = bar.querySelector('[data-act="bc-clear"]');
     if (clr) clr.addEventListener('click', () => {
       state.ubBarcodes = [];
