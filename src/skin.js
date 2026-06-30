@@ -38,22 +38,30 @@
   let _suppressNextCopy = false;
 
   // 팝업 창(window.open으로 띄운 별도 윈도우) 판정.
-  // - 우리 썸네일 popup(POPUP_FEATURES) + jsp 사이트의 imageView/공장검색/등
-  //   여기선 사이드바/페이지사이즈 redirect 다 skip(작업창 방해 금지).
+  // ⚠ window.opener 는 noopener로 열렸거나 chrome이 보안상 끊으면 null.
+  //   새로고침/페이징 reload 후에도 popup window 자체는 유지되지만 opener는
+  //   사라질 수 있다 → opener 의존하면 reload 후 사이드바가 다시 뜸(사용자 보고).
+  //
+  // 전략: ①window.menubar/toolbar.visible 우선(popup window의 표준 시그니처)
+  //       ②opener+작은 크기 fallback
+  //       ③첫 popup 판정이 나면 sessionStorage에 마커 → 같은 탭/윈도우의
+  //         모든 후속 reload·navigation에서 즉시 popup 인식(가장 robust).
+  const POPUP_MARK = 'ub_is_popup_window';
   function isPopupWindow() {
+    try { if (sessionStorage.getItem(POPUP_MARK) === '1') return true; } catch (_) {}
+    let popup = false;
     try {
-      if (!window.opener || window.opener === window) return false;
-      // chrome window UI 객체로 popup features 판정
-      if (typeof window.menubar !== 'undefined' && window.menubar.visible === false) return true;
-      if (typeof window.toolbar !== 'undefined' && window.toolbar.visible === false) return true;
-      // 작은 window(우리 POPUP_FEATURES width=1100). 일반 최대화 chrome은 1300+ 큼
-      if (window.outerWidth && window.outerWidth < 1300) return true;
+      if (typeof window.menubar !== 'undefined' && window.menubar.visible === false) popup = true;
+      else if (typeof window.toolbar !== 'undefined' && window.toolbar.visible === false) popup = true;
+      else if (typeof window.locationbar !== 'undefined' && window.locationbar.visible === false) popup = true;
+      else if (window.opener && window.opener !== window && window.outerWidth && window.outerWidth < 1300) popup = true;
     } catch (_) {}
-    return false;
+    if (popup) { try { sessionStorage.setItem(POPUP_MARK, '1'); } catch (_) {} }
+    return popup;
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.0.1 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0.2 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
