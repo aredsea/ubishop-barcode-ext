@@ -149,39 +149,45 @@
       // 스크롤 보존
       const oldScroll = window.scrollY || window.pageYOffset || 0;
 
-      // 본문 wrapper 만 교체 (body 는 안 건드림 → null 사고 방지)
-      curWrap.outerHTML = newWrap.outerHTML;
+      // 본문 wrapper 의 innerHTML 만 교체 — wrapper element 자체(curWrap reference)는
+      // 그대로 유지. outerHTML 로 하면 curWrap 이 detach 되어 후속 contains()
+      // 검사가 항상 false 가 되는 버그(wrapper 안 tooltip 까지 모두 제거) 발생.
+      curWrap.innerHTML = newWrap.innerHTML;
 
-      // 본문 wrapper 밖의 tooltip 종류들 sync (body 직속 또는 다른 위치).
+      // 본문 wrapper 밖의 tooltip 잔상 정리 (body 직속 또는 다른 위치).
+      // wrapper 안 tooltip 은 위 innerHTML 교체로 새 응답대로 들어감 → 보호.
       // 우리 사이드바 안의 tooltip 은 보호.
       try {
         document.querySelectorAll('div.tooltip2').forEach(t => {
           if (t.closest && t.closest('#ub-sidebar')) return;
-          // 본문 wrapper 안의 tooltip 은 이미 outerHTML 로 교체됨 — 다른 위치 것만 정리
-          if (curWrap.contains && curWrap.contains(t)) return;
+          if (curWrap.contains(t)) return;   // ★ innerHTML 교체로 curWrap 살아 있음
           t.remove();
         });
-        const newWrapBody = newWrap.parentElement === doc.body ? doc.body : null;
-        if (newWrapBody) {
-          Array.from(newWrapBody.querySelectorAll('div.tooltip2')).forEach(t => {
-            // 응답 본문 wrapper 안에 있는 tooltip 은 이미 swap 됨, 밖의 것만 body 에 추가
-            if (newWrap.contains && newWrap.contains(t)) return;
-            const clone = t.cloneNode(true);
-            if (document.body) document.body.appendChild(clone);
+        // 응답에서 wrapper 밖에 있던 tooltip 들도 같이 가져옴 (페이지가 그렇게 구성된 경우)
+        if (doc.body) {
+          Array.from(doc.body.querySelectorAll('div.tooltip2')).forEach(t => {
+            if (newWrap.contains(t)) return;   // wrapper 안은 이미 교체됨
+            if (document.body) {
+              document.body.appendChild(t.cloneNode(true));
+            }
           });
         }
       } catch (_) {}
 
-      // 응답 inline script 재실행 — 본문 wrapper 안에 있는 것 만 (head 안 script 는 이미 페이지 로드 시 실행됨).
-      // tooltip 데이터 매핑 같은 inline JS 가 본문에 있으면 갱신 필요.
+      // 응답 inline script 재실행 — 본문 wrapper 안 + body 직속 script(wrapper 밖).
+      // tooltip 데이터 매핑/함수 정의 등이 inline script 에 있으면 갱신 필요.
       try {
-        const newScripts = newWrap.querySelectorAll('script');
-        newScripts.forEach(s => {
+        // wrapper 안 script
+        const wrapScripts = Array.from(newWrap.querySelectorAll('script'));
+        // body 직속의 wrapper 밖 script
+        const bodyScripts = doc.body ? Array.from(doc.body.children).filter(c => c.tagName === 'SCRIPT') : [];
+        const allScripts = wrapScripts.concat(bodyScripts);
+        allScripts.forEach(s => {
           if (s.src) return;
           const code = (s.textContent || '').trim();
           if (!code) return;
-          // 위험 차단: document.write, location 변경 시도하면 skip
-          if (/document\.write|location\.(href|replace|assign)\s*=/.test(code)) return;
+          // 위험 차단: document.write, location 변경, document.body 직접 조작
+          if (/document\.write|location\.(href|replace|assign)\s*=|document\.body\s*=/.test(code)) return;
           try {
             const tmp = document.createElement('script');
             tmp.textContent = code;
@@ -194,10 +200,11 @@
       // 스크롤 복원
       try { window.scrollTo(0, oldScroll); } catch (_) {}
 
-      // 새 form 에 가로채기 재바인딩 (curWrap 교체로 form1 새로 만들어짐)
+      // 새 form 에 가로채기 재바인딩 (innerHTML 교체로 form1 element 새로 만들어짐)
+      // — wrapper element 는 유지지만 그 안 form 은 새 element 이므로 dataset 도 새것.
       setTimeout(() => { try { bind(); } catch (_) {} }, 0);
 
-      log('replaceTList: content wrapper swap (body intact)');
+      log('replaceTList: wrapper.innerHTML swap (body+wrapper intact, ref preserved)');
       return true;
     } catch (e) {
       console.warn('[UB][cache] replaceTList failed:', e);
