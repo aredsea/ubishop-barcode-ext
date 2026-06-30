@@ -147,7 +147,15 @@ async function runCacheSearch(msg, sender) {
   return { ok: true, chunks: out, totalMs, hits, miss, savedMs };
 }
 
-/* ---- 자동 갱신 체크 ------------------------------------------------------- */
+/* ---- 자동 갱신 체크 -------------------------------------------------------
+ * ⚠ v3.0.1 부터 chrome.runtime.reload() 자동 호출 폐기.
+ *   reload 시 진행 중인 인쇄/캐시 메시지가 끊겨 사용자 인쇄 실패 사례 발생.
+ *   대신 새 버전 감지 시 chrome.action badge 'NEW' + storage 플래그만 세팅.
+ *   실제 적용은: ①다음 chrome 재시작 시 폴더 manifest 자동 로드(압축해제 확장),
+ *               ②사용자가 popup에서 "지금 적용" 클릭 시 reload (수동).
+ *   매장 PC는 매일 chrome 켜고 끄므로 자연 적용.
+ * SW가 idle 후 깨어날 때마다 fetch 호출도 폐기 — 알람과 onStartup만으로 충분.
+ * ----------------------------------------------------------------------- */
 async function checkUpdate() {
   try {
     const r = await fetch(REMOTE_MANIFEST + '?_=' + Date.now(), { cache: 'no-cache' });
@@ -155,15 +163,21 @@ async function checkUpdate() {
     const remote = await r.json();
     const local = chrome.runtime.getManifest().version;
     if (remote.version && remote.version !== local) {
-      console.log('[UB][bg] new version', remote.version, 'current', local, '→ reload');
-      chrome.runtime.reload();
+      console.log('[UB][bg] new version', remote.version, 'local', local, '(restart chrome to apply)');
+      try { chrome.action.setBadgeText({ text: 'NEW' }); } catch (_) {}
+      try { chrome.action.setBadgeBackgroundColor({ color: '#35C5F0' }); } catch (_) {}
+      try { chrome.storage.local.set({ ubUpdateAvailable: remote.version }); } catch (_) {}
+    } else {
+      try { chrome.action.setBadgeText({ text: '' }); } catch (_) {}
+      try { chrome.storage.local.set({ ubUpdateAvailable: '' }); } catch (_) {}
     }
   } catch (e) { console.warn('[UB][bg] update check failed:', e && e.message); }
 }
 chrome.runtime.onStartup.addListener(checkUpdate);
 chrome.runtime.onInstalled.addListener(checkUpdate);
 try {
-  chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 30 });
+  // 60분(이전 30분) 주기. fetch 1회만 + reload 없음.
+  chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 60 });
   chrome.alarms.onAlarm.addListener(a => { if (a.name === UPDATE_ALARM) checkUpdate(); });
 } catch (e) {}
-checkUpdate();
+// ★ SW 깨어날 때마다 호출하던 checkUpdate(); 즉시호출 제거 — onStartup/onInstalled/알람만.

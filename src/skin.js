@@ -37,7 +37,23 @@
   // 자체 copy 이벤트를 트리거 → addBarcodes 재진입으로 순서 어그러짐 방지.
   let _suppressNextCopy = false;
 
-  try { console.log('[UB][skin] v3.0 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
+  // 팝업 창(window.open으로 띄운 별도 윈도우) 판정.
+  // - 우리 썸네일 popup(POPUP_FEATURES) + jsp 사이트의 imageView/공장검색/등
+  //   여기선 사이드바/페이지사이즈 redirect 다 skip(작업창 방해 금지).
+  function isPopupWindow() {
+    try {
+      if (!window.opener || window.opener === window) return false;
+      // chrome window UI 객체로 popup features 판정
+      if (typeof window.menubar !== 'undefined' && window.menubar.visible === false) return true;
+      if (typeof window.toolbar !== 'undefined' && window.toolbar.visible === false) return true;
+      // 작은 window(우리 POPUP_FEATURES width=1100). 일반 최대화 chrome은 1300+ 큼
+      if (window.outerWidth && window.outerWidth < 1300) return true;
+    } catch (_) {}
+    return false;
+  }
+  const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
+
+  try { console.log('[UB][skin] v3.0.1 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
@@ -202,6 +218,7 @@
    * ========================================================================== */
   function hasPageSizeParam() { return /[?&]pageSize=/.test(location.search); }
   function ensureDefaultPageSize() {
+    if (_IS_POPUP) return;   // 팝업 창에서는 redirect 금지(원본 작업 방해)
     if (!on('ubPageSize')) return;
     if (hasPageSizeParam()) return;
     if (sessionStorage.getItem('ub_ps_redirected_' + location.pathname)) return;
@@ -643,6 +660,13 @@
     if (h) h.remove();
   }
   function renderSidebar() {
+    // 팝업 창(상품수정/공장검색/imageView 등)에서는 사이드바·핸들 안 뜨게.
+    if (_IS_POPUP) {
+      const old = document.getElementById(SIDEBAR_ID); if (old) old.remove();
+      removeHandle();
+      document.documentElement.classList.remove('ub-sidebar-docked');
+      return;
+    }
     // 마스터 OFF: 모두 제거
     if (!on('ubSidebar')) {
       const old = document.getElementById(SIDEBAR_ID); if (old) old.remove();
