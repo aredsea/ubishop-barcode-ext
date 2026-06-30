@@ -147,17 +147,18 @@
    *  유비샵 페이지는 form submit 시 (a) #ajaxBox(loading.gif) 띄우고
    *  (b) <body> 자체를 display:none 처리한 다음 navigate 완료 시 둘 다 복원한다.
    *  우리가 가로채면 navigate 안 일어나서 body 가 영원히 hide → 흰 화면.
-   *  → 우리 흐름에서는 ①스피너 끄고 ②body/html/주요 wrap display 강제 복원.
+   *  capture-phase preventDefault + stopImmediatePropagation 만으로는 부족:
+   *  페이지의 onsubmit attribute (target-phase) 또는 다른 element 핸들러는
+   *  여전히 실행되어 body 를 hide 시킬 수 있음. → MutationObserver 로
+   *  지속 감시하다 display:none 검출 즉시 복원.
    */
   function hidePageLoaders() {
     try {
-      // 1) 로딩 스피너 끄기
       const ajaxBox = document.getElementById('ajaxBox');
       if (ajaxBox) ajaxBox.style.display = 'none';
       document.querySelectorAll('#ajaxBox, .ajaxBox, .ajax_box, .ajax-box').forEach(el => {
         if (el && el.style) el.style.display = 'none';
       });
-      // 2) body / html / 주요 컨테이너 display:none 복원 (페이지가 form submit 시 hide 함)
       if (document.body && document.body.style.display === 'none') document.body.style.display = '';
       if (document.documentElement && document.documentElement.style.display === 'none') document.documentElement.style.display = '';
       document.querySelectorAll('#wrap, #container, #content, #main, .wrap, .container, .content, .main').forEach(el => {
@@ -166,15 +167,87 @@
     } catch (_) {}
   }
 
-  /* ---- 사이드바 통계 sync (skin.js ISOLATED world 가 listen) ----
+  /* ---- body/html display:none 영구 감시 가드 ----
+   *  IIFE 시작 시 1회 설치. body 와 html 의 style 속성 변화를 감시 → 누가
+   *  display:none 으로 바꾸면 즉시 복원. 페이지의 onsubmit attribute 처럼
+   *  capture phase 에서 차단 불가한 코드에 대한 최후 방어선.
+   */
+  function installVisibilityGuard() {
+    try {
+      if (window.__ubVisibilityGuard) return;
+      window.__ubVisibilityGuard = true;
+      const restore = () => {
+        if (document.body && document.body.style.display === 'none') {
+          document.body.style.display = '';
+        }
+        if (document.documentElement && document.documentElement.style.display === 'none') {
+          document.documentElement.style.display = '';
+        }
+      };
+      const mo = new MutationObserver(restore);
+      const observe = () => {
+        if (document.body) mo.observe(document.body, { attributes: true, attributeFilter: ['style'] });
+        if (document.documentElement) mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+      };
+      observe();
+      // 초기 1회 — 이미 hide 되어 있을 수도
+      restore();
+      log('visibility guard installed');
+    } catch (e) { console.warn('[UB][cache] visibility guard failed:', e); }
+  }
+  installVisibilityGuard();
+
+  /* ---- 통계 영구 저장 (localStorage) ----
+   *  cacheStat 은 skin.js 메모리에만 있어 F5 시 0으로 리셋. localStorage 에
+   *  cache-intercept 측에서 누적값 저장 + 페이지 로드 시 그 누적값을 한 번에
+   *  postMessage 로 skin.js 에 전달 → 사이드바 카드가 F5 후에도 누적값 유지.
+   */
+  const STATS_KEY = 'UB_CACHE_STATS_v1';
+  function loadPersistedStats() {
+    try {
+      const raw = localStorage.getItem(STATS_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      if (s && typeof s === 'object') return s;
+    } catch (_) {}
+    return null;
+  }
+  function savePersistedStats(s) {
+    try { localStorage.setItem(STATS_KEY, JSON.stringify(s)); } catch (_) {}
+  }
+  const persisted = loadPersistedStats() || { hits: 0, miss: 0, fillMs: 0, savedMs: 0, lastMs: 0 };
+  // 페이지 로드 시 skin.js 에 누적값 전달 (delta = 현재 저장된 절대값)
+  // skin.js listener 는 += 누적 모델이라 boot 시 한 번 보내면 누적치 복원.
+  setTimeout(() => {
+    try {
+      window.postMessage({
+        source: 'ub-cache-stat',
+        hits: persisted.hits, miss: persisted.miss,
+        fillMs: persisted.fillMs, savedMs: persisted.savedMs,
+        lastMs: persisted.lastMs
+      }, '*');
+    } catch (_) {}
+  }, 300);   // skin.js renderSidebar 가 한 사이클 돈 후
+
+  /* ---- 사이드바 통계 sync (skin.js ISOLATED world 가 listen) + 영구 저장 ----
    *  MAIN world 인 우리는 chrome.runtime 직접 못 씀 → window.postMessage 로
-   *  같은 페이지의 skin.js 에 누적 delta 보냄. skin.js 에는 이미 listener
+   *  같은 페이지의 skin.js 에 delta 보냄. skin.js 에는 이미 listener
    *  존재(message.source === 'ub-cache-stat').
+   *  동시에 localStorage 의 누적값도 update → F5 후 boot 시 복원.
    */
   function postStats(delta) {
     try {
       const msg = Object.assign({ source: 'ub-cache-stat' }, delta || {});
       window.postMessage(msg, '*');
+      // localStorage 누적 갱신
+      if (delta && typeof delta === 'object') {
+        if (delta.hits)    persisted.hits    += delta.hits;
+        if (delta.miss)    persisted.miss    += delta.miss;
+        if (delta.fillMs)  persisted.fillMs  += delta.fillMs;
+        if (delta.savedMs) persisted.savedMs += delta.savedMs;
+        if (typeof delta.lastMs === 'number') persisted.lastMs = delta.lastMs;
+        savePersistedStats(persisted);
+      }
     } catch (_) {}
   }
 
