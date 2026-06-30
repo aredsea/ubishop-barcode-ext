@@ -1,32 +1,40 @@
 /* =============================================================================
  *  skin.js — 유비샵 스킨모드. ISOLATED, all_frames, document_start.
- *  팝업(확장 액션)에서 마스터(ubSkin) + 세부옵션을 토글한다. 기본 OFF.
  *
- *  세부옵션 (모두 ubSkin 게이팅):
- *    ubDark      : 다크 테마(실제 색상 매핑, invert 폐기)
- *    ubThumbEdit : 기초상품관리 이미지보기에서 썸네일 클릭 → 상품수정 새 창
- *    ubSidebar   : 좌측 플로팅 사이드바(날짜 빠른선택 등) — 기본 ON
- *    ubPageSize  : 리스트 페이지 기본 100 + 옵션 100/300/500 — 기본 ON
- *    ubAutoSync  : 전표 자동 분할조회+캐시(아직 미구현, 토글만) — 기본 OFF
+ *  세부옵션 (모두 ubSkin 게이팅, ubSkin은 마스터):
+ *    ubDark        : 다크 테마(실제 색상 매핑)
+ *    ubThumbEdit   : 기초상품관리 이미지보기 썸네일 클릭 → 상품수정 새 창
+ *    ubSidebar     : 좌측/플로팅 D102 도구 사이드바
+ *    ubPageSize    : 리스트 페이지 기본 100 + 옵션 100/300/500
+ *    ubAutoSync    : 전표 자동 분할조회+캐시(아직 미구현, 토글만)
  *
- *  v2.6.0 — invert 다크 폐기, 실제 다크 테마. 사이드바/페이지사이즈/A안 토글 추가.
- *  v2.5.0 — frameset safety + 썸네일 보강(stopImmediatePropagation).
+ *  영구 상태:
+ *    ubSbMode  : 'docked' | 'floating'   (default docked)
+ *    ubSbX, ubSbY : floating 위치(px)
+ *    ubSbCollapsed: true 면 접힘
+ *    ubBarcodes : 사용자 복사 바코드 [{c,t}] (최대 12, FIFO)
+ *
+ *  v2.7.0 — 날짜=select 변경(검색X) / 사이드바 floating·드래그·핸들 / 바코드 클립보드.
+ *  v2.6.0 — invert 폐기, 실제 다크 / 사이드바 / 페이지사이즈 / 썸네일 보강.
  * ========================================================================== */
 (function () {
   'use strict';
 
   const D = {
     ubSkin: false, ubDark: false, ubThumbEdit: true,
-    ubSidebar: true, ubPageSize: true, ubAutoSync: false
+    ubSidebar: true, ubPageSize: true, ubAutoSync: false,
+    ubSbMode: 'docked', ubSbX: 24, ubSbY: 24, ubSbCollapsed: false,
+    ubBarcodes: []
   };
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
+  const MAX_BARCODES = 12;
+  const BARCODE_RE = /\b\d{2,5}[A-Z]{1,3}\d{0,3}\b/g;   // 2606WH / 24010D / 230M56 등
 
-  try { console.log('[UB][skin] v2.6 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
+  try { console.log('[UB][skin] v2.7 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
 
   /* ==========================================================================
    *  1) 다크 테마 — invert 폐기, 실제 색상 매핑.
-   *     팔레트: GitHub dark dimmed + 시안 액센트(#35C5F0).
    * ========================================================================== */
   const DARK_STYLE_ID = 'ub-dark-style';
   const DARK_CSS = `
@@ -58,7 +66,6 @@
     html.ub-dark a:hover { color: #35C5F0 !important; }
     html.ub-dark img { opacity: 0.92; }
     html.ub-dark hr { border-color: #30363d !important; background-color: #30363d !important; }
-    /* 검색 결과 강조행/합계행이 inline bgcolor 쓰는 경우 흔함 — 어둡게 덮어쓰기 */
     html.ub-dark [bgcolor], html.ub-dark [style*="background-color"], html.ub-dark [style*="background:"] {
       background-color: #161b22 !important;
     }
@@ -66,21 +73,15 @@
     html.ub-dark [bgcolor="#FFFFFF"], html.ub-dark [bgcolor="#ffffff"], html.ub-dark [bgcolor="white"] {
       background-color: #161b22 !important;
     }
-    /* note 툴팁(div.tooltip2) */
     html.ub-dark div.tooltip2, html.ub-dark .tooltip2 {
       background-color: #21262d !important; color: #e6edf3 !important;
       border: 1px solid #30363d !important; box-shadow: 0 8px 24px rgba(0,0,0,.4) !important;
     }
-    /* select option 풀다운 */
     html.ub-dark option { background-color: #161b22 !important; color: #e6edf3 !important; }
-    /* placeholder */
     html.ub-dark ::placeholder { color: #6e7681 !important; opacity: 1 !important; }
-    /* 강조 텍스트 흰색 유지 */
     html.ub-dark b, html.ub-dark strong { color: #e6edf3 !important; }
-    /* 셀렉션 색 */
     html.ub-dark ::selection { background: rgba(53,197,240,.35) !important; color: #fff !important; }
-    /* 우리 사이드바 본체는 다크의 영향 받지 않게 (자기 CSS 사용) */
-    html.ub-dark .ub-sidebar, html.ub-dark .ub-sidebar * {
+    html.ub-dark .ub-sidebar, html.ub-dark .ub-sidebar *, html.ub-dark .ub-sb-handle, html.ub-dark .ub-sb-handle * {
       background-color: initial; color: initial; border-color: initial;
     }
   `;
@@ -98,10 +99,7 @@
   }
 
   /* ==========================================================================
-   *  2) 썸네일 → 상품수정 새 창 (기초상품관리 이미지보기)
-   *     - MutationObserver 로 동적 추가 img 도 잡음
-   *     - capture 단계 + stopImmediatePropagation + mousedown/mouseup/click 다 차단
-   *     - 부모 a 태그 navigation 도 무력화
+   *  2) 썸네일 → 상품수정 새 창
    * ========================================================================== */
   const MASTER_RE = /\/master\/item\/masterItemList/i;
   function isThumb(im) {
@@ -115,17 +113,15 @@
     if (img.dataset.ubEdit) return;
     img.dataset.ubEdit = seq;
     img.style.cursor = 'pointer';
-    img.title = '상품 수정 (새 창으로 열기)';
+    img.title = '상품 수정 (새 창)';
     const block = (e) => {
       if (!on('ubThumbEdit')) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
+      e.preventDefault(); e.stopImmediatePropagation();
       if (e.type === 'click') window.open(editUrl(seq), '_blank');
     };
     ['mousedown', 'mouseup', 'click'].forEach(ev => img.addEventListener(ev, block, true));
     img.addEventListener('mouseenter', () => { if (on('ubThumbEdit')) img.style.outline = '2px solid #35C5F0'; });
     img.addEventListener('mouseleave', () => { img.style.outline = ''; });
-    // 부모 a 태그 navigation 도 차단
     const a = img.closest('a');
     if (a && !a.dataset.ubEdit) {
       a.dataset.ubEdit = seq;
@@ -136,7 +132,6 @@
       }, true));
     }
   }
-  // 썸네일 IMG 바로 뒤 idx 체크박스(value=seq) 페어링
   function bindThumbEdit(root) {
     if (!MASTER_RE.test(location.pathname)) return;
     const scope = root || document;
@@ -152,26 +147,19 @@
   }
 
   /* ==========================================================================
-   *  3) 페이지사이즈 — 검색/주문전표/발주전표/입고전표/매장출고전표 등
-   *     리스트 페이지에서 pageSize 옵션에 100/300/500 추가 + 첫 진입 100.
+   *  3) 페이지사이즈
    * ========================================================================== */
-  // pageSize 파라미터를 쓰는 페이지(URL 쿼리에 명시적으로 등장)인지 확인.
-  function hasPageSizeParam() {
-    return /[?&]pageSize=/.test(location.search);
-  }
-  // 진입 시 pageSize 파라미터 없으면 기본 100으로 1회 redirect.
+  function hasPageSizeParam() { return /[?&]pageSize=/.test(location.search); }
   function ensureDefaultPageSize() {
     if (!on('ubPageSize')) return;
     if (hasPageSizeParam()) return;
     if (sessionStorage.getItem('ub_ps_redirected_' + location.pathname)) return;
-    // 리스트 페이지로 보이는 경우만(가벼운 휴리스틱): URL 끝이 List.do 또는 ListForm.do
     if (!/(List|ListForm)\.do$/i.test(location.pathname)) return;
     sessionStorage.setItem('ub_ps_redirected_' + location.pathname, '1');
     const u = new URL(location.href);
     u.searchParams.set('pageSize', '100');
     location.replace(u.toString());
   }
-  // select[name=pageSize] 옵션 추가(중복 방지) + 100 selected.
   function injectPageSizeOptions() {
     if (!on('ubPageSize')) return;
     const sels = document.querySelectorAll('select[name=pageSize]');
@@ -185,94 +173,16 @@
           sel.appendChild(op);
         }
       });
-      // 현재 URL pageSize 와 select 값 동기화
       const cur = new URL(location.href).searchParams.get('pageSize') || '20';
       if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
     });
   }
 
   /* ==========================================================================
-   *  4) 좌측 사이드바 — floating fixed, 항상 유지.
-   *     첫 기능: 날짜 빠른선택(오늘/어제/3일/7일/한달/분기/일년).
+   *  4) 날짜 빠른선택 — select 값만 변경(검색은 사용자가 직접).
    * ========================================================================== */
-  const SIDEBAR_ID = 'ub-sidebar';
-  const SIDEBAR_STYLE_ID = 'ub-sidebar-style';
-  const SIDEBAR_CSS = `
-    .ub-sidebar {
-      position: fixed; top: 0; left: 0; width: 220px; height: 100vh;
-      background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
-      border-right: 1px solid #e5e7eb; box-shadow: 2px 0 12px rgba(15,20,25,.06);
-      z-index: 2147483646; font-family: 'Pretendard','Malgun Gothic',sans-serif;
-      color: #1b1b1b; padding: 14px 12px; box-sizing: border-box; overflow-y: auto;
-      transition: transform .2s ease;
-    }
-    .ub-sidebar.ub-collapsed { transform: translateX(-200px); }
-    html.ub-dark .ub-sidebar {
-      background: linear-gradient(180deg, #161b22 0%, #0d1117 100%) !important;
-      border-right-color: #30363d !important; color: #c9d1d9 !important;
-      box-shadow: 2px 0 12px rgba(0,0,0,.4) !important;
-    }
-    .ub-sidebar .ub-sb-hd {
-      display: flex; align-items: center; gap: 8px;
-      padding: 4px 4px 12px; border-bottom: 1px solid #eef0f3; margin-bottom: 12px;
-    }
-    html.ub-dark .ub-sidebar .ub-sb-hd { border-bottom-color: #30363d !important; }
-    .ub-sidebar .ub-sb-hd .ub-sb-dot { width: 8px; height: 8px; border-radius: 50%; background: #35C5F0; }
-    .ub-sidebar .ub-sb-hd .ub-sb-title { font-size: 13px; font-weight: 700; }
-    .ub-sidebar .ub-sb-hd .ub-sb-toggle {
-      margin-left: auto; width: 22px; height: 22px; border: 1px solid #e5e7eb; background: #fff;
-      border-radius: 6px; cursor: pointer; font-size: 11px; color: #6b7280; line-height: 1;
-    }
-    html.ub-dark .ub-sidebar .ub-sb-hd .ub-sb-toggle {
-      background: #0d1117 !important; border-color: #30363d !important; color: #9ca5b5 !important;
-    }
-    .ub-sidebar .ub-sb-sect { margin-bottom: 16px; }
-    .ub-sidebar .ub-sb-sect-t {
-      font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
-      color: #6b7280; text-transform: uppercase; margin: 0 4px 8px;
-    }
-    html.ub-dark .ub-sidebar .ub-sb-sect-t { color: #8b949e !important; }
-    .ub-sidebar .ub-sb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .ub-sidebar .ub-sb-btn {
-      display: flex; align-items: center; justify-content: center; gap: 4px;
-      padding: 9px 6px; border: 1px solid #e5e7eb; background: #fff; border-radius: 8px;
-      font-size: 12px; font-weight: 600; color: #374151; cursor: pointer;
-      transition: all .12s ease; user-select: none;
-    }
-    html.ub-dark .ub-sidebar .ub-sb-btn {
-      background: #0d1117 !important; border-color: #30363d !important; color: #c9d1d9 !important;
-    }
-    .ub-sidebar .ub-sb-btn:hover {
-      border-color: #35C5F0; color: #0f8fb8; background: #f0f9ff;
-    }
-    html.ub-dark .ub-sidebar .ub-sb-btn:hover {
-      background: #1c2733 !important; color: #58c5f0 !important; border-color: #35C5F0 !important;
-    }
-    .ub-sidebar .ub-sb-btn.ub-sb-wide { grid-column: 1 / -1; }
-    .ub-sidebar .ub-sb-empty {
-      padding: 12px; text-align: center; font-size: 11px; color: #9ca3af;
-      background: #f9fafb; border-radius: 8px; border: 1px dashed #e5e7eb;
-    }
-    html.ub-dark .ub-sidebar .ub-sb-empty {
-      background: #161b22 !important; color: #6e7681 !important; border-color: #30363d !important;
-    }
-    /* 페이지 본문 좌측 여백 — 사이드바 너비만큼 밀기 */
-    html.ub-sidebar-on body { margin-left: 224px !important; }
-    /* 작은 화면: 사이드바 접힘 + 본문 여백 제거 */
-    @media (max-width: 900px) {
-      html.ub-sidebar-on body { margin-left: 0 !important; }
-      .ub-sidebar { transform: translateX(-200px); }
-      .ub-sidebar:hover { transform: none; }
-    }
-  `;
-  function ensureSidebarStyle() {
-    if (document.getElementById(SIDEBAR_STYLE_ID)) return;
-    const s = document.createElement('style');
-    s.id = SIDEBAR_STYLE_ID; s.textContent = SIDEBAR_CSS;
-    (document.head || document.documentElement).appendChild(s);
-  }
-  // YYYY-MM-DD 분해
   function ymd(d) { return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() }; }
+  function pad2(n) { return String(n).padStart(2, '0'); }
   function dateRange(kind) {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -280,86 +190,377 @@
     switch (kind) {
       case 'today':     break;
       case 'yesterday': start.setDate(today.getDate() - 1); end.setDate(today.getDate() - 1); break;
-      case 'd3':        start.setDate(today.getDate() - 2); break;        // today 포함 3일
-      case 'd7':        start.setDate(today.getDate() - 6); break;        // today 포함 7일
+      case 'd3':        start.setDate(today.getDate() - 2); break;
+      case 'd7':        start.setDate(today.getDate() - 6); break;
       case 'm1':        start.setMonth(today.getMonth() - 1); break;
       case 'q1':        start.setMonth(today.getMonth() - 3); break;
       case 'y1':        start.setFullYear(today.getFullYear() - 1); break;
     }
     return { s: ymd(start), e: ymd(end) };
   }
-  function pad2(n) { return String(n).padStart(2, '0'); }
-  // 현재 URL에 syear/smonth/sday/eyear/emonth/eday 만 갈아끼우고 navigate.
-  // (pageSize/searchSortType 등 다른 파라미터는 보존)
-  function applyDateRange(kind) {
+  // 페이지 폼의 syear/smonth/sday/eyear/emonth/eday 값만 변경. 검색은 X.
+  function setDateSelects(kind) {
     const r = dateRange(kind);
-    const u = new URL(location.href);
-    u.searchParams.set('syear', String(r.s.y));
-    u.searchParams.set('smonth', pad2(r.s.m));
-    u.searchParams.set('sday',  pad2(r.s.d));
-    u.searchParams.set('eyear', String(r.e.y));
-    u.searchParams.set('emonth', pad2(r.e.m));
-    u.searchParams.set('eday',  pad2(r.e.d));
-    u.searchParams.set('reqPage', '1');
-    // 페이지사이즈 옵션 켜져 있고 명시 안 됐으면 100
-    if (on('ubPageSize') && !u.searchParams.has('pageSize')) u.searchParams.set('pageSize', '100');
-    location.href = u.toString();
+    const map = {
+      syear: String(r.s.y), smonth: pad2(r.s.m), sday: pad2(r.s.d),
+      eyear: String(r.e.y), emonth: pad2(r.e.m), eday: pad2(r.e.d)
+    };
+    let changed = 0;
+    for (const [name, val] of Object.entries(map)) {
+      const els = document.querySelectorAll(`select[name="${name}"], input[name="${name}"]`);
+      els.forEach(el => {
+        if (el.tagName === 'SELECT') {
+          // 옵션에 없으면 추가(예: pad2 미일치 등 edge case)
+          if (![...el.options].some(o => o.value === val)) {
+            const op = document.createElement('option');
+            op.value = val; op.text = val;
+            el.appendChild(op);
+          }
+          el.value = val;
+        } else {
+          el.value = val;
+        }
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        changed++;
+      });
+    }
+    return changed;
   }
-  // 현재 페이지가 날짜 파라미터를 받는 페이지인지(syear 파라미터가 있거나, 리스트 페이지 패턴)
+
+  /* ==========================================================================
+   *  5) 바코드 클립보드 — 사용자 복사 시 자동 감지 + 사이드바 버튼 12개.
+   * ========================================================================== */
+  function extractBarcodes(text) {
+    if (!text) return [];
+    const found = (text.match(BARCODE_RE) || []).map(s => s.toUpperCase());
+    // 너무 일반적인 패턴(예: 영문이 없는 순수 숫자) 제외 — 정규식이 [A-Z] 강제하니 이미 OK
+    return [...new Set(found)];
+  }
+  function addBarcodes(list) {
+    if (!list.length) return false;
+    let cur = Array.isArray(state.ubBarcodes) ? [...state.ubBarcodes] : [];
+    let added = false;
+    const now = Date.now();
+    for (const code of list) {
+      // 중복: 같은 코드 있으면 최신으로 갱신(올림)
+      const idx = cur.findIndex(b => b.c === code);
+      if (idx >= 0) cur.splice(idx, 1);
+      cur.unshift({ c: code, t: now });
+      added = true;
+    }
+    cur = cur.slice(0, MAX_BARCODES);
+    state.ubBarcodes = cur;
+    try { chrome.storage.local.set({ ubBarcodes: cur }); } catch (_) {}
+    return added;
+  }
+  function copyToClipboard(text) {
+    try {
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    } catch (_) { fallbackCopy(text); }
+  }
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    ta.remove();
+  }
+  function bindCopyListener() {
+    document.addEventListener('copy', () => {
+      if (!on('ubSidebar')) return;   // 사이드바 OFF면 수집도 안 함
+      const sel = window.getSelection ? window.getSelection().toString() : '';
+      const codes = extractBarcodes(sel);
+      if (codes.length && addBarcodes(codes)) renderSidebar();
+    }, true);
+  }
+
+  /* ==========================================================================
+   *  6) 좌측/플로팅 사이드바 + 드래그 + 접힌 핸들
+   * ========================================================================== */
+  const SIDEBAR_ID = 'ub-sidebar';
+  const HANDLE_ID = 'ub-sb-handle';
+  const SIDEBAR_STYLE_ID = 'ub-sidebar-style';
+  const SIDEBAR_CSS = `
+    .ub-sidebar {
+      width: 240px; background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
+      border: 1px solid #e5e7eb; box-shadow: 0 8px 24px rgba(15,20,25,.08);
+      border-radius: 12px; z-index: 2147483646;
+      font-family: 'Pretendard','Malgun Gothic',sans-serif; color: #1b1b1b;
+      padding: 12px; box-sizing: border-box; overflow-y: auto;
+      transition: opacity .15s ease;
+    }
+    .ub-sidebar.ub-mode-docked {
+      position: fixed; top: 0; left: 0; height: 100vh; width: 240px;
+      border-radius: 0; border-left: none; border-top: none; border-bottom: none;
+      box-shadow: 2px 0 12px rgba(15,20,25,.06);
+      background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
+    }
+    .ub-sidebar.ub-mode-floating {
+      position: fixed; max-height: calc(100vh - 48px);
+    }
+    .ub-sidebar.ub-collapsed { display: none; }
+    html.ub-dark .ub-sidebar {
+      background: linear-gradient(180deg, #161b22 0%, #0d1117 100%) !important;
+      border-color: #30363d !important; color: #c9d1d9 !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,.5) !important;
+    }
+    html.ub-sidebar-docked body { margin-left: 244px !important; }
+    @media (max-width: 900px) { html.ub-sidebar-docked body { margin-left: 0 !important; } }
+
+    .ub-sidebar .ub-sb-hd {
+      display: flex; align-items: center; gap: 6px;
+      padding: 2px 4px 10px; border-bottom: 1px solid #eef0f3; margin-bottom: 10px;
+      cursor: default;
+    }
+    .ub-sidebar.ub-mode-floating .ub-sb-hd { cursor: move; }
+    html.ub-dark .ub-sidebar .ub-sb-hd { border-bottom-color: #30363d !important; }
+    .ub-sidebar .ub-sb-dot { width: 8px; height: 8px; border-radius: 50%; background: #35C5F0; flex: none; }
+    .ub-sidebar .ub-sb-title { font-size: 13px; font-weight: 700; }
+    .ub-sidebar .ub-sb-actions { margin-left: auto; display: flex; gap: 4px; }
+    .ub-sidebar .ub-ico {
+      width: 22px; height: 22px; border: 1px solid #e5e7eb; background: #fff;
+      border-radius: 6px; cursor: pointer; font-size: 12px; color: #6b7280;
+      line-height: 20px; text-align: center; padding: 0; flex: none;
+    }
+    .ub-sidebar .ub-ico:hover { border-color: #35C5F0; color: #0f8fb8; }
+    html.ub-dark .ub-sidebar .ub-ico {
+      background: #0d1117 !important; border-color: #30363d !important; color: #9ca5b5 !important;
+    }
+    html.ub-dark .ub-sidebar .ub-ico:hover { background: #1c2733 !important; color: #58c5f0 !important; }
+
+    .ub-sidebar .ub-sb-sect { margin-bottom: 14px; }
+    .ub-sidebar .ub-sb-sect-t {
+      font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
+      color: #6b7280; text-transform: uppercase; margin: 0 4px 6px;
+    }
+    html.ub-dark .ub-sidebar .ub-sb-sect-t { color: #8b949e !important; }
+    .ub-sidebar .ub-sb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .ub-sidebar .ub-sb-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+    .ub-sidebar .ub-sb-btn {
+      display: flex; align-items: center; justify-content: center;
+      padding: 8px 4px; border: 1px solid #e5e7eb; background: #fff; border-radius: 7px;
+      font-size: 11.5px; font-weight: 600; color: #374151; cursor: pointer;
+      transition: all .12s ease; user-select: none; line-height: 1.1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    html.ub-dark .ub-sidebar .ub-sb-btn {
+      background: #0d1117 !important; border-color: #30363d !important; color: #c9d1d9 !important;
+    }
+    .ub-sidebar .ub-sb-btn:hover { border-color: #35C5F0; color: #0f8fb8; background: #f0f9ff; }
+    html.ub-dark .ub-sidebar .ub-sb-btn:hover {
+      background: #1c2733 !important; color: #58c5f0 !important; border-color: #35C5F0 !important;
+    }
+    .ub-sidebar .ub-sb-btn.ub-sb-wide { grid-column: 1 / -1; }
+    .ub-sidebar .ub-sb-btn.ub-bc-btn { font-family: ui-monospace, 'Consolas', monospace; font-size: 11px; padding: 7px 3px; }
+    .ub-sidebar .ub-sb-empty {
+      padding: 10px; text-align: center; font-size: 10.5px; color: #9ca3af;
+      background: #f9fafb; border-radius: 7px; border: 1px dashed #e5e7eb;
+      line-height: 1.5;
+    }
+    html.ub-dark .ub-sidebar .ub-sb-empty {
+      background: #161b22 !important; color: #6e7681 !important; border-color: #30363d !important;
+    }
+    .ub-sidebar .ub-toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      padding: 8px 14px; background: rgba(15,20,25,.92); color: #fff;
+      border-radius: 999px; font-size: 12px; z-index: 2147483647;
+      pointer-events: none; opacity: 0; transition: opacity .2s;
+    }
+    .ub-sidebar .ub-toast.show { opacity: 1; }
+
+    /* 접힌 상태 핸들 — 사이드바 숨김 시 좌측 가장자리에 노출 */
+    #ub-sb-handle {
+      position: fixed; top: 50%; left: 0; transform: translateY(-50%);
+      width: 22px; height: 60px; background: #35C5F0; color: #fff;
+      border: none; border-radius: 0 8px 8px 0; cursor: pointer;
+      font-size: 14px; font-weight: 700; z-index: 2147483645;
+      box-shadow: 2px 0 8px rgba(15,20,25,.15); padding: 0; line-height: 60px;
+    }
+    #ub-sb-handle:hover { background: #2bb5e0; width: 26px; }
+  `;
+  function ensureSidebarStyle() {
+    if (document.getElementById(SIDEBAR_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = SIDEBAR_STYLE_ID; s.textContent = SIDEBAR_CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
   function isDateSearchPage() {
     const sp = new URLSearchParams(location.search);
     if (sp.has('syear') || sp.has('eyear')) return true;
     return /(List|ListForm)\.do$/i.test(location.pathname);
   }
+  function showToast(bar, msg) {
+    let t = bar.querySelector('.ub-toast');
+    if (!t) { t = document.createElement('div'); t.className = 'ub-toast'; bar.appendChild(t); }
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(showToast._h);
+    showToast._h = setTimeout(() => t.classList.remove('show'), 1400);
+  }
+  function applySbPosition(bar) {
+    if (state.ubSbMode === 'docked') {
+      bar.style.left = ''; bar.style.top = '';
+      document.documentElement.classList.add('ub-sidebar-docked');
+    } else {
+      const maxX = Math.max(0, window.innerWidth - 260);
+      const maxY = Math.max(0, window.innerHeight - 200);
+      const x = Math.min(Math.max(0, state.ubSbX | 0), maxX);
+      const y = Math.min(Math.max(0, state.ubSbY | 0), maxY);
+      bar.style.left = x + 'px'; bar.style.top = y + 'px';
+      document.documentElement.classList.remove('ub-sidebar-docked');
+    }
+  }
+  function bindDrag(bar) {
+    const hd = bar.querySelector('.ub-sb-hd');
+    if (!hd) return;
+    let dragging = false, ox = 0, oy = 0;
+    hd.addEventListener('mousedown', (e) => {
+      if (state.ubSbMode !== 'floating') return;
+      if (e.target.closest('.ub-ico')) return;   // 아이콘 클릭은 드래그 X
+      dragging = true;
+      const rect = bar.getBoundingClientRect();
+      ox = e.clientX - rect.left; oy = e.clientY - rect.top;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      let x = e.clientX - ox, y = e.clientY - oy;
+      x = Math.min(Math.max(0, x), window.innerWidth - 60);
+      y = Math.min(Math.max(0, y), window.innerHeight - 60);
+      bar.style.left = x + 'px'; bar.style.top = y + 'px';
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      const x = parseInt(bar.style.left) || 24, y = parseInt(bar.style.top) || 24;
+      state.ubSbX = x; state.ubSbY = y;
+      try { chrome.storage.local.set({ ubSbX: x, ubSbY: y }); } catch (_) {}
+    });
+  }
+  function ensureHandle() {
+    if (document.getElementById(HANDLE_ID)) return;
+    if (!document.body) return;
+    const h = document.createElement('button');
+    h.id = HANDLE_ID; h.textContent = '›'; h.title = 'D102 도구 열기';
+    h.addEventListener('click', () => {
+      state.ubSbCollapsed = false;
+      try { chrome.storage.local.set({ ubSbCollapsed: false }); } catch (_) {}
+      renderSidebar();
+    });
+    document.body.appendChild(h);
+  }
+  function removeHandle() {
+    const h = document.getElementById(HANDLE_ID);
+    if (h) h.remove();
+  }
   function renderSidebar() {
+    // 마스터 OFF: 모두 제거
     if (!on('ubSidebar')) {
-      const old = document.getElementById(SIDEBAR_ID);
-      if (old) old.remove();
-      document.documentElement.classList.remove('ub-sidebar-on');
+      const old = document.getElementById(SIDEBAR_ID); if (old) old.remove();
+      removeHandle();
+      document.documentElement.classList.remove('ub-sidebar-docked');
       return;
     }
     if (!document.body) return;
     ensureSidebarStyle();
-    document.documentElement.classList.add('ub-sidebar-on');
+
+    // 접힘 상태: 사이드바 숨기고 핸들만 노출
+    if (state.ubSbCollapsed) {
+      const old = document.getElementById(SIDEBAR_ID); if (old) old.remove();
+      document.documentElement.classList.remove('ub-sidebar-docked');
+      ensureHandle();
+      return;
+    }
+    removeHandle();
+
     let bar = document.getElementById(SIDEBAR_ID);
     if (!bar) {
       bar = document.createElement('aside');
-      bar.id = SIDEBAR_ID; bar.className = 'ub-sidebar';
+      bar.id = SIDEBAR_ID;
       document.body.appendChild(bar);
     }
-    const dateSect = isDateSearchPage() ? `
-      <div class="ub-sb-sect">
-        <div class="ub-sb-sect-t">날짜 빠른선택</div>
-        <div class="ub-sb-grid">
-          <button class="ub-sb-btn" data-r="today">오늘</button>
-          <button class="ub-sb-btn" data-r="yesterday">어제</button>
-          <button class="ub-sb-btn" data-r="d3">3일간</button>
-          <button class="ub-sb-btn" data-r="d7">7일간</button>
-          <button class="ub-sb-btn" data-r="m1">한 달</button>
-          <button class="ub-sb-btn" data-r="q1">분기</button>
-          <button class="ub-sb-btn ub-sb-wide" data-r="y1">일 년</button>
-        </div>
-      </div>
-    ` : `
-      <div class="ub-sb-empty">날짜 검색이 가능한<br>리스트 페이지에서<br>빠른선택이 표시됩니다.</div>
-    `;
+    bar.className = 'ub-sidebar ub-mode-' + (state.ubSbMode === 'floating' ? 'floating' : 'docked');
+
+    const isFloat = state.ubSbMode === 'floating';
+    const dateBtns = isDateSearchPage();
+    const codes = Array.isArray(state.ubBarcodes) ? state.ubBarcodes : [];
+
     bar.innerHTML = `
       <div class="ub-sb-hd">
         <div class="ub-sb-dot"></div>
         <div class="ub-sb-title">D102 도구</div>
-        <button class="ub-sb-toggle" title="사이드바 접기">‹</button>
+        <div class="ub-sb-actions">
+          <button class="ub-ico" data-act="mode" title="${isFloat ? '왼쪽으로 붙이기' : '플로팅 모드'}">${isFloat ? '⇤' : '⇱'}</button>
+          <button class="ub-ico" data-act="collapse" title="접기">×</button>
+        </div>
       </div>
-      ${dateSect}
+
+      ${dateBtns ? `
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">날짜 빠른선택 (검색은 직접)</div>
+          <div class="ub-sb-grid">
+            <button class="ub-sb-btn" data-r="today">오늘</button>
+            <button class="ub-sb-btn" data-r="yesterday">어제</button>
+            <button class="ub-sb-btn" data-r="d3">3일간</button>
+            <button class="ub-sb-btn" data-r="d7">7일간</button>
+            <button class="ub-sb-btn" data-r="m1">한 달</button>
+            <button class="ub-sb-btn" data-r="q1">분기</button>
+            <button class="ub-sb-btn ub-sb-wide" data-r="y1">일 년</button>
+          </div>
+        </div>
+      ` : `
+        <div class="ub-sb-empty">날짜 검색이 가능한<br>리스트 페이지에서<br>빠른선택이 표시됩니다.</div>
+      `}
+
+      <div class="ub-sb-sect">
+        <div class="ub-sb-sect-t">바코드 클립보드 (최대 ${MAX_BARCODES})</div>
+        ${codes.length ? `
+          <div class="ub-sb-grid-3">
+            ${codes.map(b => `<button class="ub-sb-btn ub-bc-btn" data-bc="${b.c}" title="복사: ${b.c}">${b.c}</button>`).join('')}
+          </div>
+          <button class="ub-sb-btn ub-sb-wide" data-act="bc-clear" style="margin-top:6px;font-size:10.5px;color:#9ca3af">모두 지우기</button>
+        ` : `
+          <div class="ub-sb-empty">페이지에서 바코드 형태(예: 2606WH)<br>텍스트를 복사하면 자동 저장됩니다.</div>
+        `}
+      </div>
     `;
-    // 이벤트
-    bar.querySelectorAll('.ub-sb-btn').forEach(b => {
-      b.addEventListener('click', () => applyDateRange(b.dataset.r));
-    });
-    const toggle = bar.querySelector('.ub-sb-toggle');
-    toggle && toggle.addEventListener('click', () => {
-      const collapsed = bar.classList.toggle('ub-collapsed');
-      toggle.textContent = collapsed ? '›' : '‹';
-      document.documentElement.classList.toggle('ub-sidebar-on', !collapsed);
+
+    // 위치 적용
+    applySbPosition(bar);
+    // 드래그
+    bindDrag(bar);
+
+    // 헤더 액션
+    bar.querySelectorAll('.ub-ico').forEach(b => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const act = b.dataset.act;
+      if (act === 'mode') {
+        state.ubSbMode = (state.ubSbMode === 'floating') ? 'docked' : 'floating';
+        try { chrome.storage.local.set({ ubSbMode: state.ubSbMode }); } catch (_) {}
+        renderSidebar();
+      } else if (act === 'collapse') {
+        state.ubSbCollapsed = true;
+        try { chrome.storage.local.set({ ubSbCollapsed: true }); } catch (_) {}
+        renderSidebar();
+      }
+    }));
+
+    // 날짜 버튼 — select 값만 변경
+    bar.querySelectorAll('[data-r]').forEach(b => b.addEventListener('click', () => {
+      const n = setDateSelects(b.dataset.r);
+      showToast(bar, n ? '날짜 변경됨 (' + n + '개 필드)' : '날짜 필드를 찾지 못함');
+    }));
+
+    // 바코드 버튼 — 클립보드 복사
+    bar.querySelectorAll('[data-bc]').forEach(b => b.addEventListener('click', () => {
+      const c = b.dataset.bc;
+      copyToClipboard(c);
+      showToast(bar, c + ' 복사됨');
+    }));
+    const clr = bar.querySelector('[data-act="bc-clear"]');
+    if (clr) clr.addEventListener('click', () => {
+      state.ubBarcodes = [];
+      try { chrome.storage.local.set({ ubBarcodes: [] }); } catch (_) {}
+      renderSidebar();
     });
   }
 
@@ -370,13 +571,11 @@
     applyDark();
     renderSidebar();
     injectPageSizeOptions();
-    // 썸네일 스타일 재적용(이미 attach 된 것들의 cursor/title)
     document.querySelectorAll('img[data-ub-edit]').forEach(img => {
       img.style.cursor = on('ubThumbEdit') ? 'pointer' : '';
       img.title = on('ubThumbEdit') ? '상품 수정 (새 창)' : '';
     });
   }
-  // 페이지 변경/동적 추가 대응
   let mo = null;
   function startObserver() {
     if (mo) return;
@@ -393,17 +592,22 @@
       }
       if (needThumb) bindThumbEdit(document);
       if (needPaging) injectPageSizeOptions();
-      // 사이드바가 사라졌으면 다시 추가
-      if (!document.getElementById(SIDEBAR_ID) && on('ubSidebar')) needSidebar = true;
+      if (!document.getElementById(SIDEBAR_ID) && !document.getElementById(HANDLE_ID) && on('ubSidebar')) needSidebar = true;
       if (needSidebar) renderSidebar();
     });
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
   function init() {
-    ensureDefaultPageSize();          // 첫 진입 시 redirect (있을 경우)
+    ensureDefaultPageSize();
     bindThumbEdit(document);
+    bindCopyListener();
     applyAll();
     startObserver();
+    // 윈도우 리사이즈 시 플로팅 사이드바 안 보이는 곳으로 가지 않게 보정
+    window.addEventListener('resize', () => {
+      const bar = document.getElementById(SIDEBAR_ID);
+      if (bar && state.ubSbMode === 'floating') applySbPosition(bar);
+    });
   }
 
   try {
@@ -421,5 +625,5 @@
         if (on('ubThumbEdit')) bindThumbEdit(document);
       }
     });
-  } catch (e) { /* storage 권한/컨텍스트 문제 시 무시 */ }
+  } catch (e) {}
 })();
