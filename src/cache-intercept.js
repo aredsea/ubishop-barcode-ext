@@ -143,18 +143,25 @@
     showToast._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
   }
 
-  /* ---- 페이지 자체 로딩 스피너 끄기 ----
-   *  유비샵 페이지는 form submit 시 #ajaxBox(loading.gif)를 띄우고 navigate
-   *  완료 시 다시 hide 한다. 우리가 가로채면 navigate 안 일어나서 스피너가
-   *  영원히 도는 무한 로딩 발생. → 우리 흐름 끝낼 때 명시적 hide.
+  /* ---- 페이지 자체 로딩 스피너 끄기 + body display 복원 ----
+   *  유비샵 페이지는 form submit 시 (a) #ajaxBox(loading.gif) 띄우고
+   *  (b) <body> 자체를 display:none 처리한 다음 navigate 완료 시 둘 다 복원한다.
+   *  우리가 가로채면 navigate 안 일어나서 body 가 영원히 hide → 흰 화면.
+   *  → 우리 흐름에서는 ①스피너 끄고 ②body/html/주요 wrap display 강제 복원.
    */
   function hidePageLoaders() {
     try {
+      // 1) 로딩 스피너 끄기
       const ajaxBox = document.getElementById('ajaxBox');
       if (ajaxBox) ajaxBox.style.display = 'none';
-      // 혹시 다른 변형 셀렉터도 함께 처리
       document.querySelectorAll('#ajaxBox, .ajaxBox, .ajax_box, .ajax-box').forEach(el => {
         if (el && el.style) el.style.display = 'none';
+      });
+      // 2) body / html / 주요 컨테이너 display:none 복원 (페이지가 form submit 시 hide 함)
+      if (document.body && document.body.style.display === 'none') document.body.style.display = '';
+      if (document.documentElement && document.documentElement.style.display === 'none') document.documentElement.style.display = '';
+      document.querySelectorAll('#wrap, #container, #content, #main, .wrap, .container, .content, .main').forEach(el => {
+        if (el && el.style && el.style.display === 'none') el.style.display = '';
       });
     } catch (_) {}
   }
@@ -166,6 +173,10 @@
     if (_bypassNextSubmit) { _bypassNextSubmit = false; return; }
 
     e.preventDefault();
+    // 페이지의 다른 submit 핸들러(스피너 띄움 + body hide)가 우리 뒤에 실행되지
+    // 않도록 차단. 이렇게 하면 우리 흐름 동안 body 가 hide 되는 일도 막힘.
+    e.stopImmediatePropagation();
+
     const url = formToUrl(f);
     const keySrc = formKeySource(f);
     const key = await sha256_16(keySrc);
