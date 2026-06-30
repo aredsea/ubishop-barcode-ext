@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.0.6 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0.7 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -625,61 +625,20 @@
     play:         '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>'
   };
 
-  /* 전표 자동 캐시 섹션 렌더 + 시작 */
+  /* 전표 자동 캐시 섹션 — Phase 2 작업 중 안내(현재는 수동 트리거 의미 없음 제거) */
   function renderCacheSection() {
     const page = currentCachePage();
     if (!page) return '';
-    const j = cacheJob;
-    let body;
-    if (j.running) {
-      const pct = j.total ? Math.round(j.current / j.total * 100) : 0;
-      body = `
-        <div style="font-size:11.5px;color:var(--ub-sub);margin:0 4px 6px">
-          ${j.current}/${j.total} (${pct}%) · ${j.date}
-        </div>
-        <div style="height:6px;background:var(--ub-soft);border-radius:999px;overflow:hidden;margin:0 4px 8px">
-          <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#35C5F0,#1aa0d4);transition:width .15s"></div>
-        </div>
-        <button class="ub-sb-btn ub-sb-link ub-sb-wide" data-act="cache-cancel">취소</button>
-      `;
-    } else if (j.lastResult) {
-      const r = j.lastResult;
-      if (!r.ok && r.error) {
-        body = `
-          <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.5;color:#dc2626;border-color:#fecaca;background:#fef2f2">
-            <b>캐시 실패</b><br>${r.error}<br>
-            <small style="color:#9ca3af">프로그램 v1.1.0+ 필요. 트레이 우클릭 → 종료 후 재실행으로 자동업데이트 확인.</small>
-          </div>
-          <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 시도</button>
-        `;
-      } else if (!r.chunks || r.chunks.length === 0) {
-        body = `
-          <div class="ub-sb-empty">날짜 범위 없음. 페이지에서<br>검색 한 번 누른 뒤 다시 시도.</div>
-          <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 시도</button>
-        `;
-      } else {
-        const okCnt = r.chunks.filter(c => c.hit || c.ok).length;
-        const failCnt = r.chunks.length - okCnt;
-        const savedTxt = r.savedMs > 60000 ? `${(r.savedMs/60000).toFixed(1)}분` : `${(r.savedMs/1000).toFixed(1)}초`;
-        body = `
-          <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.6">
-            청크 ${r.chunks.length}개 · hit ${r.hits} / miss ${r.miss}<br>
-            성공 ${okCnt} / 실패 ${failCnt}<br>
-            ${(r.totalMs/1000).toFixed(1)}초 소요 · 캐시 절약 ${savedTxt}
-          </div>
-          <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 캐시</button>
-        `;
-      }
-    } else {
-      body = `
-        <div class="ub-sb-empty">현재 화면의 날짜 범위를<br>1일씩 분할 캐싱 (1회만 오래 걸림,<br>다음부터 즉시).</div>
-        <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">${ICONS.play}<span style="margin-left:4px">캐시 시작</span></button>
-      `;
-    }
     return `
       <div class="ub-sb-sect">
         <div class="ub-sb-sect-t">${ICONS.database}<span>전표 자동 캐시 · ${page.label}</span></div>
-        ${body}
+        <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.6;color:var(--ub-sub)">
+          현재 화면의 날짜 범위를<br>
+          평소처럼 검색하면<br>
+          결과가 자동으로 캐시되어<br>
+          <b style="color:var(--ub-fg)">다음 같은 검색은 즉시 표시</b>됩니다.<br>
+          <small style="color:#9ca3af">(Phase 2 구현 예정 — 현재 인프라만 준비됨)</small>
+        </div>
       </div>
     `;
   }
@@ -891,10 +850,7 @@
       renderSidebar();
     });
 
-    const runC = bar.querySelector('[data-act="cache-run"]');
-    if (runC) runC.addEventListener('click', startCacheJob);
-    const cancelC = bar.querySelector('[data-act="cache-cancel"]');
-    if (cancelC) cancelC.addEventListener('click', cancelCacheJob);
+    // (cache-run/cancel 핸들러는 Phase 2 본격 구현 시 form submit 가로채기로 대체됨)
   }
 
   /* ==========================================================================
