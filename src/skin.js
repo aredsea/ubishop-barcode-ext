@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.0.5 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0.6 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -644,14 +644,32 @@
       `;
     } else if (j.lastResult) {
       const r = j.lastResult;
-      const savedTxt = r.savedMs > 60000 ? `${(r.savedMs/60000).toFixed(1)}분` : `${(r.savedMs/1000).toFixed(1)}초`;
-      body = `
-        <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.6">
-          청크 ${r.chunks.length}개 · hit ${r.hits} / miss ${r.miss}<br>
-          ${(r.totalMs/1000).toFixed(1)}초 소요 · 캐시 절약 ${savedTxt}
-        </div>
-        <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 캐시</button>
-      `;
+      if (!r.ok && r.error) {
+        body = `
+          <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.5;color:#dc2626;border-color:#fecaca;background:#fef2f2">
+            <b>캐시 실패</b><br>${r.error}<br>
+            <small style="color:#9ca3af">프로그램 v1.1.0+ 필요. 트레이 우클릭 → 종료 후 재실행으로 자동업데이트 확인.</small>
+          </div>
+          <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 시도</button>
+        `;
+      } else if (!r.chunks || r.chunks.length === 0) {
+        body = `
+          <div class="ub-sb-empty">날짜 범위 없음. 페이지에서<br>검색 한 번 누른 뒤 다시 시도.</div>
+          <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 시도</button>
+        `;
+      } else {
+        const okCnt = r.chunks.filter(c => c.hit || c.ok).length;
+        const failCnt = r.chunks.length - okCnt;
+        const savedTxt = r.savedMs > 60000 ? `${(r.savedMs/60000).toFixed(1)}분` : `${(r.savedMs/1000).toFixed(1)}초`;
+        body = `
+          <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.6">
+            청크 ${r.chunks.length}개 · hit ${r.hits} / miss ${r.miss}<br>
+            성공 ${okCnt} / 실패 ${failCnt}<br>
+            ${(r.totalMs/1000).toFixed(1)}초 소요 · 캐시 절약 ${savedTxt}
+          </div>
+          <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 캐시</button>
+        `;
+      }
     } else {
       body = `
         <div class="ub-sb-empty">현재 화면의 날짜 범위를<br>1일씩 분할 캐싱 (1회만 오래 걸림,<br>다음부터 즉시).</div>
@@ -666,19 +684,33 @@
     `;
   }
 
-  // 현재 URL의 syear/sday/eyear/eday → ISO 날짜 추출
+  // 현재 페이지의 날짜 범위 추출 — URL params 우선, 없으면 form select fallback.
   function urlDateRange() {
     const u = new URL(location.href), sp = u.searchParams;
-    const sy = sp.get('syear'), sm = sp.get('smonth'), sd = sp.get('sday');
-    const ey = sp.get('eyear'), em = sp.get('emonth'), ed = sp.get('eday');
+    let sy = sp.get('syear'), sm = sp.get('smonth'), sd = sp.get('sday');
+    let ey = sp.get('eyear'), em = sp.get('emonth'), ed = sp.get('eday');
+    // form fallback: 메뉴 첫 진입(URL 파라미터 없음)에도 form select default로 동작
+    if (!sy || !sm || !sd || !ey || !em || !ed) {
+      const get = n => {
+        const el = document.querySelector(`select[name="${n}"], input[name="${n}"]`);
+        return el ? el.value : '';
+      };
+      sy = sy || get('syear'); sm = sm || get('smonth'); sd = sd || get('sday');
+      ey = ey || get('eyear'); em = em || get('emonth'); ed = ed || get('eday');
+    }
     if (!sy || !sm || !sd || !ey || !em || !ed) return null;
-    return { s: `${sy}-${sm}-${sd}`, e: `${ey}-${em}-${ed}` };
+    return { s: `${sy}-${sm.padStart(2,'0')}-${sd.padStart(2,'0')}`, e: `${ey}-${em.padStart(2,'0')}-${ed.padStart(2,'0')}` };
   }
   function startCacheJob() {
     const page = currentCachePage();
     if (!page || cacheJob.running) return;
     const range = urlDateRange();
-    if (!range) { alert('현재 페이지 URL에 날짜 파라미터(syear/sday/eyear/eday)가 없어요. 한 번 검색해서 URL이 잡힌 뒤 다시 시도하세요.'); return; }
+    if (!range) {
+      cacheJob.lastResult = { ok: false, error: '날짜 범위를 찾을 수 없음 (URL/form 둘 다 비어있음)' };
+      renderSidebar();
+      return;
+    }
+    console.log('[UB][cache] start', { page: page.path, range });
     cacheJob.running = true; cacheJob.current = 0; cacheJob.total = 0; cacheJob.date = ''; cacheJob.startMs = Date.now(); cacheJob.lastResult = null;
     renderSidebar();
     chrome.runtime.sendMessage({
@@ -686,8 +718,13 @@
       path: page.path, url: location.href,
       startDate: range.s, endDate: range.e, chunkDays: 1
     }, (resp) => {
+      console.log('[UB][cache] done', resp, chrome.runtime.lastError);
       cacheJob.running = false;
-      cacheJob.lastResult = resp || { ok: false };
+      if (chrome.runtime.lastError) {
+        cacheJob.lastResult = { ok: false, error: 'background 메시지 실패: ' + chrome.runtime.lastError.message };
+      } else {
+        cacheJob.lastResult = resp || { ok: false, error: '빈 응답 (background 미응답)' };
+      }
       renderSidebar();
     });
   }
