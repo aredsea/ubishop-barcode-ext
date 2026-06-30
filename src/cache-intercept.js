@@ -102,43 +102,63 @@
   function replaceTList(html) {
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      const newTables = doc.querySelectorAll('table.t_list');
-      const curTables = document.querySelectorAll('table.t_list');
-      if (!newTables.length || !curTables.length) {
-        log('replaceTList: no t_list (new=' + newTables.length + ', cur=' + curTables.length + ')');
+      if (!doc.body) {
+        log('replaceTList: response has no body');
+        return false;
+      }
+      // t_list 마커 존재 검증(빈 응답/로그인 페이지 등 방어)
+      const hasTList = doc.querySelectorAll('table.t_list').length > 0;
+      if (!hasTList) {
+        log('replaceTList: response has no t_list — treat as fail');
         return false;
       }
 
-      // 유비샵 페이지엔 보통 t_list 가 2개 이상:
-      //   ①합계 영역(총 매출금액/건수 등) ②결과 데이터 행 ③기타 페이지네이션
-      // 결과만 교체하면 합계 영역의 카운트/총액이 이전 검색 값 그대로 → "갯수 안 맞음".
-      // → 갯수 같으면 1:1 모두 교체. 다르면 행수 최대인 것만 교체(안전 fallback).
-      if (newTables.length === curTables.length) {
-        // 정적 snapshot 후 역순 교체(outerHTML setter 의 detached node 이슈 회피)
-        const curArr = Array.from(curTables);
-        const newArr = Array.from(newTables);
-        for (let i = curArr.length - 1; i >= 0; i--) {
-          if (curArr[i].isConnected) {
-            curArr[i].outerHTML = newArr[i].outerHTML;
-          }
-        }
-        log('replaceTList: 1:1 replaced ' + curArr.length + ' t_list tables');
-      } else {
-        const newPick = pickResultTList(newTables);
-        const curPick = pickResultTList(curTables);
-        if (!newPick || !curPick) return false;
-        curPick.outerHTML = newPick.outerHTML;
-        log('replaceTList: count mismatch (' + curTables.length + ' vs ' + newTables.length + '), replaced max-rows only');
-      }
+      // 유비샵 페이지는 본문 영역에 다음이 다 흩어져 있음:
+      //   ①합계 행(총 매출금액/건수 등 — t_list 또는 별도 table)
+      //   ②결과 데이터 행 (table.t_list)
+      //   ③페이지 카운트("총 N개" — span 또는 별도 element)
+      //   ④tooltip(div.tooltip2, 결제수단 분리 툴팁 등 여러 종류)
+      //   ⑤inline script가 채우는 데이터 객체(툴팁 매핑 등)
+      // 부분 교체로는 빠짐 + 잔상 필연 → body 통째 교체 + inline script 재실행
+      // + 우리 인젝션 element(사이드바 등) 보존 + form 재바인딩.
 
-      // tooltip2 동기화 — id^=note 조건 폐기(note_client_0 같은 변형 포함 위해)
-      // 페이지의 모든 div.tooltip2 를 응답의 div.tooltip2 로 교체.
-      try {
-        const newNotes = doc.querySelectorAll('div.tooltip2');
-        const oldNotes = document.querySelectorAll('div.tooltip2');
-        oldNotes.forEach(n => n.remove());
-        newNotes.forEach(n => document.body.appendChild(n.cloneNode(true)));
-      } catch (_) {}
+      // ①우리 element 분리 보존
+      const ourSelectors = '#ub-sidebar, #ub-cache-toast, #ub-handle, [id^="ub-"], [class*="ub-sidebar"]';
+      const ourElems = Array.from(document.querySelectorAll(ourSelectors));
+      ourElems.forEach(el => el.remove());
+
+      // ②스크롤 위치 보존
+      const oldScroll = window.scrollY || window.pageYOffset || 0;
+
+      // ③body 자식 통째 교체
+      document.body.innerHTML = doc.body.innerHTML;
+
+      // ④응답 inline script 재실행(innerHTML set 은 script 실행 안 함)
+      //   페이지의 함수 정의/데이터 매핑이 응답에 인라인으로 있으면 갱신해야
+      //   tooltip 데이터 등이 새 검색 결과와 맞음.
+      const scripts = doc.body.querySelectorAll('script');
+      scripts.forEach(s => {
+        if (s.src) return;  // 외부 src 는 head 에 있음(이미 로드됨)
+        const code = (s.textContent || '').trim();
+        if (!code) return;
+        try {
+          const tmp = document.createElement('script');
+          tmp.textContent = code;
+          document.head.appendChild(tmp);
+          document.head.removeChild(tmp);
+        } catch (_) { /* 일부 script 실패는 무시 */ }
+      });
+
+      // ⑤우리 element 재부착
+      ourElems.forEach(el => document.body.appendChild(el));
+
+      // ⑥스크롤 복원
+      try { window.scrollTo(0, oldScroll); } catch (_) {}
+
+      // ⑦새로 만들어진 form 에 가로채기 재바인딩(이전 listener/hijack 은 사라짐)
+      setTimeout(() => { try { bind(); } catch (_) {} }, 0);
+
+      log('replaceTList: body.innerHTML swap + ' + scripts.length + ' inline scripts re-run');
       return true;
     } catch (e) {
       console.warn('[UB][cache] replaceTList failed:', e);
