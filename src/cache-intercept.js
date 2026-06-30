@@ -108,14 +108,34 @@
         log('replaceTList: no t_list (new=' + newTables.length + ', cur=' + curTables.length + ')');
         return false;
       }
-      const newPick = pickResultTList(newTables);
-      const curPick = pickResultTList(curTables);
-      if (!newPick || !curPick) return false;
-      curPick.outerHTML = newPick.outerHTML;
-      // tooltip2 note 동기화 (상품명 툴팁 등)
+
+      // 유비샵 페이지엔 보통 t_list 가 2개 이상:
+      //   ①합계 영역(총 매출금액/건수 등) ②결과 데이터 행 ③기타 페이지네이션
+      // 결과만 교체하면 합계 영역의 카운트/총액이 이전 검색 값 그대로 → "갯수 안 맞음".
+      // → 갯수 같으면 1:1 모두 교체. 다르면 행수 최대인 것만 교체(안전 fallback).
+      if (newTables.length === curTables.length) {
+        // 정적 snapshot 후 역순 교체(outerHTML setter 의 detached node 이슈 회피)
+        const curArr = Array.from(curTables);
+        const newArr = Array.from(newTables);
+        for (let i = curArr.length - 1; i >= 0; i--) {
+          if (curArr[i].isConnected) {
+            curArr[i].outerHTML = newArr[i].outerHTML;
+          }
+        }
+        log('replaceTList: 1:1 replaced ' + curArr.length + ' t_list tables');
+      } else {
+        const newPick = pickResultTList(newTables);
+        const curPick = pickResultTList(curTables);
+        if (!newPick || !curPick) return false;
+        curPick.outerHTML = newPick.outerHTML;
+        log('replaceTList: count mismatch (' + curTables.length + ' vs ' + newTables.length + '), replaced max-rows only');
+      }
+
+      // tooltip2 동기화 — id^=note 조건 폐기(note_client_0 같은 변형 포함 위해)
+      // 페이지의 모든 div.tooltip2 를 응답의 div.tooltip2 로 교체.
       try {
-        const newNotes = doc.querySelectorAll('div.tooltip2[id^=note]');
-        const oldNotes = document.querySelectorAll('div.tooltip2[id^=note]');
+        const newNotes = doc.querySelectorAll('div.tooltip2');
+        const oldNotes = document.querySelectorAll('div.tooltip2');
         oldNotes.forEach(n => n.remove());
         newNotes.forEach(n => document.body.appendChild(n.cloneNode(true)));
       } catch (_) {}
