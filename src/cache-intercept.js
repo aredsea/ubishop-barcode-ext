@@ -166,6 +166,18 @@
     } catch (_) {}
   }
 
+  /* ---- 사이드바 통계 sync (skin.js ISOLATED world 가 listen) ----
+   *  MAIN world 인 우리는 chrome.runtime 직접 못 씀 → window.postMessage 로
+   *  같은 페이지의 skin.js 에 누적 delta 보냄. skin.js 에는 이미 listener
+   *  존재(message.source === 'ub-cache-stat').
+   */
+  function postStats(delta) {
+    try {
+      const msg = Object.assign({ source: 'ub-cache-stat' }, delta || {});
+      window.postMessage(msg, '*');
+    } catch (_) {}
+  }
+
   /* ---- 핵심 가로채기 ---- */
   let _bypassNextSubmit = false;
 
@@ -191,6 +203,7 @@
       if (ok) {
         history.replaceState({}, '', url);
         hidePageLoaders();
+        postStats({ hits: 1, lastMs: 0 });
         showToast('캐시 즉시 표시', 'hit');
         sendBg({ type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname } });
         refreshInBg(url, key);
@@ -212,6 +225,7 @@
       if (ok) {
         history.replaceState({}, '', url);
         hidePageLoaders();
+        postStats({ miss: 1, fillMs: ms, lastMs: ms });
         showToast('서버 ' + (ms / 1000).toFixed(1) + '초 → 캐시 저장', 'ok');
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
         sendBg({ type: 'telemetry', payload: { type: 'cache_fill_search', path: location.pathname, ms } });
@@ -228,8 +242,12 @@
 
   async function refreshInBg(url, key) {
     try {
+      const t0 = Date.now();
       const resp = await sendBg({ type: 'cacheFetchSearch', url });
+      const ms = Date.now() - t0;
       if (resp && resp.ok && resp.html) {
+        // 캐시 hit 덕에 사용자가 절약한 시간 = 이번 백그라운드 fetch 시간
+        postStats({ savedMs: ms });
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
         replaceTList(resp.html);
       }
