@@ -99,66 +99,105 @@
     }
     return best;
   }
+  /* ---- 응답 HTML 의 본문 wrapper 찾기 ----
+   *  실측 페이지 구조:
+   *    body
+   *    ├─ #ajaxBox
+   *    ├─ table (상단 메뉴)
+   *    ├─ script (newWindow2 등 함수 정의)
+   *    ├─ table  ← ★ 본문 wrapper. form[name="form1"] 과 결과 t_list,
+   *    │           합계, 페이지 카운트, tooltip2 일부 가 모두 이 안.
+   *    └─ aside#ub-sidebar  (우리 사이드바)
+   *
+   *  body 통째 교체는 일부 케이스에서 body 가 null 이 되어 후속 호출
+   *  모두 실패하는 부작용 있었음(v3.1.1 사용자 보고). → body 안 건드리고
+   *  본문 wrapper(form1 포함 body 직속 자식) outerHTML 만 교체.
+   */
+  function findContentWrapper(root) {
+    const body = (root && root.body) || (root === document ? document.body : null);
+    if (!body || !body.children) return null;
+    for (const c of body.children) {
+      if (c && c.querySelector && c.querySelector('form[name="form1"]')) return c;
+    }
+    return null;
+  }
+
   function replaceTList(html) {
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      if (!doc.body) {
+      if (!doc || !doc.body) {
         log('replaceTList: response has no body');
         return false;
       }
-      // t_list 마커 존재 검증(빈 응답/로그인 페이지 등 방어)
-      const hasTList = doc.querySelectorAll('table.t_list').length > 0;
-      if (!hasTList) {
+      if (doc.querySelectorAll('table.t_list').length === 0) {
         log('replaceTList: response has no t_list — treat as fail');
         return false;
       }
+      if (!document.body) {
+        log('replaceTList: page body is null — abort');
+        return false;
+      }
 
-      // 유비샵 페이지는 본문 영역에 다음이 다 흩어져 있음:
-      //   ①합계 행(총 매출금액/건수 등 — t_list 또는 별도 table)
-      //   ②결과 데이터 행 (table.t_list)
-      //   ③페이지 카운트("총 N개" — span 또는 별도 element)
-      //   ④tooltip(div.tooltip2, 결제수단 분리 툴팁 등 여러 종류)
-      //   ⑤inline script가 채우는 데이터 객체(툴팁 매핑 등)
-      // 부분 교체로는 빠짐 + 잔상 필연 → body 통째 교체 + inline script 재실행
-      // + 우리 인젝션 element(사이드바 등) 보존 + form 재바인딩.
+      // 본문 wrapper 찾기
+      const curWrap = findContentWrapper(document);
+      const newWrap = findContentWrapper(doc);
+      if (!curWrap || !newWrap) {
+        log('replaceTList: content wrapper not found', { cur: !!curWrap, new: !!newWrap });
+        return false;
+      }
 
-      // ①우리 element 분리 보존
-      const ourSelectors = '#ub-sidebar, #ub-cache-toast, #ub-handle, [id^="ub-"], [class*="ub-sidebar"]';
-      const ourElems = Array.from(document.querySelectorAll(ourSelectors));
-      ourElems.forEach(el => el.remove());
-
-      // ②스크롤 위치 보존
+      // 스크롤 보존
       const oldScroll = window.scrollY || window.pageYOffset || 0;
 
-      // ③body 자식 통째 교체
-      document.body.innerHTML = doc.body.innerHTML;
+      // 본문 wrapper 만 교체 (body 는 안 건드림 → null 사고 방지)
+      curWrap.outerHTML = newWrap.outerHTML;
 
-      // ④응답 inline script 재실행(innerHTML set 은 script 실행 안 함)
-      //   페이지의 함수 정의/데이터 매핑이 응답에 인라인으로 있으면 갱신해야
-      //   tooltip 데이터 등이 새 검색 결과와 맞음.
-      const scripts = doc.body.querySelectorAll('script');
-      scripts.forEach(s => {
-        if (s.src) return;  // 외부 src 는 head 에 있음(이미 로드됨)
-        const code = (s.textContent || '').trim();
-        if (!code) return;
-        try {
-          const tmp = document.createElement('script');
-          tmp.textContent = code;
-          document.head.appendChild(tmp);
-          document.head.removeChild(tmp);
-        } catch (_) { /* 일부 script 실패는 무시 */ }
-      });
+      // 본문 wrapper 밖의 tooltip 종류들 sync (body 직속 또는 다른 위치).
+      // 우리 사이드바 안의 tooltip 은 보호.
+      try {
+        document.querySelectorAll('div.tooltip2').forEach(t => {
+          if (t.closest && t.closest('#ub-sidebar')) return;
+          // 본문 wrapper 안의 tooltip 은 이미 outerHTML 로 교체됨 — 다른 위치 것만 정리
+          if (curWrap.contains && curWrap.contains(t)) return;
+          t.remove();
+        });
+        const newWrapBody = newWrap.parentElement === doc.body ? doc.body : null;
+        if (newWrapBody) {
+          Array.from(newWrapBody.querySelectorAll('div.tooltip2')).forEach(t => {
+            // 응답 본문 wrapper 안에 있는 tooltip 은 이미 swap 됨, 밖의 것만 body 에 추가
+            if (newWrap.contains && newWrap.contains(t)) return;
+            const clone = t.cloneNode(true);
+            if (document.body) document.body.appendChild(clone);
+          });
+        }
+      } catch (_) {}
 
-      // ⑤우리 element 재부착
-      ourElems.forEach(el => document.body.appendChild(el));
+      // 응답 inline script 재실행 — 본문 wrapper 안에 있는 것 만 (head 안 script 는 이미 페이지 로드 시 실행됨).
+      // tooltip 데이터 매핑 같은 inline JS 가 본문에 있으면 갱신 필요.
+      try {
+        const newScripts = newWrap.querySelectorAll('script');
+        newScripts.forEach(s => {
+          if (s.src) return;
+          const code = (s.textContent || '').trim();
+          if (!code) return;
+          // 위험 차단: document.write, location 변경 시도하면 skip
+          if (/document\.write|location\.(href|replace|assign)\s*=/.test(code)) return;
+          try {
+            const tmp = document.createElement('script');
+            tmp.textContent = code;
+            document.head.appendChild(tmp);
+            document.head.removeChild(tmp);
+          } catch (_) {}
+        });
+      } catch (_) {}
 
-      // ⑥스크롤 복원
+      // 스크롤 복원
       try { window.scrollTo(0, oldScroll); } catch (_) {}
 
-      // ⑦새로 만들어진 form 에 가로채기 재바인딩(이전 listener/hijack 은 사라짐)
+      // 새 form 에 가로채기 재바인딩 (curWrap 교체로 form1 새로 만들어짐)
       setTimeout(() => { try { bind(); } catch (_) {} }, 0);
 
-      log('replaceTList: body.innerHTML swap + ' + scripts.length + ' inline scripts re-run');
+      log('replaceTList: content wrapper swap (body intact)');
       return true;
     } catch (e) {
       console.warn('[UB][cache] replaceTList failed:', e);
@@ -166,21 +205,25 @@
     }
   }
 
-  /* ---- 토스트 ---- */
+  /* ---- 토스트 (body null 방어) ---- */
   function showToast(msg, kind) {
-    let t = document.getElementById('ub-cache-toast');
-    if (!t) {
-      t = document.createElement('div');
-      t.id = 'ub-cache-toast';
-      t.style.cssText = 'position:fixed;top:18px;right:18px;padding:10px 16px;color:#fff;border-radius:8px;font:600 12px/1.3 Pretendard,sans-serif;z-index:2147483647;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:opacity .2s;max-width:280px';
-      document.body.appendChild(t);
-    }
-    const colors = { ok: 'rgba(15,20,25,.92)', hit: 'linear-gradient(90deg,#35C5F0,#1aa0d4)', err: 'rgba(220,38,38,.92)' };
-    t.style.background = colors[kind || 'ok'];
-    t.textContent = msg;
-    t.style.opacity = '1';
-    clearTimeout(showToast._h);
-    showToast._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
+    try {
+      const host = document.body || document.documentElement;
+      if (!host) return;   // body/html 둘 다 없으면 표시 자체 skip
+      let t = document.getElementById('ub-cache-toast');
+      if (!t) {
+        t = document.createElement('div');
+        t.id = 'ub-cache-toast';
+        t.style.cssText = 'position:fixed;top:18px;right:18px;padding:10px 16px;color:#fff;border-radius:8px;font:600 12px/1.3 Pretendard,sans-serif;z-index:2147483647;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:opacity .2s;max-width:280px';
+        host.appendChild(t);
+      }
+      const colors = { ok: 'rgba(15,20,25,.92)', hit: 'linear-gradient(90deg,#35C5F0,#1aa0d4)', err: 'rgba(220,38,38,.92)' };
+      t.style.background = colors[kind || 'ok'];
+      t.textContent = msg;
+      t.style.opacity = '1';
+      clearTimeout(showToast._h);
+      showToast._h = setTimeout(() => { try { t.style.opacity = '0'; } catch (_) {} }, 2200);
+    } catch (_) {}
   }
 
   /* ---- 페이지 자체 로딩 스피너 끄기 + body display 복원 ----
