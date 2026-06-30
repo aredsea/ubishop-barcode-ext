@@ -143,6 +143,22 @@
     showToast._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
   }
 
+  /* ---- 페이지 자체 로딩 스피너 끄기 ----
+   *  유비샵 페이지는 form submit 시 #ajaxBox(loading.gif)를 띄우고 navigate
+   *  완료 시 다시 hide 한다. 우리가 가로채면 navigate 안 일어나서 스피너가
+   *  영원히 도는 무한 로딩 발생. → 우리 흐름 끝낼 때 명시적 hide.
+   */
+  function hidePageLoaders() {
+    try {
+      const ajaxBox = document.getElementById('ajaxBox');
+      if (ajaxBox) ajaxBox.style.display = 'none';
+      // 혹시 다른 변형 셀렉터도 함께 처리
+      document.querySelectorAll('#ajaxBox, .ajaxBox, .ajax_box, .ajax-box').forEach(el => {
+        if (el && el.style) el.style.display = 'none';
+      });
+    } catch (_) {}
+  }
+
   /* ---- 핵심 가로채기 ---- */
   let _bypassNextSubmit = false;
 
@@ -163,6 +179,7 @@
       log('hit', { ok });
       if (ok) {
         history.replaceState({}, '', url);
+        hidePageLoaders();
         showToast('캐시 즉시 표시', 'hit');
         sendBg({ type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname } });
         refreshInBg(url, key);
@@ -183,6 +200,7 @@
       log('miss replaceTList', { ok });
       if (ok) {
         history.replaceState({}, '', url);
+        hidePageLoaders();
         showToast('서버 ' + (ms / 1000).toFixed(1) + '초 → 캐시 저장', 'ok');
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
         sendBg({ type: 'telemetry', payload: { type: 'cache_fill_search', path: location.pathname, ms } });
@@ -191,6 +209,7 @@
     }
 
     // 3) 모두 실패 → 평소 form submit으로 fallback
+    // (스피너는 fallback navigate가 끝낼 거라 hide 안 함 — navigate 중엔 정상이라 사용자에겐 자연스러움)
     showToast('캐시 실패 — 일반 검색으로', 'err');
     _bypassNextSubmit = true;
     setTimeout(() => { try { f.submit(); } catch (_) {} }, 200);
