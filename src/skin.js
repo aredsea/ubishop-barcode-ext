@@ -125,185 +125,24 @@
   const cacheJob = { running: false, current: 0, total: 0, date: '', startMs: 0, lastResult: null };
 
   /* ==========================================================================
-   *  Phase 2: Transparent Caching — form submit 가로채기 + t_list 교체
-   *
-   *  핵심 원칙:
-   *  - table.t_list (마지막 = 결과 테이블)만 outerHTML 교체.
-   *  - 페이지 form/JS/inline onclick(modify/delete/print 등) 모두 그대로 →
-   *    수정/삭제/인쇄 동작 페이지 자체 흐름 그대로 작동(실 데이터 반영).
-   *  - 캐시 hit → 즉시 표시 + 백그라운드 갱신(stale-while-revalidate)
-   *  - 캐시 miss → background에서 fetch + 캐시 저장.
-   *  - 사용자가 우리 fetch 자체에 실패하면 평소 form submit으로 fallback.
+   *  Phase 2 Transparent Caching 은 v3.1.1부터 src/cache-intercept.js 로 분리.
+   *  loader.js 메커니즘으로 GitHub raw에서 매 페이지 새로고침마다 자동 갱신.
+   *  skin.js 에는 사이드바 통계 UI 표시용 stub 만 남김 (cacheStat). cache-intercept.js
+   *  가 window.postMessage 'ub-cache-stat' 으로 stats 를 보내면 갱신.
    * ========================================================================== */
   const cacheStat = { hits: 0, miss: 0, savedMs: 0, lastMs: 0, fillMs: 0 };
-  let _bypassNextSubmit = false;  // fallback 시 우리 가로채기 안 함
-
-  function isCachePage() { return !!CACHE_PAGES[location.pathname]; }
-  function getSearchForm() {
-    const candidates = ['form1', 'form', 'searchForm'];
-    for (const n of candidates) { const f = document.querySelector(`form[name="${n}"]`); if (f) return f; }
-    return document.forms[0] || null;
-  }
-  // form의 모든 input/select 값 → 정렬해서 캐시 키 원본 문자열
-  function formKeySource(f) {
-    if (!f) return '';
-    const entries = [];
-    for (const el of f.elements) {
-      if (!el.name) continue;
-      const t = (el.type || '').toLowerCase();
-      if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image' || t === 'file') continue;
-      if (t === 'checkbox' || t === 'radio') { if (!el.checked) continue; }
-      entries.push(`${el.name}=${el.value == null ? '' : el.value}`);
-    }
-    entries.sort();
-    return location.pathname + '?' + entries.join('&');
-  }
-  async function sha256_16(s) {
-    try {
-      const buf = new TextEncoder().encode(s);
-      const h = await crypto.subtle.digest('SHA-256', buf);
-      return [...new Uint8Array(h)].slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
-    } catch (_) {
-      // fallback: 단순 hash
-      let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-      return 'h' + (h >>> 0).toString(16);
-    }
-  }
-  // form 값을 GET URL로 변환 (action에 모든 값 추가)
-  function formToUrl(f) {
-    const action = f.getAttribute('action') || location.pathname + location.search;
-    const u = new URL(action, location.href);
-    for (const el of f.elements) {
-      if (!el.name) continue;
-      const t = (el.type || '').toLowerCase();
-      if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image' || t === 'file') continue;
-      if (t === 'checkbox' || t === 'radio') { if (!el.checked) continue; }
-      u.searchParams.set(el.name, el.value == null ? '' : el.value);
-    }
-    return u.toString();
-  }
-  // 응답 HTML에서 결과 테이블 교체. 마지막 table.t_list 가 결과(메모리 실측).
-  function replaceTList(html) {
-    try {
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      const newTables = doc.querySelectorAll('table.t_list');
-      const curTables = document.querySelectorAll('table.t_list');
-      if (!newTables.length || !curTables.length) return false;
-      const newLast = newTables[newTables.length - 1];
-      const curLast = curTables[curTables.length - 1];
-      curLast.outerHTML = newLast.outerHTML;
-      // 합계행/페이지네이션이 별도 영역에 있으면 추가 처리 필요 — 일단 t_list만.
-      // 새 HTML에서 div.tooltip2 note 들도 함께 옮김(상품명 툴팁 등)
-      const newNotes = doc.querySelectorAll('div.tooltip2[id^=note]');
-      const oldNotes = document.querySelectorAll('div.tooltip2[id^=note]');
-      oldNotes.forEach(n => n.remove());
-      const tgt = document.body;
-      newNotes.forEach(n => tgt.appendChild(n.cloneNode(true)));
-      return true;
-    } catch (e) {
-      console.warn('[UB][cache] replaceTList failed:', e);
-      return false;
-    }
-  }
-  function showCacheToast(msg, kind) {
-    let t = document.getElementById('ub-cache-toast');
-    if (!t) {
-      t = document.createElement('div');
-      t.id = 'ub-cache-toast';
-      t.style.cssText = 'position:fixed;top:18px;right:18px;padding:10px 16px;color:#fff;border-radius:8px;font:600 12px/1.3 Pretendard,sans-serif;z-index:2147483647;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.25);transition:opacity .2s;max-width:280px';
-      document.body.appendChild(t);
-    }
-    const colors = { ok: 'rgba(15,20,25,.92)', hit: 'linear-gradient(90deg,#35C5F0,#1aa0d4)', err: 'rgba(220,38,38,.92)' };
-    t.style.background = colors[kind || 'ok'];
-    t.textContent = msg;
-    t.style.opacity = '1';
-    clearTimeout(showCacheToast._h);
-    showCacheToast._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
-  }
-  function sendBg(msg) {
-    return new Promise(resolve => {
-      try { chrome.runtime.sendMessage(msg, r => { if (chrome.runtime.lastError) return resolve(null); resolve(r); }); }
-      catch (_) { resolve(null); }
+  try {
+    window.addEventListener('message', (e) => {
+      const d = e.data;
+      if (!d || d.source !== 'ub-cache-stat' || e.source !== window) return;
+      if (d.hits)    cacheStat.hits    += d.hits;
+      if (d.miss)    cacheStat.miss    += d.miss;
+      if (d.fillMs)  cacheStat.fillMs  += d.fillMs;
+      if (typeof d.lastMs === 'number') cacheStat.lastMs = d.lastMs;
+      if (d.savedMs) cacheStat.savedMs += d.savedMs;
+      try { renderSidebar && renderSidebar(); } catch (_) {}
     });
-  }
-
-  async function handleSearchSubmit(f, e) {
-    // 사용자가 우리 옵션 OFF면 평소 흐름
-    if (!on('ubAutoSync') || !isCachePage()) return;
-    if (_bypassNextSubmit) { _bypassNextSubmit = false; return; }
-
-    e.preventDefault();
-    const url = formToUrl(f);
-    const keySrc = formKeySource(f);
-    const key = await sha256_16(keySrc);
-    console.log('[UB][cache] submit', { url, key });
-    showCacheToast('검색…', 'ok');
-
-    // 1) 캐시 확인
-    const cached = await sendBg({ source: 'ub', type: 'cacheGetSearch', pathKey: 'search:' + location.pathname, key });
-    if (cached && cached.hit && cached.entry && cached.entry.html) {
-      const ok = replaceTList(cached.entry.html);
-      if (ok) {
-        history.replaceState({}, '', url);
-        cacheStat.hits++;
-        showCacheToast('캐시 즉시 표시', 'hit');
-        sendBg({ source: 'ub', type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname } });
-        // 백그라운드 갱신
-        refreshInBg(url, key);
-        renderSidebar();
-        return;
-      }
-    }
-
-    // 2) miss → 서버 fetch
-    cacheStat.miss++;
-    sendBg({ source: 'ub', type: 'telemetry', payload: { type: 'cache_miss_search', path: location.pathname } });
-    const t0 = Date.now();
-    const resp = await sendBg({ source: 'ub', type: 'cacheFetchSearch', url });
-    const ms = Date.now() - t0;
-    cacheStat.lastMs = ms;
-    if (resp && resp.ok && resp.html) {
-      const ok = replaceTList(resp.html);
-      if (ok) {
-        history.replaceState({}, '', url);
-        cacheStat.fillMs += ms;
-        showCacheToast(`서버 ${(ms/1000).toFixed(1)}초 → 캐시 저장`, 'ok');
-        sendBg({ source: 'ub', type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
-        sendBg({ source: 'ub', type: 'telemetry', payload: { type: 'cache_fill_search', path: location.pathname, ms } });
-        renderSidebar();
-        return;
-      }
-    }
-
-    // 3) 모두 실패 → 평소 form submit으로 fallback
-    showCacheToast('캐시 실패 — 일반 검색으로', 'err');
-    _bypassNextSubmit = true;
-    setTimeout(() => { try { f.submit(); } catch (_) {} }, 200);
-  }
-  async function refreshInBg(url, key) {
-    try {
-      const t0 = Date.now();
-      const resp = await sendBg({ source: 'ub', type: 'cacheFetchSearch', url });
-      const ms = Date.now() - t0;
-      if (resp && resp.ok && resp.html) {
-        // 캐시 hit 덕분에 절약된 시간(이번에 서버 응답이 ms 걸렸음 → 사용자에겐 0초)
-        cacheStat.savedMs += ms;
-        sendBg({ source: 'ub', type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
-        // 페이지에 silently 갱신(데이터가 바뀐 경우 최신값으로)
-        replaceTList(resp.html);
-        renderSidebar();
-      }
-    } catch (_) {}
-  }
-  function bindSearchIntercept() {
-    if (!isCachePage()) return;
-    const forms = document.querySelectorAll('form');
-    forms.forEach(f => {
-      if (f.dataset.ubSearchBound) return;
-      f.dataset.ubSearchBound = '1';
-      f.addEventListener('submit', (e) => handleSearchSubmit(f, e), true);
-    });
-  }
+  } catch (_) {}
 
   // page_load telemetry (sidebar 처음 그릴 때 1회).
   function reportPageLoad() {
@@ -1083,7 +922,7 @@
     ensureDefaultPageSize();
     bindThumbEdit(document);
     bindCopyListener();
-    bindSearchIntercept();   // Phase 2: form submit 가로채기
+    // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
     startObserver();
     // background → cacheProgress 메시지 수신

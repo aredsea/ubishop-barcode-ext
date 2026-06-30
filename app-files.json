@@ -1,10 +1,11 @@
 {
-  "version": "2.3.0",
-  "note": "loader.js 가 순서대로 가져와 실행. v2: 얇은 호출자(데이터만 프로그램에 POST). 렌더/편집 제거. v2.2: 상품입고 지원 + 고객명 규칙. v2.3: 매장명·매입처·추가설명 수집(접두코드/다이아 예외용).",
+  "version": "2.4.0",
+  "note": "loader.js 가 순서대로 가져와 실행. v2: 얇은 호출자(데이터만 프로그램에 POST). 렌더/편집 제거. v2.2: 상품입고 지원 + 고객명 규칙. v2.3: 매장명·매입처·추가설명 수집(접두코드/다이아 예외용). v2.4: cache-intercept.js 추가 — 매장매출/매장출고전표 form submit 가로채기 + table.t_list 동적 교체(Phase 2 transparent caching).",
   "files": [
     "src/config.js",
     "src/overlay.js",
     "src/collector.js",
-    "src/content.js"
+    "src/content.js",
+    "src/cache-intercept.js"
   ]
 }

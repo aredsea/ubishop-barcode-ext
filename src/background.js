@@ -39,20 +39,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'cacheFetchSearch') { fetchUbdstore(msg.url).then(sendResponse); return true; }
 });
 
-/* ---- transparent caching용 — ubdstore에서 단일 URL fetch ---- */
+/* ---- transparent caching용 — ubdstore에서 단일 URL fetch ----
+ *  v3.1.1 fix:
+ *  - Bug B: 8초 AbortController timeout (이전엔 무한 대기로 "한참 로딩")
+ *  - Bug C: Content-Type 우선 → UTF-8 mojibake(>5 replacement chars in 4KB)
+ *    감지 시 EUC-KR 자동 fallback. 이전엔 fatal:false라 절대 fallback 안 됨.
+ *  - Bug D: 빈 응답 판정을 1KB → t_list 마커 존재 + bytes>500 두 조건으로
+ *    명확화 (template 오버헤드 큰 빈 결과 페이지의 false positive 방지).
+ *  - 진단을 위해 decoder/bytes/status/aborted/elapsedMs 모두 응답에 포함.
+ */
 async function fetchUbdstore(url) {
+  const FETCH_TIMEOUT_MS = 8000;
+  const ctrl = new AbortController();
+  const t0 = Date.now();
+  const tid = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
-    const r = await fetch(url, { credentials: 'include', cache: 'no-cache' });
+    const r = await fetch(url, {
+      credentials: 'include',
+      cache: 'no-cache',
+      signal: ctrl.signal,
+      redirect: 'follow'
+    });
+    clearTimeout(tid);
     const buf = await r.arrayBuffer();
     const bytes = buf.byteLength;
+
+    // 인코딩 결정: Content-Type 헤더 우선 → UTF-8 mojibake 감지 → 기본 UTF-8
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    let decoder = 'utf-8';
+    if (ct.includes('euc-kr') || ct.includes('ks_c_5601') || ct.includes('ksc5601')) {
+      decoder = 'euc-kr';
+    } else if (!ct.includes('utf-8') && bytes > 0) {
+      // Content-Type에 charset 명시 없음 → UTF-8 디코더로 샘플 보고 mojibake 감지
+      try {
+        const sample = new TextDecoder('utf-8', { fatal: false })
+          .decode(buf.slice(0, Math.min(4096, bytes)));
+        const replCount = (sample.match(/�/g) || []).length;
+        if (replCount > 5) decoder = 'euc-kr';
+      } catch (_) {}
+    }
     let html = '';
-    try { html = new TextDecoder('utf-8', { fatal: false }).decode(buf); }
-    catch (_) { html = new TextDecoder('euc-kr').decode(buf); }
-    // 빈응답(<1KB)은 서버 SQL timeout으로 간주 → fail
-    const ok = r.ok && bytes > 1000;
-    return { ok, html, bytes, status: r.status };
+    try { html = new TextDecoder(decoder).decode(buf); }
+    catch (_) {
+      try { html = new TextDecoder(decoder === 'utf-8' ? 'euc-kr' : 'utf-8').decode(buf); } catch (__) {}
+    }
+
+    // 빈 응답 판정: t_list 마커가 본문에 존재하는지 + 최소 크기
+    const hasResultsMarker = html.indexOf('class="t_list"') >= 0 || html.indexOf("class='t_list'") >= 0;
+    const ok = r.ok && bytes > 500 && hasResultsMarker;
+
+    return {
+      ok, html, bytes, status: r.status,
+      decoder, contentType: ct,
+      elapsedMs: Date.now() - t0
+    };
   } catch (e) {
-    return { ok: false, error: String(e && e.message || e) };
+    clearTimeout(tid);
+    const aborted = e && e.name === 'AbortError';
+    return {
+      ok: false,
+      error: aborted ? ('timeout after ' + FETCH_TIMEOUT_MS + 'ms') : String(e && e.message || e),
+      aborted,
+      elapsedMs: Date.now() - t0
+    };
   }
 }
 
