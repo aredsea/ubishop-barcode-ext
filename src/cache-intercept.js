@@ -149,30 +149,65 @@
       // 스크롤 보존
       const oldScroll = window.scrollY || window.pageYOffset || 0;
 
+      // 검색 시점 form 값 snapshot (응답의 select 기본값(2000/01/01 등)으로 reset 방지)
+      const formSnap = {};
+      try {
+        for (const el of f.elements) {
+          if (!el.name) continue;
+          formSnap[el.name] = el.value;
+        }
+      } catch (_) {}
+
       // 본문 wrapper 의 innerHTML 만 교체 — wrapper element 자체(curWrap reference)는
       // 그대로 유지. outerHTML 로 하면 curWrap 이 detach 되어 후속 contains()
       // 검사가 항상 false 가 되는 버그(wrapper 안 tooltip 까지 모두 제거) 발생.
       curWrap.innerHTML = newWrap.innerHTML;
 
-      // 본문 wrapper 밖의 tooltip 잔상 정리 (body 직속 또는 다른 위치).
-      // wrapper 안 tooltip 은 위 innerHTML 교체로 새 응답대로 들어감 → 보호.
-      // 우리 사이드바 안의 tooltip 은 보호.
+      // form 값 복원 — 새 form1 의 select 들이 응답의 default("2000/01") 가 아니라
+      // 사용자가 검색한 그 값(06/30 등) 이 selected 상태 가 되도록.
       try {
-        document.querySelectorAll('div.tooltip2').forEach(t => {
-          if (t.closest && t.closest('#ub-sidebar')) return;
-          if (curWrap.contains(t)) return;   // ★ innerHTML 교체로 curWrap 살아 있음
-          t.remove();
-        });
-        // 응답에서 wrapper 밖에 있던 tooltip 들도 같이 가져옴 (페이지가 그렇게 구성된 경우)
-        if (doc.body) {
-          Array.from(doc.body.querySelectorAll('div.tooltip2')).forEach(t => {
-            if (newWrap.contains(t)) return;   // wrapper 안은 이미 교체됨
-            if (document.body) {
-              document.body.appendChild(t.cloneNode(true));
-            }
-          });
+        const newF = curWrap.querySelector('form[name="form1"]');
+        if (newF) {
+          for (const name in formSnap) {
+            const el = newF.elements[name];
+            if (!el) continue;
+            try { el.value = formSnap[name]; } catch (_) {}
+          }
         }
       } catch (_) {}
+
+      // tooltip 강제 sync + 진단 — 응답에서 wrapper 안/밖 둘 다 모아 page 에 보장.
+      // 페이지의 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾는데
+      // null 이면 fail(parentElement of null). → 우리가 tooltip element 존재 보장.
+      let dbgWrapTC = 0, dbgBodyTC = 0, dbgRespWrapTC = 0, dbgRespBodyTC = 0;
+      try {
+        const respAll = doc.querySelectorAll('div.tooltip2');
+        dbgRespBodyTC = respAll.length;
+        dbgRespWrapTC = newWrap.querySelectorAll('div.tooltip2').length;
+
+        // 사이드바 외 잔상 정리: wrapper 안의 새 응답 것은 보존, 그 외 제거
+        document.querySelectorAll('div.tooltip2').forEach(t => {
+          if (t.closest && t.closest('#ub-sidebar')) return;
+          if (curWrap.contains(t)) return;
+          t.remove();
+        });
+
+        // 응답의 모든 tooltip 중 wrapper 밖의 것 body 에 추가(페이지가 그렇게 구성된 경우)
+        // + wrapper 안에 없는 tooltip 도 body 에 추가해서 getElementById 안전 보장.
+        const wrapIds = new Set();
+        curWrap.querySelectorAll('div.tooltip2[id]').forEach(t => wrapIds.add(t.id));
+        respAll.forEach(t => {
+          if (!t.id) return;
+          if (wrapIds.has(t.id)) return;   // wrapper 안에 이미 같은 id 존재
+          if (!document.body) return;
+          document.body.appendChild(t.cloneNode(true));
+          wrapIds.add(t.id);
+        });
+
+        dbgWrapTC = curWrap.querySelectorAll('div.tooltip2').length;
+        dbgBodyTC = document.querySelectorAll('div.tooltip2').length;
+      } catch (_) {}
+      log('tooltip sync', { pageWrap: dbgWrapTC, pageBodyTotal: dbgBodyTC, respWrap: dbgRespWrapTC, respBodyTotal: dbgRespBodyTC });
 
       // 응답 inline script 재실행 — 본문 wrapper 안 + body 직속 script(wrapper 밖).
       // tooltip 데이터 매핑/함수 정의 등이 inline script 에 있으면 갱신 필요.
