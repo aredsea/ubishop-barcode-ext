@@ -333,7 +333,13 @@
 
     // 3) 모두 실패 → 평소 form submit으로 fallback
     // (스피너는 fallback navigate가 끝낼 거라 hide 안 함 — navigate 중엔 정상이라 사용자에겐 자연스러움)
-    showToast('캐시 실패 — 일반 검색으로', 'err');
+    // 사용자에게 어느 분기인지 명확히: timeout / 서버에러 / 응답 파싱 실패
+    let reason = '캐시 실패';
+    if (resp && resp.aborted) reason = '서버 ' + Math.round(resp.elapsedMs / 1000) + '초 timeout';
+    else if (resp && !resp.ok) reason = '서버 응답 비정상(' + (resp.status || '?') + ' / ' + (resp.bytes || 0) + 'B)';
+    else if (resp && resp.ok) reason = '캐시 교체 실패(t_list 매칭 안 됨)';
+    showToast(reason + ' — 일반 검색으로', 'err');
+    log('fallback', { reason, resp });
     _bypassNextSubmit = true;
     // hijack 적용된 f.submit 이 아니라 original 호출 (무한루프 방지)
     setTimeout(() => { try { (f._ubOriginalSubmit || HTMLFormElement.prototype.submit).call(f); } catch (_) {} }, 200);

@@ -49,7 +49,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
  *  - 진단을 위해 decoder/bytes/status/aborted/elapsedMs 모두 응답에 포함.
  */
 async function fetchUbdstore(url) {
-  const FETCH_TIMEOUT_MS = 8000;
+  // 8초 → 20초로 확장 (v3.1.1 사용자 보고: 결과 수십~수백 record 검색 시 ubdstore
+  // 자체 응답이 8초 이상 걸리는 케이스 빈발 → 캐시 미저장으로 fallback 자주 발생).
+  const FETCH_TIMEOUT_MS = 20000;
   const ctrl = new AbortController();
   const t0 = Date.now();
   const tid = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
