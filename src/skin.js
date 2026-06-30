@@ -61,7 +61,53 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.0.4 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0.5 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+
+  /* ==========================================================================
+   *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
+   *  ⚠ init() 안에서 호출하면 DOMContentLoaded 후라 페이지가 이미 첫 결과를
+   *    그리기 시작 → redirect되면 사용자 시각에 "20→100 두 번 깜빡임".
+   *  document_start 시점에 location.replace 호출하면 chrome이 첫 HTML
+   *  download를 취소하고 새 URL로 navigate → 사용자에겐 한 번만 보임.
+   *
+   *  storage는 비동기라 IIFE에서 못 읽음 → sessionStorage 미러 사용.
+   *  init()/onChanged에서 ubSkin/ubPageSize 값을 sessionStorage에 저장 →
+   *  같은 탭의 다음 navigate부터 IIFE가 즉시 판단.
+   * ========================================================================== */
+  (function ensurePageSizeAtStart() {
+    try {
+      // 1) popup 가드(IIFE는 _IS_POPUP 평가 전이라 직접 다시 검사)
+      if (window.menubar && window.menubar.visible === false) return;
+      if (window.toolbar && window.toolbar.visible === false) return;
+      if (window.opener && window.opener !== window && window.outerWidth && window.outerWidth < 1300) return;
+
+      // 2) URL/path 가드
+      if (/[?&]pageSize=/.test(location.search)) return;
+      if (!/(List|ListForm)\.do$/i.test(location.pathname)) return;
+
+      // 3) referrer 가드 — 같은 페이지에서 form submit으로 도착한 검색 결과면 skip
+      if (document.referrer) {
+        try {
+          const ref = new URL(document.referrer);
+          if (ref.host === location.host && ref.pathname === location.pathname) return;
+        } catch (_) {}
+      }
+
+      // 4) 사용자 옵션 가드(sessionStorage mirror).
+      //    첫 진입엔 mirror 없음 → ubSkin default OFF → redirect 안 함.
+      //    사용자가 popup에서 ubSkin ON 후엔 다음 navigate부터 적용.
+      const skin = sessionStorage.getItem('ub_pref_skin');
+      const ps = sessionStorage.getItem('ub_pref_ps');
+      if (skin !== '1') return;          // ubSkin 마스터 ON 아니면 skip
+      if (ps === '0') return;            // 사용자가 명시적 OFF면 skip
+
+      // 5) document_start 시점 즉시 redirect → chrome이 첫 download 취소하고
+      //    새 URL로 navigate. 사용자에겐 한 번만 로드됨.
+      const u = new URL(location.href);
+      u.searchParams.set('pageSize', '100');
+      location.replace(u.toString());
+    } catch (_) {}
+  })();
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
@@ -225,29 +271,10 @@
    *  3) 페이지사이즈
    * ========================================================================== */
   function hasPageSizeParam() { return /[?&]pageSize=/.test(location.search); }
-  // 같은 페이지(form submit으로 온 검색 결과)인지 판정 — referrer 비교.
-  function cameFromSameForm() {
-    try {
-      if (!document.referrer) return false;
-      const ref = new URL(document.referrer);
-      return ref.host === location.host && ref.pathname === location.pathname;
-    } catch (_) { return false; }
-  }
-  function ensureDefaultPageSize() {
-    if (_IS_POPUP) return;
-    if (!on('ubPageSize')) return;
-    if (!/(List|ListForm)\.do$/i.test(location.pathname)) return;
-    if (hasPageSizeParam()) return;
-    // ⚠ 같은 페이지에서 form submit으로 도착한 검색 결과면 redirect 금지.
-    //   사용자가 검색 누른 직후 우리가 한 번 더 redirect하면 결과가 두 번
-    //   바뀌어 보임(사용자 보고: "20→100 자동 재검색"). 대신 select 값만
-    //   100으로 세팅(아래 injectPageSizeOptions) — 다음 검색은 100개로.
-    if (cameFromSameForm()) return;
-    // 메뉴/외부에서 깨끗하게 진입 → 100으로 1회 redirect
-    const u = new URL(location.href);
-    u.searchParams.set('pageSize', '100');
-    location.replace(u.toString());
-  }
+  // (구) ensureDefaultPageSize는 init() 안에서 호출되어 DOMContentLoaded
+  // 후에 redirect → 두 번 로드 발생. v3.0.5부터 위 ensurePageSizeAtStart
+  // IIFE가 document_start에서 즉시 처리. 이 함수는 더 이상 사용 안 함.
+  function ensureDefaultPageSize() { /* noop — IIFE로 이전 */ }
   function injectPageSizeOptions() {
     if (!on('ubPageSize')) return;
     const sels = document.querySelectorAll('select[name=pageSize]');
@@ -893,9 +920,17 @@
     else window.addEventListener('load', reportPageLoad);
   }
 
+  // sessionStorage에 사용자 옵션 mirror — 다음 navigate의 IIFE가 sync로 읽음.
+  function mirrorPrefs() {
+    try {
+      sessionStorage.setItem('ub_pref_skin', state.ubSkin ? '1' : '0');
+      sessionStorage.setItem('ub_pref_ps', state.ubPageSize ? '1' : '0');
+    } catch (_) {}
+  }
   try {
     chrome.storage.local.get(D, d => {
       Object.assign(state, d || {});
+      mirrorPrefs();
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
       else init();
     });
@@ -904,6 +939,7 @@
       let changed = false;
       Object.keys(D).forEach(k => { if (ch[k]) { state[k] = ch[k].newValue; changed = true; } });
       if (changed) {
+        mirrorPrefs();
         applyAll();
         if (on('ubThumbEdit')) bindThumbEdit(document);
       }
