@@ -8,7 +8,7 @@
 
   const D = {
     ubSkin: false, ubDark: false, ubSidebar: true,
-    ubPageSize: true, ubThumbEdit: true, ubAutoSync: false
+    ubPageSize: true, ubThumbEdit: true, ubAutoSync: true
   };
 
   const $ = id => document.getElementById(id);

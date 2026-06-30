@@ -22,7 +22,7 @@
 
   const D = {
     ubSkin: false, ubDark: false, ubThumbEdit: true,
-    ubSidebar: true, ubPageSize: true, ubAutoSync: false,
+    ubSidebar: true, ubPageSize: true, ubAutoSync: true,
     ubSbMode: 'docked', ubSbX: 24, ubSbY: 24, ubSbCollapsed: false,
     ubBarcodes: []
   };
@@ -37,10 +37,38 @@
   // 자체 copy 이벤트를 트리거 → addBarcodes 재진입으로 순서 어그러짐 방지.
   let _suppressNextCopy = false;
 
-  try { console.log('[UB][skin] v2.9 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0 loaded', { isTop: window === window.top, path: location.pathname }); } catch (_) {}
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
+
+  // 전표 자동 분할조회 캐시 대상 페이지.
+  const CACHE_PAGES = {
+    '/jun/delivitem/delivItemList.do':  '매장출고전표',
+    '/jun/clientpay/clientPayJunList.do': '매장매출전표'
+  };
+  function currentCachePage() {
+    const p = location.pathname;
+    return CACHE_PAGES[p] ? { path: p, label: CACHE_PAGES[p] } : null;
+  }
+  // 진행 상태(메모리 only — 페이지 reload 시 사라짐).
+  const cacheJob = { running: false, current: 0, total: 0, date: '', startMs: 0, lastResult: null };
+
+  // page_load telemetry (sidebar 처음 그릴 때 1회).
+  function reportPageLoad() {
+    if (!on('ubSidebar')) return;
+    try {
+      const nav = performance.getEntriesByType('navigation')[0];
+      if (!nav) return;
+      const totalLoad = Math.round(nav.loadEventEnd - nav.startTime);
+      const ttfb = Math.round(nav.responseStart - nav.requestStart);
+      const domNodes = document.getElementsByTagName('*').length;
+      chrome.runtime.sendMessage({
+        source: 'ub', type: 'telemetry',
+        payload: { type: 'page_load', path: location.pathname, ttfb, totalLoad, domNodes }
+      }, () => void chrome.runtime.lastError);
+    } catch (_) {}
+  }
 
   /* ==========================================================================
    *  1) 다크 테마 — invert 폐기, 실제 색상 매핑.
@@ -521,8 +549,82 @@
     panelLeft:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>',
     move:         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/></svg>',
     calendar:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>',
-    barcode:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5v14"/><path d="M8 5v14"/><path d="M12 5v14"/><path d="M17 5v14"/><path d="M21 5v14"/></svg>'
+    barcode:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5v14"/><path d="M8 5v14"/><path d="M12 5v14"/><path d="M17 5v14"/><path d="M21 5v14"/></svg>',
+    database:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>',
+    play:         '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>'
   };
+
+  /* 전표 자동 캐시 섹션 렌더 + 시작 */
+  function renderCacheSection() {
+    const page = currentCachePage();
+    if (!page) return '';
+    const j = cacheJob;
+    let body;
+    if (j.running) {
+      const pct = j.total ? Math.round(j.current / j.total * 100) : 0;
+      body = `
+        <div style="font-size:11.5px;color:var(--ub-sub);margin:0 4px 6px">
+          ${j.current}/${j.total} (${pct}%) · ${j.date}
+        </div>
+        <div style="height:6px;background:var(--ub-soft);border-radius:999px;overflow:hidden;margin:0 4px 8px">
+          <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#35C5F0,#1aa0d4);transition:width .15s"></div>
+        </div>
+        <button class="ub-sb-btn ub-sb-link ub-sb-wide" data-act="cache-cancel">취소</button>
+      `;
+    } else if (j.lastResult) {
+      const r = j.lastResult;
+      const savedTxt = r.savedMs > 60000 ? `${(r.savedMs/60000).toFixed(1)}분` : `${(r.savedMs/1000).toFixed(1)}초`;
+      body = `
+        <div class="ub-sb-empty" style="text-align:left;font-size:11px;line-height:1.6">
+          청크 ${r.chunks.length}개 · hit ${r.hits} / miss ${r.miss}<br>
+          ${(r.totalMs/1000).toFixed(1)}초 소요 · 캐시 절약 ${savedTxt}
+        </div>
+        <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">다시 캐시</button>
+      `;
+    } else {
+      body = `
+        <div class="ub-sb-empty">현재 화면의 날짜 범위를<br>1일씩 분할 캐싱 (1회만 오래 걸림,<br>다음부터 즉시).</div>
+        <button class="ub-sb-btn ub-sb-wide" data-act="cache-run" style="margin-top:6px">${ICONS.play}<span style="margin-left:4px">캐시 시작</span></button>
+      `;
+    }
+    return `
+      <div class="ub-sb-sect">
+        <div class="ub-sb-sect-t">${ICONS.database}<span>전표 자동 캐시 · ${page.label}</span></div>
+        ${body}
+      </div>
+    `;
+  }
+
+  // 현재 URL의 syear/sday/eyear/eday → ISO 날짜 추출
+  function urlDateRange() {
+    const u = new URL(location.href), sp = u.searchParams;
+    const sy = sp.get('syear'), sm = sp.get('smonth'), sd = sp.get('sday');
+    const ey = sp.get('eyear'), em = sp.get('emonth'), ed = sp.get('eday');
+    if (!sy || !sm || !sd || !ey || !em || !ed) return null;
+    return { s: `${sy}-${sm}-${sd}`, e: `${ey}-${em}-${ed}` };
+  }
+  function startCacheJob() {
+    const page = currentCachePage();
+    if (!page || cacheJob.running) return;
+    const range = urlDateRange();
+    if (!range) { alert('현재 페이지 URL에 날짜 파라미터(syear/sday/eyear/eday)가 없어요. 한 번 검색해서 URL이 잡힌 뒤 다시 시도하세요.'); return; }
+    cacheJob.running = true; cacheJob.current = 0; cacheJob.total = 0; cacheJob.date = ''; cacheJob.startMs = Date.now(); cacheJob.lastResult = null;
+    renderSidebar();
+    chrome.runtime.sendMessage({
+      source: 'ub', type: 'cacheSearch',
+      path: page.path, url: location.href,
+      startDate: range.s, endDate: range.e, chunkDays: 1
+    }, (resp) => {
+      cacheJob.running = false;
+      cacheJob.lastResult = resp || { ok: false };
+      renderSidebar();
+    });
+  }
+  function cancelCacheJob() {
+    // 현재는 실제 cancel 없음(background fetch 진행 중). 상태만 reset 표시.
+    cacheJob.running = false; cacheJob.lastResult = { chunks: [], hits: 0, miss: 0, totalMs: Date.now() - cacheJob.startMs, savedMs: 0 };
+    renderSidebar();
+  }
 
   function ensureHandle() {
     if (document.getElementById(HANDLE_ID)) return;
@@ -615,6 +717,8 @@
           <div class="ub-sb-empty">2606WH 같은 바코드 텍스트를<br>복사하면 자동으로 저장됩니다.</div>
         `}
       </div>
+
+      ${renderCacheSection()}
     `;
 
     // 위치 적용
@@ -671,6 +775,11 @@
       try { chrome.storage.local.set({ ubBarcodes: [] }); } catch (_) {}
       renderSidebar();
     });
+
+    const runC = bar.querySelector('[data-act="cache-run"]');
+    if (runC) runC.addEventListener('click', startCacheJob);
+    const cancelC = bar.querySelector('[data-act="cache-cancel"]');
+    if (cancelC) cancelC.addEventListener('click', cancelCacheJob);
   }
 
   /* ==========================================================================
@@ -712,11 +821,25 @@
     bindCopyListener();
     applyAll();
     startObserver();
+    // background → cacheProgress 메시지 수신
+    try {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (!msg || msg.source !== 'ub-bg' || msg.type !== 'cacheProgress') return;
+        cacheJob.current = msg.current || 0;
+        cacheJob.total = msg.total || 0;
+        cacheJob.date = msg.date || '';
+        if (msg.phase === 'done') cacheJob.running = false;
+        renderSidebar();
+      });
+    } catch (_) {}
     // 윈도우 리사이즈 시 플로팅 사이드바 안 보이는 곳으로 가지 않게 보정
     window.addEventListener('resize', () => {
       const bar = document.getElementById(SIDEBAR_ID);
       if (bar && state.ubSbMode === 'floating') applySbPosition(bar);
     });
+    // 페이지 로드 telemetry
+    if (document.readyState === 'complete') reportPageLoad();
+    else window.addEventListener('load', reportPageLoad);
   }
 
   try {

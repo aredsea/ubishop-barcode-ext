@@ -1,0 +1,30 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "cache-control", "operation": "set", "value": "public, max-age=86400, immutable" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "ubdstore.ubshop.biz",
+      "resourceTypes": ["image"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "cache-control", "operation": "set", "value": "public, max-age=3600" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "ubdstore.ubshop.biz",
+      "resourceTypes": ["stylesheet", "script", "font"]
+    }
+  }
+]
