@@ -196,10 +196,15 @@
     showToast('검색…', 'ok');
 
     // 1) 캐시 조회
+    // D102LabelPrinter(C#) 는 entry 를 PascalCase 로 반환:
+    //   { Path, Date, Html, FetchedAt, SizeBytes }
+    // → camelCase/PascalCase 둘 다 시도 (서버 측 직렬화 변경에도 견고).
     const cached = await sendBg({ type: 'cacheGetSearch', pathKey: 'search:' + location.pathname, key });
-    if (cached && cached.hit && cached.entry && cached.entry.html) {
-      const ok = replaceTList(cached.entry.html);
-      log('hit', { ok });
+    const cachedEntry = cached && cached.entry;
+    const cachedHtml = cachedEntry && (cachedEntry.html || cachedEntry.Html);
+    if (cached && cached.hit && cachedHtml) {
+      const ok = replaceTList(cachedHtml);
+      log('hit', { ok, htmlLen: cachedHtml.length });
       if (ok) {
         history.replaceState({}, '', url);
         hidePageLoaders();
@@ -210,7 +215,7 @@
         return;
       }
     } else {
-      log('cache miss (no entry)');
+      log('cache miss', { hit: cached && cached.hit, hasEntry: !!cachedEntry, hasHtml: !!cachedHtml });
     }
 
     // 2) miss → 서버 fetch
