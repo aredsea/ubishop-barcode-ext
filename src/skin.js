@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.0.3 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0.4 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
@@ -225,14 +225,25 @@
    *  3) 페이지사이즈
    * ========================================================================== */
   function hasPageSizeParam() { return /[?&]pageSize=/.test(location.search); }
+  // 같은 페이지(form submit으로 온 검색 결과)인지 판정 — referrer 비교.
+  function cameFromSameForm() {
+    try {
+      if (!document.referrer) return false;
+      const ref = new URL(document.referrer);
+      return ref.host === location.host && ref.pathname === location.pathname;
+    } catch (_) { return false; }
+  }
   function ensureDefaultPageSize() {
-    if (_IS_POPUP) return;   // 팝업 창에서는 redirect 금지
+    if (_IS_POPUP) return;
     if (!on('ubPageSize')) return;
-    // URL에 pageSize가 있으면 사용자 의도(직접 select 변경 또는 메뉴 a href).
-    // 없을 때만 100으로 redirect — 매번 메뉴 클릭으로 깨끗하게 진입한 경우만.
-    // (sessionStorage 마커 폐기: 마커 평생 유지로 redirect 1회 후 안 됐던 버그 수정)
-    if (hasPageSizeParam()) return;
     if (!/(List|ListForm)\.do$/i.test(location.pathname)) return;
+    if (hasPageSizeParam()) return;
+    // ⚠ 같은 페이지에서 form submit으로 도착한 검색 결과면 redirect 금지.
+    //   사용자가 검색 누른 직후 우리가 한 번 더 redirect하면 결과가 두 번
+    //   바뀌어 보임(사용자 보고: "20→100 자동 재검색"). 대신 select 값만
+    //   100으로 세팅(아래 injectPageSizeOptions) — 다음 검색은 100개로.
+    if (cameFromSameForm()) return;
+    // 메뉴/외부에서 깨끗하게 진입 → 100으로 1회 redirect
     const u = new URL(location.href);
     u.searchParams.set('pageSize', '100');
     location.replace(u.toString());
@@ -240,18 +251,25 @@
   function injectPageSizeOptions() {
     if (!on('ubPageSize')) return;
     const sels = document.querySelectorAll('select[name=pageSize]');
-    const want = ['20', '50', '100', '300', '500'];
+    const want = ['20', '30', '50', '100', '300', '500'];
     sels.forEach(sel => {
       const existing = new Set([...sel.options].map(o => o.value));
       want.forEach(v => {
         if (!existing.has(v)) {
           const op = document.createElement('option');
-          op.value = v; op.text = v;   // 페이지 자체 옵션과 동일하게 숫자만
+          op.value = v; op.text = v;
           sel.appendChild(op);
         }
       });
-      const cur = new URL(location.href).searchParams.get('pageSize') || '20';
-      if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+      // URL에 pageSize 있으면 그 값으로(사용자가 select 변경 후 검색 결과),
+      // 없으면 100으로 selected → 사용자가 다음 검색 누르면 form submit이
+      // pageSize=100으로 보내짐 (우리가 추가 redirect 안 해도 됨).
+      const cur = new URL(location.href).searchParams.get('pageSize');
+      if (cur && [...sel.options].some(o => o.value === cur)) {
+        sel.value = cur;
+      } else {
+        sel.value = '100';
+      }
     });
   }
 
