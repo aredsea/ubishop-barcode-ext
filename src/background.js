@@ -31,7 +31,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'cachePut')   { cachePut(msg.path, msg.date, msg.html).then(sendResponse); return true; }
   if (msg.type === 'telemetry')  { sendTelemetry(msg.payload).then(sendResponse); return true; }
   if (msg.type === 'cacheSearch') { runCacheSearch(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+
+  // ---- Phase 2: transparent caching (form submit 가로채기용) ----
+  // path 슬롯에 'search:<page>' 사용. date 슬롯에 form value SHA-256 hash.
+  if (msg.type === 'cacheGetSearch')   { cacheGet(msg.pathKey || 'search', msg.key).then(sendResponse); return true; }
+  if (msg.type === 'cachePutSearch')   { cachePut(msg.pathKey || 'search', msg.key, msg.html).then(sendResponse); return true; }
+  if (msg.type === 'cacheFetchSearch') { fetchUbdstore(msg.url).then(sendResponse); return true; }
 });
+
+/* ---- transparent caching용 — ubdstore에서 단일 URL fetch ---- */
+async function fetchUbdstore(url) {
+  try {
+    const r = await fetch(url, { credentials: 'include', cache: 'no-cache' });
+    const buf = await r.arrayBuffer();
+    const bytes = buf.byteLength;
+    let html = '';
+    try { html = new TextDecoder('utf-8', { fatal: false }).decode(buf); }
+    catch (_) { html = new TextDecoder('euc-kr').decode(buf); }
+    // 빈응답(<1KB)은 서버 SQL timeout으로 간주 → fail
+    const ok = r.ok && bytes > 1000;
+    return { ok, html, bytes, status: r.status };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
 
 function proxyJson(url, body, cb) {
   const init = body == null
