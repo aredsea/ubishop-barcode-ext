@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.0.2 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.0.3 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
@@ -226,12 +226,13 @@
    * ========================================================================== */
   function hasPageSizeParam() { return /[?&]pageSize=/.test(location.search); }
   function ensureDefaultPageSize() {
-    if (_IS_POPUP) return;   // 팝업 창에서는 redirect 금지(원본 작업 방해)
+    if (_IS_POPUP) return;   // 팝업 창에서는 redirect 금지
     if (!on('ubPageSize')) return;
+    // URL에 pageSize가 있으면 사용자 의도(직접 select 변경 또는 메뉴 a href).
+    // 없을 때만 100으로 redirect — 매번 메뉴 클릭으로 깨끗하게 진입한 경우만.
+    // (sessionStorage 마커 폐기: 마커 평생 유지로 redirect 1회 후 안 됐던 버그 수정)
     if (hasPageSizeParam()) return;
-    if (sessionStorage.getItem('ub_ps_redirected_' + location.pathname)) return;
     if (!/(List|ListForm)\.do$/i.test(location.pathname)) return;
-    sessionStorage.setItem('ub_ps_redirected_' + location.pathname, '1');
     const u = new URL(location.href);
     u.searchParams.set('pageSize', '100');
     location.replace(u.toString());
@@ -245,7 +246,7 @@
       want.forEach(v => {
         if (!existing.has(v)) {
           const op = document.createElement('option');
-          op.value = v; op.text = v + '개';
+          op.value = v; op.text = v;   // 페이지 자체 옵션과 동일하게 숫자만
           sel.appendChild(op);
         }
       });
