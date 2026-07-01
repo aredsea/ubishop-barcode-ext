@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.1.12 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.1.13 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -919,23 +919,20 @@
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
   /* ==========================================================================
-   *  페이지별 커서 자동 포커스 (v3.1.12) — 유비샵 도구 상시 기능
-   *   · 상품 주문 전표      → 고객명 입력에 포커스
-   *   · 상품 발주 전표/입고 전표 → 매입처명 입력에 포커스
-   *  페이지 판별은 화면 제목(헤딩) 키워드로. 매출·출고 등 검색/목록 페이지는
-   *  헤딩에 주문/발주/입고 가 없어 자동 제외 → 검색필터 커서를 훔치지 않음.
-   *  ⚠ 브라우저 정책상 IME(한/영) 상태는 JS로 강제 불가. 포커스+커서 배치까지만.
-   *    (사용자 IME 가 한글이면 바로 한글 타이핑됨. lang="ko" 힌트만 부여.)
+   *  페이지별 커서 자동 포커스 + 한/영 표시 아이콘 (v3.1.13) — 유비샵 도구 상시기능
+   *   · 주문전표(orderItemList)              → 고객명 입력에 포커스
+   *   · 발주전표(baljuItemJunList)           → 매입처명 입력에 포커스
+   *   · 입고전표(inputItemJunList)           → 매입처명 입력에 포커스
+   *  타이틀이 이미지라 URL(pathname) 기반으로 판별.
+   *  ⚠ 브라우저 정책상 IME(한/영) 상태를 JS로 강제할 수 없음 → 대신 입력칸 옆에
+   *    한/영 상태 아이콘을 붙이고, 실제 타이핑(조합 이벤트)으로 한/영을 감지해
+   *    live 로 아이콘을 갱신한다. 사용자가 아이콘 보고 한/영 키로 맞추면 됨.
    * ========================================================================== */
-  function pageHeadingText() {
-    let t = '';
-    const sels = ['.location', '.lnb_tit', '.page_tit', '.cont_tit', '.tit', '.title', 'h1', 'h2', 'h3'];
-    for (const s of sels) {
-      document.querySelectorAll(s).forEach(el => { if (el && el.textContent) t += ' ' + el.textContent; });
-    }
-    t += ' ' + (document.title || '');
-    return t.replace(/\s+/g, '');
-  }
+  const AUTO_FOCUS_PAGES = {
+    '/jun/orderitem/orderItemList.do':    ['고객명'],
+    '/jun/baljuitem/baljuItemJunList.do': ['매입처명', '매입처'],
+    '/jun/inputitem/inputItemJunList.do': ['매입처명', '매입처']
+  };
   function focusableInputs() {
     return [...document.querySelectorAll('input[type="text"], input:not([type])')]
       .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
@@ -975,29 +972,61 @@
     }
     return null;
   }
+
+  /* 한/영 상태 아이콘: 입력칸 바로 뒤에 pill 삽입. 조합(composition) 이벤트로 한글,
+   * ASCII 알파벳 직접입력으로 영문 감지 → live 갱신. 초기값은 '한'(대상칸 기대 모드). */
+  function attachImeIndicator(input) {
+    if (!input || input.dataset.ubImeBound) return;
+    input.dataset.ubImeBound = '1';
+    const pill = document.createElement('span');
+    pill.className = 'ub-ime-pill';
+    pill.style.cssText = 'display:inline-block;min-width:20px;height:18px;line-height:18px;'
+      + 'padding:0 6px;margin-left:6px;border-radius:9px;font:700 11px/18px Pretendard,sans-serif;'
+      + 'text-align:center;color:#fff;vertical-align:middle;user-select:none;'
+      + 'box-shadow:0 1px 2px rgba(0,0,0,.2);transition:background .12s;';
+    const setLang = (lang) => {
+      if (lang === 'ko') { pill.textContent = '한'; pill.style.background = '#2563eb'; pill.title = '한글 입력 상태'; }
+      else               { pill.textContent = '영'; pill.style.background = '#dc2626'; pill.title = '영문 입력 상태 — 한/영 키를 누르세요'; }
+      pill.dataset.lang = lang;
+    };
+    setLang('ko');   // 이 칸은 한글 입력이 기대값 → 기본 '한'(첫 영문 입력 시 '영'으로 정정)
+    // 입력칸 바로 뒤에 삽입
+    if (input.parentNode) input.parentNode.insertBefore(pill, input.nextSibling);
+    // 감지
+    input.addEventListener('compositionstart', () => setLang('ko'));
+    input.addEventListener('input', (e) => {
+      // 조합 중이 아니고, 방금 삽입된 글자가 ASCII 알파벳이면 영문 모드
+      if (!e.isComposing && e.inputType === 'insertText' && e.data && /^[A-Za-z]$/.test(e.data)) setLang('en');
+    });
+    // keydown 백업: 조합 이벤트 미지원 브라우저 대비(한글 자모 keyCode 229 → 한)
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) setLang('ko');
+    });
+    return pill;
+  }
+
   function autoFocusByPage() {
     try {
       if (!state.ubSkin) return;   // 유비샵 도구(스킨) 켜져 있을 때만
-      const h = pageHeadingText();
-      let labels = null;
-      if (/주문/.test(h) && /전표/.test(h)) labels = ['고객명'];
-      else if ((/발주/.test(h) && /전표/.test(h)) || /입고/.test(h)) labels = ['매입처명', '매입처'];
-      if (!labels) return;   // 대상 페이지 아님 (매출·출고·검색 등)
+      const labels = AUTO_FOCUS_PAGES[location.pathname];
+      if (!labels) return;         // 대상 페이지(주문/발주/입고 전표) 아님
       const tryFocus = (attempt) => {
-        // 사용자가 이미 다른 입력을 만지고 있으면 커서 안 훔침
-        const ae = document.activeElement;
-        if (ae && ae.tagName === 'INPUT' && ae.value && ae.value.trim()) return;
         const el = findLabeledInput(labels);
         if (el) {
-          if (el.value && el.value.trim()) return;   // 이미 값 있으면 스킵
-          el.focus();
-          try { const n = el.value.length; el.setSelectionRange(n, n); } catch (_) {}
+          attachImeIndicator(el);
+          // 사용자가 이미 다른 입력을 만지고 있으면 커서만 안 훔침(아이콘은 부착)
+          const ae = document.activeElement;
+          const userBusy = ae && ae.tagName === 'INPUT' && ae !== el && ae.value && ae.value.trim();
+          if (!userBusy && !(el.value && el.value.trim())) {
+            el.focus();
+            try { const n = el.value.length; el.setSelectionRange(n, n); } catch (_) {}
+          }
           try { el.setAttribute('lang', 'ko'); } catch (_) {}
           console.log('[UB][skin] auto-focus →', labels[0], '/', el.name || el.id || '(anon)');
           return;
         }
-        if (attempt < 4) setTimeout(() => tryFocus(attempt + 1), 350);
-        else console.log('[UB][skin] auto-focus 대상 입력 못 찾음', { labels, heading: h.slice(0, 80) });
+        if (attempt < 5) setTimeout(() => tryFocus(attempt + 1), 350);
+        else console.log('[UB][skin] auto-focus 대상 입력 못 찾음', { labels, path: location.pathname });
       };
       tryFocus(0);
     } catch (e) { console.warn('[UB][skin] auto-focus 실패', e); }
