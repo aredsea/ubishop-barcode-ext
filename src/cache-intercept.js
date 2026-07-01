@@ -64,20 +64,27 @@
  *  - hit 시나리오에서 replaceTList 실패해도 miss 흐름으로 자연스레 진입(진행
  *    오버레이 유지). 이전엔 hit 실패 시 진행표시 없이 갑자기 fallback.
  *
- *  v3.1.7 변경 내역 (날짜 리셋 + 2번째 검색 무응답 동시 fix):
+ *  v3.1.7 변경 내역 (날짜 리셋 + 2번째 검색 무응답 동시 fix 시도):
  *  - v3.1.6 실측 로그로 원인 확정: form restore {restored:0, missingField:15}.
  *    응답 form1 의 필드 구조가 페이지 form1 과 달라 값 복원이 전부 실패했고,
  *    그로 인해 (a) 날짜가 2000/01/01 로 남고 (b) 새 form 의 date 위젯 JS 상태가
  *    깨져서 다음 검색 클릭이 죽음(오버레이도 안 뜸 = handleSearchSubmit 미실행).
- *  - 근본 해결: 값 복원 대신 원래 form1 DOM 노드를 통째로 보존. wrapper.innerHTML
- *    교체 후, 새로 생긴 form1 을 원래 form1 노드로 replaceChild. 원래 form 의
- *    선택 날짜·이벤트 리스너·hijack submit 이 그대로 유지 → 두 문제 동시 해결.
- *    (결과 t_list 는 form1 밖 형제라 정상 갱신, rebind/복원/스냅샷 전부 제거.)
+ *  - form1 DOM 노드 통째 보존(replaceChild). 그러나 실측 결과 날짜 여전히 리셋:
+ *    날짜 select 가 form1 밖 형제라 wrapper innerHTML 교체 때 덮여버림.
+ *
+ *  v3.1.8 변경 내역 (실제 근본 해결):
+ *  - wrapper.innerHTML 통째 교체 방식 자체를 폐기. 결과 그리드(table.t_list)만
+ *    index 매칭으로 replaceChild. form·날짜 select·검색버튼·페이지 스크립트를
+ *    아예 건드리지 않음 → (a) 날짜 리셋 원천 차단(skin.js 가 넣어둔 select 값
+ *    유지), (b) document.focus 에러 + 2번째 검색 죽음 제거(페이지 DOM/스크립트
+ *    무손상), (c) 합계·헤더·데이터가 모두 t_list 안이라 결과 갱신도 정상.
+ *  - "총 N개" 레코드 카운트는 t_list 밖 텍스트라 별도 갱신.
+ *  - tooltip 은 교체된 table 안에 함께 들어오고, body 직속 필요분만 응답에서 보강.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.7';
+  const UB_CACHE_VERSION = '3.1.8';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -282,81 +289,75 @@
       // 스크롤 보존
       const oldScroll = window.scrollY || window.pageYOffset || 0;
 
-      // v3.1.7: form 노드 통째 보존 전략.
-      //   이전(v3.1.1~v3.1.6): innerHTML 교체 후 새 form1 에 값 복원 시도.
-      //   → 실측(v3.1.6 로그) restore {restored:0, missingField:15}: 응답 form1 의
-      //     필드 구조가 페이지 form1 과 달라 값 복원이 전부 실패(날짜 2000/01/01
-      //     그대로) + date 위젯 JS 상태 깨져 다음 검색 버튼이 죽음(오버레이도 안 뜸).
-      //   해결: 사용자의 원래 form1 DOM 노드를 그대로 유지.
-      //     ① 교체 전 원래 form1 참조 확보
-      //     ② wrapper.innerHTML 교체(결과 테이블·합계·페이지수 갱신)
-      //     ③ 교체로 새로 생긴 form1 을 원래 form1 노드로 되돌림(replaceChild)
-      //   → 원래 form 의 선택 날짜·이벤트 리스너·hijack 된 submit 전부 그대로 유지.
-      //     결과 t_list 는 form1 밖 형제라 정상 갱신됨(유비샵 구조: form1=검색바,
-      //     결과표=별도 형제, 일괄선택 체크박스=form2). rebind/복원 불필요.
-      const oldForm = curWrap.querySelector('form[name="form1"]');
-      curWrap.innerHTML = newWrap.innerHTML;
-      let formPreserved = false;
+      // v3.1.8: 결과 테이블(table.t_list)만 외과적으로 교체.
+      //   v3.1.7 까지: wrapper.innerHTML 통째 교체(+ form1 노드 보존). 그런데 실측
+      //   결과, 날짜 select(syear/smonth/sday…)는 form1 밖 형제라 wrapper 교체 시
+      //   응답 default(2000/01/01)로 덮였고, form1 만 보존해도 날짜는 리셋됨.
+      //   또 wrapper 통째 교체가 페이지 스크립트/버튼을 재생성해 document.focus
+      //   에러 + 2번째 검색 죽음(handleSearchSubmit 미실행)까지 유발.
+      //   → 근본 해결: form·날짜 select·검색버튼·페이지 스크립트 전부 안 건드리고
+      //     결과 그리드(table.t_list 전부)만 index 매칭으로 교체. 합계·헤더·데이터
+      //     행이 모두 t_list 안이라 이걸로 결과·합계 갱신 완료. skin.js 사이드바가
+      //     이미 넣어둔 날짜 select 값은 그대로 유지 → 날짜 리셋 원천 차단.
+      const curTables = curWrap.querySelectorAll('table.t_list');
+      const newTables = newWrap.querySelectorAll('table.t_list');
+      if (!curTables.length || !newTables.length) {
+        log('replaceTList: t_list 없음', { cur: curTables.length, new: newTables.length });
+        return false;
+      }
+      const nT = Math.min(curTables.length, newTables.length);
+      let swapped = 0;
+      for (let i = 0; i < nT; i++) {
+        try {
+          const imported = document.importNode(newTables[i], true);
+          curTables[i].parentNode.replaceChild(imported, curTables[i]);
+          swapped++;
+        } catch (_) {}
+      }
+      log('replaceTList: t_list 교체', { swapped, curCount: curTables.length, newCount: newTables.length });
+      if (!swapped) return false;
+
+      // "총 N 개" 레코드 카운트 — t_list 밖 텍스트라 별도 갱신(있을 때만).
       try {
-        const newForm = curWrap.querySelector('form[name="form1"]');
-        if (oldForm && newForm && newForm.parentNode) {
-          newForm.parentNode.replaceChild(oldForm, newForm);
-          formPreserved = true;
+        const m = (newWrap.textContent || '').match(/총\s*[\d,]+\s*개/);
+        if (m && m[0]) {
+          const walker = document.createTreeWalker(curWrap, NodeFilter.SHOW_TEXT, null);
+          let node;
+          while ((node = walker.nextNode())) {
+            if (node.parentElement && node.parentElement.closest('table.t_list')) continue;
+            if (/총\s*[\d,]+\s*개/.test(node.nodeValue)) {
+              node.nodeValue = node.nodeValue.replace(/총\s*[\d,]+\s*개/, m[0]);
+              break;
+            }
+          }
         }
       } catch (_) {}
-      if (formPreserved) {
-        log('form preserved (원래 form1 노드 유지 — 날짜·핸들러·hijack 그대로)');
-      } else {
-        // 드문 경우(원래/새 form1 못 찾음) → 새 form 에 재바인딩으로 폴백.
-        log('form preserve 실패 → rebind 폴백', { hasOld: !!oldForm });
-        setTimeout(() => { try { bind(); } catch (_) {} }, 0);
-      }
 
-      // tooltip 강제 sync + 진단 — 응답에서 wrapper 안/밖 둘 다 모아 page 에 보장.
-      // 페이지의 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾는데
-      // null 이면 fail(parentElement of null). → 우리가 tooltip element 존재 보장.
-      let dbgWrapTC = 0, dbgBodyTC = 0, dbgRespWrapTC = 0, dbgRespBodyTC = 0;
+      // tooltip 강제 sync — 새 결과행의 tooltip2 는 교체된 table 안에 함께 들어왔지만,
+      // 페이지 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾으므로
+      // 혹시 table 밖(body 직속)에 있어야 하는 tooltip 은 응답에서 body 로 보강.
+      let dbgBodyTC = 0, dbgRespBodyTC = 0;
       try {
         const respAll = doc.querySelectorAll('div.tooltip2');
         dbgRespBodyTC = respAll.length;
-        dbgRespWrapTC = newWrap.querySelectorAll('div.tooltip2').length;
-
-        // 사이드바 외 잔상 정리: wrapper 안의 새 응답 것은 보존, 그 외 제거
-        document.querySelectorAll('div.tooltip2').forEach(t => {
-          if (t.closest && t.closest('#ub-sidebar')) return;
-          if (curWrap.contains(t)) return;
-          t.remove();
-        });
-
-        // 응답의 모든 tooltip 중 wrapper 밖의 것 body 에 추가(페이지가 그렇게 구성된 경우)
-        // + wrapper 안에 없는 tooltip 도 body 에 추가해서 getElementById 안전 보장.
-        const wrapIds = new Set();
-        curWrap.querySelectorAll('div.tooltip2[id]').forEach(t => wrapIds.add(t.id));
+        const haveIds = new Set();
+        curWrap.querySelectorAll('div.tooltip2[id]').forEach(t => haveIds.add(t.id));
+        document.querySelectorAll('body > div.tooltip2[id]').forEach(t => haveIds.add(t.id));
         respAll.forEach(t => {
-          if (!t.id) return;
-          if (wrapIds.has(t.id)) return;   // wrapper 안에 이미 같은 id 존재
+          if (!t.id || haveIds.has(t.id)) return;
           if (!document.body) return;
           document.body.appendChild(t.cloneNode(true));
-          wrapIds.add(t.id);
+          haveIds.add(t.id);
         });
-
-        dbgWrapTC = curWrap.querySelectorAll('div.tooltip2').length;
         dbgBodyTC = document.querySelectorAll('div.tooltip2').length;
       } catch (_) {}
-      log('tooltip sync', { pageWrap: dbgWrapTC, pageBodyTotal: dbgBodyTC, respWrap: dbgRespWrapTC, respBodyTotal: dbgRespBodyTC });
-
-      // v3.1.3: 응답 inline script 재실행 폐기.
-      // 원래 tooltip 데이터 매핑 갱신 목적이었지만, 유비샵 selectDate.js SetCustomDate
-      // 가 재실행되어 formSnap 복원값을 덮어쓰고 TypeError chain 유발.
-      // tooltip 은 위쪽 sync 블록으로 이미 커버.
+      log('tooltip sync', { pageBodyTotal: dbgBodyTC, respBodyTotal: dbgRespBodyTC });
 
       // 스크롤 복원
       try { window.scrollTo(0, oldScroll); } catch (_) {}
 
-      // v3.1.7: form 보존 성공 시 rebind 불필요(원래 노드가 이미 bound 상태 유지).
-      //   폴백 경로에서만 위에서 bind() 재호출함.
-
-      log('replaceTList: 결과 교체 완료 (form 보존=' + formPreserved + ')');
+      // form·날짜 select·버튼 전부 그대로 → rebind/복원/스크립트 재실행 불필요.
+      log('replaceTList: 결과 테이블만 교체 완료 (form·날짜 무손상)');
       return true;
     } catch (e) {
       console.warn('[UB][cache] replaceTList failed:', e);
