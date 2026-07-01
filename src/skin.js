@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.1.0 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.1.12 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -918,10 +918,96 @@
     });
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
+  /* ==========================================================================
+   *  페이지별 커서 자동 포커스 (v3.1.12) — 유비샵 도구 상시 기능
+   *   · 상품 주문 전표      → 고객명 입력에 포커스
+   *   · 상품 발주 전표/입고 전표 → 매입처명 입력에 포커스
+   *  페이지 판별은 화면 제목(헤딩) 키워드로. 매출·출고 등 검색/목록 페이지는
+   *  헤딩에 주문/발주/입고 가 없어 자동 제외 → 검색필터 커서를 훔치지 않음.
+   *  ⚠ 브라우저 정책상 IME(한/영) 상태는 JS로 강제 불가. 포커스+커서 배치까지만.
+   *    (사용자 IME 가 한글이면 바로 한글 타이핑됨. lang="ko" 힌트만 부여.)
+   * ========================================================================== */
+  function pageHeadingText() {
+    let t = '';
+    const sels = ['.location', '.lnb_tit', '.page_tit', '.cont_tit', '.tit', '.title', 'h1', 'h2', 'h3'];
+    for (const s of sels) {
+      document.querySelectorAll(s).forEach(el => { if (el && el.textContent) t += ' ' + el.textContent; });
+    }
+    t += ' ' + (document.title || '');
+    return t.replace(/\s+/g, '');
+  }
+  function focusableInputs() {
+    return [...document.querySelectorAll('input[type="text"], input:not([type])')]
+      .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
+  }
+  function findLabeledInput(labels) {
+    const inputs = focusableInputs();
+    if (!inputs.length) return null;
+    // 1) <label for> 매칭
+    for (const lab of document.querySelectorAll('label[for]')) {
+      const txt = (lab.textContent || '').replace(/\s+/g, '');
+      if (labels.some(L => txt.includes(L))) {
+        const el = document.getElementById(lab.getAttribute('for'));
+        if (el && inputs.includes(el)) return el;
+      }
+    }
+    // 2) 라벨 텍스트를 가진 셀 → 같은 행의 그 셀 이후 input, 없으면 형제 input
+    const cells = [...document.querySelectorAll('th, td, span, label, div, b, strong')];
+    for (const c of cells) {
+      const own = [...c.childNodes].filter(n => n.nodeType === 3).map(n => n.nodeValue).join('').replace(/\s+/g, '');
+      if (!labels.some(L => own === L || own === L + ':' || own === L + '：')) continue;
+      const tr = c.closest('tr');
+      if (tr) {
+        const tds = [...tr.children];
+        const li = tds.findIndex(td => td === c || td.contains(c));
+        for (let k = Math.max(0, li); k < tds.length; k++) {
+          const inp = tds[k].querySelector('input[type="text"], input:not([type])');
+          if (inp && inputs.includes(inp)) return inp;
+        }
+      }
+      let sib = c.nextElementSibling;
+      while (sib) {
+        const inp = sib.matches && sib.matches('input') ? sib
+          : (sib.querySelector ? sib.querySelector('input[type="text"], input:not([type])') : null);
+        if (inp && inputs.includes(inp)) return inp;
+        sib = sib.nextElementSibling;
+      }
+    }
+    return null;
+  }
+  function autoFocusByPage() {
+    try {
+      if (!state.ubSkin) return;   // 유비샵 도구(스킨) 켜져 있을 때만
+      const h = pageHeadingText();
+      let labels = null;
+      if (/주문/.test(h) && /전표/.test(h)) labels = ['고객명'];
+      else if ((/발주/.test(h) && /전표/.test(h)) || /입고/.test(h)) labels = ['매입처명', '매입처'];
+      if (!labels) return;   // 대상 페이지 아님 (매출·출고·검색 등)
+      const tryFocus = (attempt) => {
+        // 사용자가 이미 다른 입력을 만지고 있으면 커서 안 훔침
+        const ae = document.activeElement;
+        if (ae && ae.tagName === 'INPUT' && ae.value && ae.value.trim()) return;
+        const el = findLabeledInput(labels);
+        if (el) {
+          if (el.value && el.value.trim()) return;   // 이미 값 있으면 스킵
+          el.focus();
+          try { const n = el.value.length; el.setSelectionRange(n, n); } catch (_) {}
+          try { el.setAttribute('lang', 'ko'); } catch (_) {}
+          console.log('[UB][skin] auto-focus →', labels[0], '/', el.name || el.id || '(anon)');
+          return;
+        }
+        if (attempt < 4) setTimeout(() => tryFocus(attempt + 1), 350);
+        else console.log('[UB][skin] auto-focus 대상 입력 못 찾음', { labels, heading: h.slice(0, 80) });
+      };
+      tryFocus(0);
+    } catch (e) { console.warn('[UB][skin] auto-focus 실패', e); }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
     bindCopyListener();
+    autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
     startObserver();
