@@ -15,9 +15,21 @@
  *  - Bug F: t_list "마지막 = 결과" 가정 폐기. rowCount 최대인 것을 결과로 선택.
  *  - 명시적 로깅 + 토스트로 분기 가시화. SW 응답 ok=false 시 어디서 실패했는지
  *    F12 콘솔에서 즉시 판단 가능.
+ *
+ *  v3.1.2 변경 내역:
+ *  - fetch를 SW(background.js)가 아니라 여기서 직접 수행 (same-origin, MAIN
+ *    world). 이유: background.js는 loader 관리 대상이 아니라 폴더 교체 없이는
+ *    갱신 불가 → 매장 PC들은 여전히 구버전 SW(8s timeout)로 동작. 이 파일에서
+ *    직접 fetch 하면 GitHub push 만으로 timeout/로직 즉시 적용.
+ *  - 콘솔에 UB_CACHE_VERSION + body.dataset.ubCacheVer 심음 → F12 로 실제
+ *    로드된 로직 버전 확인 가능(chrome://extensions 의 manifest 버전과 별개).
+ *  - hit 토스트에 이전 refresh 시 잰 서버 실측시간 표시(persisted.lastMs).
+ *    사용자가 "얼마 절약됐는지" 매 hit 마다 즉시 체감.
  * ========================================================================== */
 (function () {
   'use strict';
+
+  const UB_CACHE_VERSION = '3.1.2';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -26,6 +38,8 @@
   if (!CACHE_PAGES[location.pathname]) return;
 
   const log = (...a) => { try { console.log('[UB][cache]', ...a); } catch (_) {} };
+  log('loaded v' + UB_CACHE_VERSION, 'on', location.pathname);
+  try { if (document.body) document.body.dataset.ubCacheVer = UB_CACHE_VERSION; } catch (_) {}
 
   /* ---- bridge: MAIN ↔ localbridge(ISOLATED) ↔ SW ---- */
   let _seq = 0;
@@ -75,6 +89,59 @@
       return 'h' + (h >>> 0).toString(16);
     }
   }
+  /* ---- ubdstore 직접 fetch (v3.1.2: SW cacheFetchSearch 대체) ----
+   *  MAIN world content script 는 same-origin(ubdstore.ubshop.biz) 이라 credentials
+   *  포함 fetch 가능. SW 로직을 여기로 옮긴 이유는 파일 상단 주석 참고.
+   *  응답 구조는 SW fetchUbdstore 와 동일하게 유지 → handleSearchSubmit 분기
+   *  로직(ok/aborted/status/bytes) 그대로 재사용.
+   */
+  const FETCH_TIMEOUT_MS = 20000;
+  async function fetchUbdstoreDirect(url) {
+    const t0 = Date.now();
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(url, {
+        credentials: 'include',
+        cache: 'no-cache',
+        signal: ctrl.signal,
+        redirect: 'follow'
+      });
+      clearTimeout(tid);
+      const buf = await r.arrayBuffer();
+      const bytes = buf.byteLength;
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+      let decoder = 'utf-8';
+      if (ct.includes('euc-kr') || ct.includes('ks_c_5601') || ct.includes('ksc5601')) {
+        decoder = 'euc-kr';
+      } else if (!ct.includes('utf-8') && bytes > 0) {
+        try {
+          const sample = new TextDecoder('utf-8', { fatal: false })
+            .decode(buf.slice(0, Math.min(4096, bytes)));
+          const replCount = (sample.match(/�/g) || []).length;
+          if (replCount > 5) decoder = 'euc-kr';
+        } catch (_) {}
+      }
+      let html = '';
+      try { html = new TextDecoder(decoder).decode(buf); }
+      catch (_) {
+        try { html = new TextDecoder(decoder === 'utf-8' ? 'euc-kr' : 'utf-8').decode(buf); } catch (__) {}
+      }
+      const hasResultsMarker = html.indexOf('class="t_list"') >= 0 || html.indexOf("class='t_list'") >= 0;
+      const ok = r.ok && bytes > 500 && hasResultsMarker;
+      return { ok, html, bytes, status: r.status, decoder, contentType: ct, elapsedMs: Date.now() - t0 };
+    } catch (e) {
+      clearTimeout(tid);
+      const aborted = e && e.name === 'AbortError';
+      return {
+        ok: false,
+        error: aborted ? ('timeout after ' + FETCH_TIMEOUT_MS + 'ms') : String(e && e.message || e),
+        aborted,
+        elapsedMs: Date.now() - t0
+      };
+    }
+  }
+
   function formToUrl(f) {
     const action = f.getAttribute('action') || (location.pathname + location.search);
     const u = new URL(action, location.href);
@@ -406,8 +473,13 @@
       if (ok) {
         history.replaceState({}, '', url);
         hidePageLoaders();
-        postStats({ hits: 1, lastMs: 0 });
-        showToast('캐시 즉시 표시', 'hit');
+        // hit 시 lastMs 는 건드리지 않음 (persisted 값 = 마지막 실측 서버시간)
+        postStats({ hits: 1 });
+        // "이번에 절약된 시간" = 마지막 refresh/miss 때 잰 서버 응답시간.
+        // persisted.lastMs 가 있으면 hit 토스트에 함께 표시(체감 가시화).
+        const saved = persisted && persisted.lastMs;
+        const savedTxt = (saved && saved > 100) ? ' (서버 ' + (saved / 1000).toFixed(1) + '초 절약)' : '';
+        showToast('캐시 즉시 표시' + savedTxt, 'hit');
         sendBg({ type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname } });
         refreshInBg(url, key);
         return;
@@ -416,10 +488,10 @@
       log('cache miss', { hit: cached && cached.hit, hasEntry: !!cachedEntry, hasHtml: !!cachedHtml });
     }
 
-    // 2) miss → 서버 fetch
+    // 2) miss → 서버 fetch (v3.1.2: SW 경유 폐기, 같은 world 에서 직접 fetch)
     sendBg({ type: 'telemetry', payload: { type: 'cache_miss_search', path: location.pathname } });
     const t0 = Date.now();
-    const resp = await sendBg({ type: 'cacheFetchSearch', url });
+    const resp = await fetchUbdstoreDirect(url);
     const ms = Date.now() - t0;
     log('miss fetch result', { ok: resp && resp.ok, bytes: resp && resp.bytes, status: resp && resp.status, err: resp && resp.error, ms });
     if (resp && resp.ok && resp.html) {
@@ -453,11 +525,12 @@
   async function refreshInBg(url, key) {
     try {
       const t0 = Date.now();
-      const resp = await sendBg({ type: 'cacheFetchSearch', url });
+      const resp = await fetchUbdstoreDirect(url);
       const ms = Date.now() - t0;
       if (resp && resp.ok && resp.html) {
-        // 캐시 hit 덕에 사용자가 절약한 시간 = 이번 백그라운드 fetch 시간
-        postStats({ savedMs: ms });
+        // 캐시 hit 덕에 사용자가 절약한 시간 = 이번 백그라운드 fetch 시간.
+        // lastMs 도 함께 업데이트 → 다음 hit 토스트가 최신 실측값을 반영.
+        postStats({ savedMs: ms, lastMs: ms });
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
         replaceTList(resp.html);
       }
