@@ -51,11 +51,23 @@
  *  - handleSearchSubmit 두 replaceTList 호출에 f 전달, refreshInBg 호출은
  *    현재 페이지 form1 fallback (별도 srcForm 없음).
  *  - form snap 진단 로그 추가: log('form snap', { fields, hadSrcForm }).
+ *
+ *  v3.1.6 변경 내역:
+ *  - 화면 중앙 진행 오버레이(showProgress). 사용자 요청: "검색 버튼 눌렀을 때
+ *    캐시 불러오는건지 실패한건지 시각적으로 알아야 한다". 5가지 상태:
+ *    checking / fetching / hit / filled / fallback. 각각 아이콘·색·문구 다르고
+ *    성공/실패는 2~4초 auto-close.
+ *  - fallback 사유를 오버레이·토스트·pushHistory 셋 다에 상세 문구로: timeout
+ *    /status/network/no-t_list 구분. 사용자 화면에서 즉시 원인 파악.
+ *  - localStorage UB_CACHE_HISTORY_v1 (최근 20건, result/reason/시간). 다음
+ *    turn 에 사이드바 뷰 추가 예정. 지금은 최소한 저장부터 확보.
+ *  - hit 시나리오에서 replaceTList 실패해도 miss 흐름으로 자연스레 진입(진행
+ *    오버레이 유지). 이전엔 hit 실패 시 진행표시 없이 갑자기 fallback.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.5';
+  const UB_CACHE_VERSION = '3.1.6';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -373,6 +385,98 @@
     } catch (_) {}
   }
 
+  /* ---- v3.1.6: 진행 오버레이 ----
+   *  검색 클릭 순간 화면 중앙에 큰 카드 표시. 단계별 상태 시각화:
+   *    checking (캐시 조회 중, 파란 스피너)
+   *      → hit  (초록, 2초 auto-close, "서버 N초 절약")
+   *      → miss + fetching (파란 스피너, "서버에서 가져오는 중")
+   *          → filled  (초록, 2초 auto-close, "서버 N초 → 캐시 저장")
+   *          → fallback (빨강, 3.5초 auto-close, 실패 원인 상세)
+   *  toolTip2 clickthrough 방해 안 하도록 pointer-events:none, position:fixed.
+   */
+  function ensureOverlayStyle() {
+    if (document.getElementById('ub-cache-overlay-style')) return;
+    const s = document.createElement('style');
+    s.id = 'ub-cache-overlay-style';
+    s.textContent = ''
+      + '@keyframes ub-po-spin { to { transform: rotate(360deg); } }'
+      + '@keyframes ub-po-in { from { opacity:0; transform:translate(-50%,-50%) scale(.94); } to { opacity:1; transform:translate(-50%,-50%) scale(1); } }'
+      + '#ub-cache-overlay { position:fixed; top:38%; left:50%; transform:translate(-50%,-50%);'
+      + '  min-width:300px; max-width:440px; padding:22px 26px; border-radius:14px;'
+      + '  background:rgba(15,20,25,.96); color:#fff; font:600 13px/1.4 Pretendard,sans-serif;'
+      + '  z-index:2147483647; pointer-events:none; box-shadow:0 12px 40px rgba(0,0,0,.35);'
+      + '  animation:ub-po-in .16s ease-out; display:none; text-align:center; }'
+      + '#ub-cache-overlay.on { display:block; }'
+      + '#ub-cache-overlay .ub-po-spin { width:36px; height:36px; margin:0 auto 12px auto;'
+      + '  border:3px solid rgba(255,255,255,.15); border-top-color:#35C5F0; border-radius:50%;'
+      + '  animation:ub-po-spin .9s linear infinite; }'
+      + '#ub-cache-overlay .ub-po-check { width:36px; height:36px; margin:0 auto 12px auto;'
+      + '  border-radius:50%; background:#22c55e; color:#fff; font:900 22px/36px Pretendard; }'
+      + '#ub-cache-overlay .ub-po-x { width:36px; height:36px; margin:0 auto 12px auto;'
+      + '  border-radius:50%; background:#dc2626; color:#fff; font:900 22px/36px Pretendard; }'
+      + '#ub-cache-overlay .ub-po-title { font-size:15px; font-weight:800; margin-bottom:6px; }'
+      + '#ub-cache-overlay .ub-po-detail { font-size:11.5px; font-weight:500; color:rgba(255,255,255,.72); line-height:1.5; }';
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function ensureOverlayDom() {
+    let o = document.getElementById('ub-cache-overlay');
+    if (o) return o;
+    ensureOverlayStyle();
+    const host = document.body || document.documentElement;
+    if (!host) return null;
+    o = document.createElement('div');
+    o.id = 'ub-cache-overlay';
+    o.innerHTML = '<div class="ub-po-icon"></div><div class="ub-po-title"></div><div class="ub-po-detail"></div>';
+    host.appendChild(o);
+    return o;
+  }
+  // state: 'checking' | 'fetching' | 'hit' | 'filled' | 'fallback'
+  function showProgress(state, title, detail) {
+    try {
+      const o = ensureOverlayDom();
+      if (!o) return;
+      const icon = o.querySelector('.ub-po-icon');
+      const t = o.querySelector('.ub-po-title');
+      const d = o.querySelector('.ub-po-detail');
+      // 아이콘 스타일
+      icon.className = 'ub-po-icon ';
+      if (state === 'checking' || state === 'fetching') icon.classList.add('ub-po-spin');
+      else if (state === 'hit' || state === 'filled')   { icon.classList.add('ub-po-check'); icon.textContent = '✓'; }
+      else if (state === 'fallback')                     { icon.classList.add('ub-po-x'); icon.textContent = '✕'; }
+      // 텍스트
+      t.textContent = title || '';
+      d.textContent = detail || '';
+      o.classList.add('on');
+      clearTimeout(showProgress._h);
+      // auto-close (진행형 상태는 안 지움 — 다음 상태가 덮어씀)
+      const autoMs = (state === 'hit' || state === 'filled') ? 2200
+                    : (state === 'fallback') ? 3800
+                    : 0;
+      if (autoMs) showProgress._h = setTimeout(hideProgress, autoMs);
+    } catch (_) {}
+  }
+  function hideProgress() {
+    try {
+      const o = document.getElementById('ub-cache-overlay');
+      if (o) o.classList.remove('on');
+    } catch (_) {}
+  }
+
+  /* ---- v3.1.6: 최근 검색 이력 (localStorage, 최근 20건) ----
+   *  사용자가 F12 안 열어도 "지금 뭐가 실패했는지" 나중에 확인 가능.
+   *  사이드바 뷰는 다음 turn (skin.js) 에서 추가. 우선 저장부터 확보.
+   */
+  const HISTORY_KEY = 'UB_CACHE_HISTORY_v1';
+  function pushHistory(entry) {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      list.unshift(Object.assign({ ts: Date.now(), path: location.pathname }, entry));
+      if (list.length > 20) list.length = 20;
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    } catch (_) {}
+  }
+
   /* ---- 페이지 자체 로딩 스피너 끄기 + body display 복원 ----
    *  유비샵 페이지는 form submit 시 (a) #ajaxBox(loading.gif) 띄우고
    *  (b) <body> 자체를 display:none 처리한 다음 navigate 완료 시 둘 다 복원한다.
@@ -495,8 +599,9 @@
     const url = formToUrl(f);
     const keySrc = formKeySource(f);
     const key = await sha256_16(keySrc);
+    const submitTs = Date.now();
     log('submit', { path: location.pathname, url: url.slice(0, 200), key });
-    showToast('검색…', 'ok');
+    showProgress('checking', '캐시 확인 중…', CACHE_PAGES[location.pathname] || location.pathname);
 
     // 1) 캐시 조회
     // D102LabelPrinter(C#) 는 entry 를 PascalCase 로 반환:
@@ -517,16 +622,21 @@
         // persisted.lastMs 가 있으면 hit 토스트에 함께 표시(체감 가시화).
         const saved = persisted && persisted.lastMs;
         const savedTxt = (saved && saved > 100) ? ' (서버 ' + (saved / 1000).toFixed(1) + '초 절약)' : '';
+        showProgress('hit', '캐시 즉시 표시', savedTxt ? '서버 대비' + savedTxt : '백그라운드에서 최신 갱신 중');
         showToast('캐시 즉시 표시' + savedTxt, 'hit');
         sendBg({ type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname } });
+        pushHistory({ result: 'hit', savedMs: saved || 0, htmlLen: cachedHtml.length, submitMs: Date.now() - submitTs });
         refreshInBg(url, key);
         return;
       }
+      // hit 인데 replaceTList 실패한 경우 → miss 흐름으로 이어짐. progress 그대로 유지.
+      log('hit replaceTList failed → miss 흐름 진입');
     } else {
       log('cache miss', { hit: cached && cached.hit, hasEntry: !!cachedEntry, hasHtml: !!cachedHtml });
     }
 
     // 2) miss → 서버 fetch (v3.1.2: SW 경유 폐기, 같은 world 에서 직접 fetch)
+    showProgress('fetching', '서버에서 가져오는 중…', '최대 20초 대기');
     sendBg({ type: 'telemetry', payload: { type: 'cache_miss_search', path: location.pathname } });
     const t0 = Date.now();
     const resp = await fetchUbdstoreDirect(url);
@@ -539,9 +649,11 @@
         history.replaceState({}, '', url);
         hidePageLoaders();
         postStats({ miss: 1, fillMs: ms, lastMs: ms });
+        showProgress('filled', '서버 ' + (ms / 1000).toFixed(1) + '초 → 캐시 저장', '다음 같은 조건 검색은 즉시 표시됩니다');
         showToast('서버 ' + (ms / 1000).toFixed(1) + '초 → 캐시 저장', 'ok');
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
         sendBg({ type: 'telemetry', payload: { type: 'cache_fill_search', path: location.pathname, ms } });
+        pushHistory({ result: 'fill', serverMs: ms, bytes: resp.bytes, submitMs: Date.now() - submitTs });
         return;
       }
     }
@@ -549,12 +661,15 @@
     // 3) 모두 실패 → 평소 form submit으로 fallback
     // (스피너는 fallback navigate가 끝낼 거라 hide 안 함 — navigate 중엔 정상이라 사용자에겐 자연스러움)
     // 사용자에게 어느 분기인지 명확히: timeout / 서버에러 / 응답 파싱 실패
-    let reason = '캐시 실패';
-    if (resp && resp.aborted) reason = '서버 ' + Math.round(resp.elapsedMs / 1000) + '초 timeout';
-    else if (resp && !resp.ok) reason = '서버 응답 비정상(' + (resp.status || '?') + ' / ' + (resp.bytes || 0) + 'B)';
-    else if (resp && resp.ok) reason = '캐시 교체 실패(t_list 매칭 안 됨)';
-    showToast(reason + ' — 일반 검색으로', 'err');
-    log('fallback', { reason, resp });
+    let reason = '알 수 없는 실패';
+    if (resp && resp.aborted) reason = '서버 ' + Math.round(resp.elapsedMs / 1000) + '초 timeout (기본값 20초 초과)';
+    else if (resp && !resp.ok && resp.status) reason = '서버 응답 비정상 (status ' + resp.status + ', ' + (resp.bytes || 0) + 'B)';
+    else if (resp && !resp.ok && resp.error) reason = '네트워크 오류: ' + String(resp.error).slice(0, 80);
+    else if (resp && resp.ok) reason = '응답에 t_list 없음 (로그인 만료?)';
+    showProgress('fallback', '캐시 실패 — 유비샵 기본검색으로', reason);
+    showToast(reason, 'err');
+    log('fallback', { reason, resp: resp ? { ok: resp.ok, status: resp.status, bytes: resp.bytes, elapsedMs: resp.elapsedMs, aborted: resp.aborted, error: resp.error } : null });
+    pushHistory({ result: 'fallback', reason, respMs: (resp && resp.elapsedMs) || 0, submitMs: Date.now() - submitTs });
     _bypassNextSubmit = true;
     // hijack 적용된 f.submit 이 아니라 original 호출 (무한루프 방지)
     setTimeout(() => { try { (f._ubOriginalSubmit || HTMLFormElement.prototype.submit).call(f); } catch (_) {} }, 200);
