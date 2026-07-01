@@ -25,11 +25,20 @@
  *    로드된 로직 버전 확인 가능(chrome://extensions 의 manifest 버전과 별개).
  *  - hit 토스트에 이전 refresh 시 잰 서버 실측시간 표시(persisted.lastMs).
  *    사용자가 "얼마 절약됐는지" 매 hit 마다 즉시 체감.
+ *
+ *  v3.1.3 변경 내역:
+ *  - 응답 inline script 재실행 로직 완전 폐기(이전 v3.1.1 tooltip 사이드 이슈
+ *    보완용). 실측 결과: 재실행이 유비샵 selectDate.js SetCustomDate 를 다시
+ *    호출해서 (a) formSnap 복원값을 2000/01/01 로 덮어쓰고 (b) 새 form 아직
+ *    select option 미완성 상태에서 setLimitDate 가 undefined.value 접근 →
+ *    TypeError chain. tooltip 은 별도 sync 로직(위쪽)으로 이미 커버되므로
+ *    script 재실행 필요성 없음.
+ *  - formSnap 복원 후 진단 로그 추가(복원된 실제 값 확인용).
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.2';
+  const UB_CACHE_VERSION = '3.1.3';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -232,16 +241,24 @@
 
       // form 값 복원 — 새 form1 의 select 들이 응답의 default("2000/01") 가 아니라
       // 사용자가 검색한 그 값(06/30 등) 이 selected 상태 가 되도록.
+      // v3.1.3: 진단용 로그 추가 — 복원 실패한 필드가 있으면 콘솔에 이름·값·원인 노출.
+      let dbgRestored = 0, dbgMissField = 0, dbgMissValue = 0;
       try {
         const newF = curWrap.querySelector('form[name="form1"]');
         if (newF) {
           for (const name in formSnap) {
             const el = newF.elements[name];
-            if (!el) continue;
-            try { el.value = formSnap[name]; } catch (_) {}
+            if (!el) { dbgMissField++; continue; }
+            try {
+              el.value = formSnap[name];
+              // select 의 경우 option 이 없으면 el.value 대입해도 실제 반영 안 됨(silent).
+              if (el.value !== formSnap[name]) dbgMissValue++;
+              else dbgRestored++;
+            } catch (_) { dbgMissValue++; }
           }
         }
       } catch (_) {}
+      log('form restore', { restored: dbgRestored, missingField: dbgMissField, valueMismatch: dbgMissValue });
 
       // tooltip 강제 sync + 진단 — 응답에서 wrapper 안/밖 둘 다 모아 page 에 보장.
       // 페이지의 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾는데
@@ -276,28 +293,10 @@
       } catch (_) {}
       log('tooltip sync', { pageWrap: dbgWrapTC, pageBodyTotal: dbgBodyTC, respWrap: dbgRespWrapTC, respBodyTotal: dbgRespBodyTC });
 
-      // 응답 inline script 재실행 — 본문 wrapper 안 + body 직속 script(wrapper 밖).
-      // tooltip 데이터 매핑/함수 정의 등이 inline script 에 있으면 갱신 필요.
-      try {
-        // wrapper 안 script
-        const wrapScripts = Array.from(newWrap.querySelectorAll('script'));
-        // body 직속의 wrapper 밖 script
-        const bodyScripts = doc.body ? Array.from(doc.body.children).filter(c => c.tagName === 'SCRIPT') : [];
-        const allScripts = wrapScripts.concat(bodyScripts);
-        allScripts.forEach(s => {
-          if (s.src) return;
-          const code = (s.textContent || '').trim();
-          if (!code) return;
-          // 위험 차단: document.write, location 변경, document.body 직접 조작
-          if (/document\.write|location\.(href|replace|assign)\s*=|document\.body\s*=/.test(code)) return;
-          try {
-            const tmp = document.createElement('script');
-            tmp.textContent = code;
-            document.head.appendChild(tmp);
-            document.head.removeChild(tmp);
-          } catch (_) {}
-        });
-      } catch (_) {}
+      // v3.1.3: 응답 inline script 재실행 폐기.
+      // 원래 tooltip 데이터 매핑 갱신 목적이었지만, 유비샵 selectDate.js SetCustomDate
+      // 가 재실행되어 formSnap 복원값을 덮어쓰고 TypeError chain 유발.
+      // tooltip 은 위쪽 sync 블록으로 이미 커버.
 
       // 스크롤 복원
       try { window.scrollTo(0, oldScroll); } catch (_) {}

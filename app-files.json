@@ -1,6 +1,6 @@
 {
-  "version": "2.4.1",
-  "note": "loader.js 가 순서대로 가져와 실행. v2: 얇은 호출자(데이터만 프로그램에 POST). 렌더/편집 제거. v2.2: 상품입고 지원 + 고객명 규칙. v2.3: 매장명·매입처·추가설명 수집(접두코드/다이아 예외용). v2.4: cache-intercept.js 추가 — 매장매출/매장출고전표 form submit 가로채기 + table.t_list 동적 교체(Phase 2 transparent caching). v2.4.1: cache-intercept.js 가 SW 대신 직접 fetch(20s timeout) — background.js 폴더 교체 없이 push 즉시 timeout 확장 적용. UB_CACHE_VERSION 콘솔로그 + body.dataset.ubCacheVer 로 실제 로직 버전 F12 검증 가능. hit 토스트에 서버 절약시간 표시.",
+  "version": "2.4.2",
+  "note": "loader.js 가 순서대로 가져와 실행. v2: 얇은 호출자(데이터만 프로그램에 POST). 렌더/편집 제거. v2.2: 상품입고 지원 + 고객명 규칙. v2.3: 매장명·매입처·추가설명 수집(접두코드/다이아 예외용). v2.4: cache-intercept.js 추가 — 매장매출/매장출고전표 form submit 가로채기 + table.t_list 동적 교체(Phase 2 transparent caching). v2.4.1: cache-intercept.js 가 SW 대신 직접 fetch(20s timeout) — background.js 폴더 교체 없이 push 즉시 timeout 확장 적용. UB_CACHE_VERSION 콘솔로그 + body.dataset.ubCacheVer 로 실제 로직 버전 F12 검증 가능. hit 토스트에 서버 절약시간 표시. v2.4.2: 응답 inline script 재실행 폐기 — 유비샵 selectDate.js 재실행이 매출일 2000/01/01 리셋 + TypeError chain 유발했음. formSnap 복원 진단 로그 추가.",
   "files": [
     "src/config.js",
     "src/overlay.js",
