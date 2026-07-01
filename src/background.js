@@ -240,13 +240,43 @@ async function checkUpdate() {
       console.log('[UB][bg] new version', remote.version, 'local', local, '(restart chrome to apply)');
       try { chrome.action.setBadgeText({ text: 'NEW' }); } catch (_) {}
       try { chrome.action.setBadgeBackgroundColor({ color: '#35C5F0' }); } catch (_) {}
-      try { chrome.storage.local.set({ ubUpdateAvailable: remote.version }); } catch (_) {}
+
+      // v3.1.4: 데스크톱 알림 — 이미 같은 버전으로 알린 적 있으면 skip(스팸 방지).
+      // ubUpdateNotifiedVer 에 마지막 알림 버전 저장 → 새 버전 나올 때마다 1회.
+      chrome.storage.local.get({ ubUpdateNotifiedVer: '' }, (s) => {
+        try {
+          chrome.storage.local.set({ ubUpdateAvailable: remote.version });
+        } catch (_) {}
+        if (s && s.ubUpdateNotifiedVer !== remote.version) {
+          try {
+            chrome.notifications.create('ub-update-' + remote.version, {
+              type: 'basic',
+              iconUrl: 'icons/icon128.png',
+              title: '유비샵 확장 새 버전 v' + remote.version,
+              message: '확장 아이콘 클릭 → [지금 확장 프로그램 다시 로드] 로 적용하세요.',
+              priority: 2,
+              requireInteraction: true
+            }, () => { void chrome.runtime.lastError; });
+            chrome.storage.local.set({ ubUpdateNotifiedVer: remote.version });
+          } catch (_) {}
+        }
+      });
     } else {
       try { chrome.action.setBadgeText({ text: '' }); } catch (_) {}
-      try { chrome.storage.local.set({ ubUpdateAvailable: '' }); } catch (_) {}
+      try { chrome.storage.local.set({ ubUpdateAvailable: '', ubUpdateNotifiedVer: '' }); } catch (_) {}
     }
   } catch (e) { console.warn('[UB][bg] update check failed:', e && e.message); }
 }
+
+// v3.1.4: 알림 클릭 시 팝업 열기 힌트 — 실제 popup open 은 브라우저 정책상 불가하므로
+// 알림 자체가 사용자 시선 유도. 클릭 시 알림 제거만.
+try {
+  chrome.notifications.onClicked.addListener((id) => {
+    if (id && id.indexOf('ub-update-') === 0) {
+      try { chrome.notifications.clear(id); } catch (_) {}
+    }
+  });
+} catch (_) {}
 chrome.runtime.onStartup.addListener(checkUpdate);
 chrome.runtime.onInstalled.addListener(checkUpdate);
 try {

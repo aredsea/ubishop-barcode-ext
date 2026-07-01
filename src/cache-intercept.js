@@ -34,11 +34,17 @@
  *    TypeError chain. tooltip 은 별도 sync 로직(위쪽)으로 이미 커버되므로
  *    script 재실행 필요성 없음.
  *  - formSnap 복원 후 진단 로그 추가(복원된 실제 값 확인용).
+ *
+ *  v3.1.4 변경 내역:
+ *  - 기본 OFF (사용자 명시 요청). v3.1.3 까지도 문제 재현 → 안정될 때까지 캐시
+ *    자체를 opt-in 으로. sessionStorage.ub_pref_autosync === '1' 일 때만 활성.
+ *    skin.js mirrorPrefs() 가 chrome.storage.ubSkin && ubAutoSync 조건 미러링.
+ *    팝업에서 [유비샵 스킨모드] + [전표 자동 캐시] 둘 다 켜야 활성.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.3';
+  const UB_CACHE_VERSION = '3.1.4';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -49,6 +55,19 @@
   const log = (...a) => { try { console.log('[UB][cache]', ...a); } catch (_) {} };
   log('loaded v' + UB_CACHE_VERSION, 'on', location.pathname);
   try { if (document.body) document.body.dataset.ubCacheVer = UB_CACHE_VERSION; } catch (_) {}
+
+  // v3.1.4: 기본 OFF. 사용자가 팝업 → 유비샵 스킨모드 ON + 전표 자동 캐시 ON 켠 뒤에만 활성.
+  // skin.js 가 chrome.storage 값을 sessionStorage.ub_pref_autosync 로 미러링(document_start).
+  // MAIN world 인 여기서는 chrome.storage 직접 접근 불가 → sessionStorage 로 읽음.
+  // 미러값 없거나 '1' 아니면 bind 안 함(캐시 전체 무동작 → 유비샵 기본 흐름 그대로).
+  function isCacheEnabled() {
+    try { return sessionStorage.getItem('ub_pref_autosync') === '1'; }
+    catch (_) { return false; }
+  }
+  if (!isCacheEnabled()) {
+    log('disabled (ub_pref_autosync != "1") — 팝업에서 [유비샵 스킨모드]+[전표 자동 캐시] 켜면 활성');
+    return;
+  }
 
   /* ---- bridge: MAIN ↔ localbridge(ISOLATED) ↔ SW ---- */
   let _seq = 0;

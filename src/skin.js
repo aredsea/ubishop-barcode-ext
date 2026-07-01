@@ -22,7 +22,7 @@
 
   const D = {
     ubSkin: false, ubDark: false, ubThumbEdit: true,
-    ubSidebar: true, ubPageSize: true, ubAutoSync: true,
+    ubSidebar: true, ubPageSize: true, ubAutoSync: false,
     ubSbMode: 'docked', ubSbX: 24, ubSbY: 24, ubSbCollapsed: false,
     ubBarcodes: []
   };
@@ -947,10 +947,13 @@
   }
 
   // sessionStorage에 사용자 옵션 mirror — 다음 navigate의 IIFE가 sync로 읽음.
+  // ub_pref_autosync: cache-intercept.js(MAIN world, chrome.storage 직접 접근 불가)
+  // 가 여기 미러값을 보고 활성 여부 판단. skin 자체가 OFF면 캐시도 무조건 OFF.
   function mirrorPrefs() {
     try {
       sessionStorage.setItem('ub_pref_skin', state.ubSkin ? '1' : '0');
       sessionStorage.setItem('ub_pref_ps', state.ubPageSize ? '1' : '0');
+      sessionStorage.setItem('ub_pref_autosync', (state.ubSkin && state.ubAutoSync) ? '1' : '0');
     } catch (_) {}
   }
   try {
