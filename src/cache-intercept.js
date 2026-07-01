@@ -40,11 +40,22 @@
  *    자체를 opt-in 으로. sessionStorage.ub_pref_autosync === '1' 일 때만 활성.
  *    skin.js mirrorPrefs() 가 chrome.storage.ubSkin && ubAutoSync 조건 미러링.
  *    팝업에서 [유비샵 스킨모드] + [전표 자동 캐시] 둘 다 켜야 활성.
+ *
+ *  v3.1.5 변경 내역 (결정적 fix):
+ *  - replaceTList(html) → replaceTList(html, srcForm). v3.1.1 부터 v3.1.4 까지
+ *    이 함수 안에서 로컬 스코프에 없는 f 를 참조하는 코드가 있었고, try/catch
+ *    가 ReferenceError 를 조용히 삼켜서 formSnap 이 항상 빈 상태였음. 결과:
+ *    (a) 매출일 2000/01/01 리셋이 사용자 눈엔 계속 재현, (b) v3.1.3 script
+ *    재실행 제거 후에도 formSnap 자체가 비어있어서 복원이 무의미. 이번 fix
+ *    로 formSnap 이 실제로 채워지고 새 form 에 복원됨.
+ *  - handleSearchSubmit 두 replaceTList 호출에 f 전달, refreshInBg 호출은
+ *    현재 페이지 form1 fallback (별도 srcForm 없음).
+ *  - form snap 진단 로그 추가: log('form snap', { fields, hadSrcForm }).
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.4';
+  const UB_CACHE_VERSION = '3.1.5';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -217,7 +228,12 @@
     return null;
   }
 
-  function replaceTList(html) {
+  // v3.1.5: srcForm 파라미터 추가. 이전 버전(v3.1.1~v3.1.4)까지 이 함수 안에서
+  //          로컬 스코프에 없는 `f` 를 참조하고 있었음(handleSearchSubmit 의 인자명
+  //          그대로 옮겨왔던 흔적) → 매번 ReferenceError 를 try/catch 가 삼켜서
+  //          formSnap 이 항상 빈 상태 → 복원 로직이 아예 실행되지 않음 →
+  //          2000/01/01 계속 표시. srcForm 이 없으면 현재 페이지 form1 fallback.
+  function replaceTList(html, srcForm) {
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html');
       if (!doc || !doc.body) {
@@ -245,13 +261,17 @@
       const oldScroll = window.scrollY || window.pageYOffset || 0;
 
       // 검색 시점 form 값 snapshot (응답의 select 기본값(2000/01/01 등)으로 reset 방지)
+      const srcF = srcForm || document.querySelector('form[name="form1"]');
       const formSnap = {};
       try {
-        for (const el of f.elements) {
-          if (!el.name) continue;
-          formSnap[el.name] = el.value;
+        if (srcF && srcF.elements) {
+          for (const el of srcF.elements) {
+            if (!el.name) continue;
+            formSnap[el.name] = el.value;
+          }
         }
       } catch (_) {}
+      log('form snap', { fields: Object.keys(formSnap).length, hadSrcForm: !!srcF });
 
       // 본문 wrapper 의 innerHTML 만 교체 — wrapper element 자체(curWrap reference)는
       // 그대로 유지. outerHTML 로 하면 curWrap 이 detach 되어 후속 contains()
@@ -486,7 +506,7 @@
     const cachedEntry = cached && cached.entry;
     const cachedHtml = cachedEntry && (cachedEntry.html || cachedEntry.Html);
     if (cached && cached.hit && cachedHtml) {
-      const ok = replaceTList(cachedHtml);
+      const ok = replaceTList(cachedHtml, f);
       log('hit', { ok, htmlLen: cachedHtml.length });
       if (ok) {
         history.replaceState({}, '', url);
@@ -513,7 +533,7 @@
     const ms = Date.now() - t0;
     log('miss fetch result', { ok: resp && resp.ok, bytes: resp && resp.bytes, status: resp && resp.status, err: resp && resp.error, ms });
     if (resp && resp.ok && resp.html) {
-      const ok = replaceTList(resp.html);
+      const ok = replaceTList(resp.html, f);
       log('miss replaceTList', { ok });
       if (ok) {
         history.replaceState({}, '', url);
@@ -550,6 +570,7 @@
         // lastMs 도 함께 업데이트 → 다음 hit 토스트가 최신 실측값을 반영.
         postStats({ savedMs: ms, lastMs: ms });
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
+        // refresh 시엔 별도 srcForm 없음. 현재 페이지 form1 자동 fallback 사용.
         replaceTList(resp.html);
       }
     } catch (_) {}
