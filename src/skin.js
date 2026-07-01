@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.1.13 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.1.14 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -937,37 +937,34 @@
     return [...document.querySelectorAll('input[type="text"], input:not([type])')]
       .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
   }
+  function labelMatch(t, L) {
+    return t === L || t === L + ':' || t === L + '：' || t.replace(/[:：\s]/g, '') === L;
+  }
   function findLabeledInput(labels) {
-    const inputs = focusableInputs();
+    const inputs = focusableInputs();   // 문서 순서(querySelectorAll)
     if (!inputs.length) return null;
-    // 1) <label for> 매칭
+    // 1) <label for> 정확 매칭 우선
     for (const lab of document.querySelectorAll('label[for]')) {
       const txt = (lab.textContent || '').replace(/\s+/g, '');
-      if (labels.some(L => txt.includes(L))) {
+      if (labels.some(L => labelMatch(txt, L))) {
         const el = document.getElementById(lab.getAttribute('for'));
         if (el && inputs.includes(el)) return el;
       }
     }
-    // 2) 라벨 텍스트를 가진 셀 → 같은 행의 그 셀 이후 input, 없으면 형제 input
-    const cells = [...document.querySelectorAll('th, td, span, label, div, b, strong')];
-    for (const c of cells) {
-      const own = [...c.childNodes].filter(n => n.nodeType === 3).map(n => n.nodeValue).join('').replace(/\s+/g, '');
-      if (!labels.some(L => own === L || own === L + ':' || own === L + '：')) continue;
-      const tr = c.closest('tr');
-      if (tr) {
-        const tds = [...tr.children];
-        const li = tds.findIndex(td => td === c || td.contains(c));
-        for (let k = Math.max(0, li); k < tds.length; k++) {
-          const inp = tds[k].querySelector('input[type="text"], input:not([type])');
-          if (inp && inputs.includes(inp)) return inp;
-        }
-      }
-      let sib = c.nextElementSibling;
-      while (sib) {
-        const inp = sib.matches && sib.matches('input') ? sib
-          : (sib.querySelector ? sib.querySelector('input[type="text"], input:not([type])') : null);
-        if (inp && inputs.includes(inp)) return inp;
-        sib = sib.nextElementSibling;
+    // 2) 라벨 텍스트 노드를 찾고 → 문서 순서상 그 라벨 "다음"에 오는 첫 input.
+    //    (주문전표: 발주처명 select 는 고객명 라벨보다 앞에 있으므로 자연히 스킵됨)
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    let node;
+    const labelEls = [];
+    while ((node = walker.nextNode())) {
+      const t = (node.nodeValue || '').replace(/\s+/g, '');
+      if (t && labels.some(L => labelMatch(t, L))) labelEls.push(node.parentElement);
+    }
+    for (const le of labelEls) {
+      if (!le) continue;
+      for (const inp of inputs) {
+        // 라벨 요소보다 문서상 뒤(FOLLOWING)에 있는 첫 input
+        if (le.compareDocumentPosition(inp) & Node.DOCUMENT_POSITION_FOLLOWING) return inp;
       }
     }
     return null;
@@ -1010,25 +1007,31 @@
       if (!state.ubSkin) return;   // 유비샵 도구(스킨) 켜져 있을 때만
       const labels = AUTO_FOCUS_PAGES[location.pathname];
       if (!labels) return;         // 대상 페이지(주문/발주/입고 전표) 아님
-      const tryFocus = (attempt) => {
+      let logged = false;
+      // 페이지 자체가 다른 검색칸(발주처명 등)에 기본 포커스를 주므로, 그걸 이기려고
+      // 여러 시점에 재확인하며 대상칸으로 커서를 되돌린다(단, 값 있는 칸은 안 훔침).
+      const pass = () => {
         const el = findLabeledInput(labels);
-        if (el) {
-          attachImeIndicator(el);
-          // 사용자가 이미 다른 입력을 만지고 있으면 커서만 안 훔침(아이콘은 부착)
-          const ae = document.activeElement;
-          const userBusy = ae && ae.tagName === 'INPUT' && ae !== el && ae.value && ae.value.trim();
-          if (!userBusy && !(el.value && el.value.trim())) {
-            el.focus();
-            try { const n = el.value.length; el.setSelectionRange(n, n); } catch (_) {}
-          }
-          try { el.setAttribute('lang', 'ko'); } catch (_) {}
-          console.log('[UB][skin] auto-focus →', labels[0], '/', el.name || el.id || '(anon)');
-          return;
+        if (!el) return false;
+        attachImeIndicator(el);
+        const ae = document.activeElement;
+        // 사용자가 값 입력 중인 다른 칸이면 커서 안 훔침(빈 칸=페이지 기본포커스는 교정 대상)
+        const userTyping = ae && ae.tagName === 'INPUT' && ae !== el && ae.value && ae.value.trim();
+        if (!userTyping && !(el.value && el.value.trim()) && ae !== el) {
+          el.focus();
+          try { const n = el.value.length; el.setSelectionRange(n, n); } catch (_) {}
         }
-        if (attempt < 5) setTimeout(() => tryFocus(attempt + 1), 350);
-        else console.log('[UB][skin] auto-focus 대상 입력 못 찾음', { labels, path: location.pathname });
+        try { el.setAttribute('lang', 'ko'); } catch (_) {}
+        if (!logged) { console.log('[UB][skin] auto-focus →', labels[0], '/', el.name || el.id || '(anon)'); logged = true; }
+        return true;
       };
-      tryFocus(0);
+      // 즉시 + 페이지 onload focus 이후(150·450·900ms) 재확인
+      let found = pass();
+      [150, 450, 900, 1400].forEach(ms => setTimeout(() => {
+        if (!pass() && !found && ms === 1400) {
+          console.log('[UB][skin] auto-focus 대상 입력 못 찾음', { labels, path: location.pathname, inputs: focusableInputs().length });
+        }
+      }, ms));
     } catch (e) { console.warn('[UB][skin] auto-focus 실패', e); }
   }
 
