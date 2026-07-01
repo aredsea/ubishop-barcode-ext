@@ -98,11 +98,18 @@
  *    을 읽어 20개만 조회됨. → t_paging 교체 전 pageSize·searchSortType select
  *    노드를 확보했다가 교체 후 되돌림(skin.js 의 100·onChange 그대로 유지).
  *    캐시 키에 pageSize 가 포함되므로 옛 20개 엔트리는 키가 달라 자연 무효화.
+ *
+ *  v3.1.11 변경 내역 (refreshInBg 경쟁 조건 fix):
+ *  - hit 후 refreshInBg 가 백그라운드로 최신본을 fetch → 완료 시 화면 갱신하는데,
+ *    v3.1.9 에서 timeout 을 300초로 늘리면서 이 fetch 가 최대 5분까지 걸릴 수
+ *    있게 됨. 그 사이 사용자가 다른 검색·페이지로 이동하면 옛 검색 결과로 현재
+ *    화면을 덮어쓰는 문제 발생 가능. → 검색 시퀀스 토큰(_searchSeq) 도입, refresh
+ *    완료 시 토큰이 그대로일 때만 DOM 갱신(캐시 저장은 항상). 정적 검증 중 발견.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.10';
+  const UB_CACHE_VERSION = '3.1.11';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -639,6 +646,11 @@
 
   /* ---- 핵심 가로채기 ---- */
   let _bypassNextSubmit = false;
+  // v3.1.11: 검색 시퀀스 토큰. 매 검색마다 증가. refreshInBg(백그라운드 갱신)가
+  //   최대 5분 뒤 완료될 수 있는데(300초 timeout), 그 사이 사용자가 다른 검색이나
+  //   페이지 이동을 했으면 옛 검색 결과로 현재 화면을 덮어쓰면 안 됨 → 완료 시점에
+  //   토큰이 그대로일 때만 DOM 갱신(캐시 저장은 항상 수행).
+  let _searchSeq = 0;
 
   async function handleSearchSubmit(f, e) {
     if (_bypassNextSubmit) { _bypassNextSubmit = false; return; }
@@ -648,6 +660,7 @@
     // 않도록 차단. 이렇게 하면 우리 흐름 동안 body 가 hide 되는 일도 막힘.
     e.stopImmediatePropagation();
 
+    const mySeq = ++_searchSeq;
     const url = formToUrl(f);
     const keySrc = formKeySource(f);
     const key = await sha256_16(keySrc);
@@ -678,7 +691,7 @@
         showToast('캐시 즉시 표시' + savedTxt, 'hit');
         sendBg({ type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname } });
         pushHistory({ result: 'hit', savedMs: saved || 0, htmlLen: cachedHtml.length, submitMs: Date.now() - submitTs });
-        refreshInBg(url, key);
+        refreshInBg(url, key, mySeq);
         return;
       }
       // hit 인데 replaceTList 실패한 경우 → miss 흐름으로 이어짐. progress 그대로 유지.
@@ -727,7 +740,7 @@
     setTimeout(() => { try { (f._ubOriginalSubmit || HTMLFormElement.prototype.submit).call(f); } catch (_) {} }, 200);
   }
 
-  async function refreshInBg(url, key) {
+  async function refreshInBg(url, key, seq) {
     try {
       const t0 = Date.now();
       const resp = await fetchUbdstoreDirect(url);
@@ -736,7 +749,14 @@
         // 캐시 hit 덕에 사용자가 절약한 시간 = 이번 백그라운드 fetch 시간.
         // lastMs 도 함께 업데이트 → 다음 hit 토스트가 최신 실측값을 반영.
         postStats({ savedMs: ms, lastMs: ms });
+        // 캐시 저장은 항상(이 검색의 최신본 확보).
         sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
+        // v3.1.11: DOM 갱신은 사용자가 아직 같은 검색을 보고 있을 때만. 그 사이
+        //   다른 검색/페이지로 이동했으면(_searchSeq 증가) 화면 안 덮음.
+        if (typeof seq === 'number' && seq !== _searchSeq) {
+          log('refreshInBg: 사용자가 다른 검색으로 이동 → 화면 갱신 skip(캐시만 저장)', { seq, cur: _searchSeq });
+          return;
+        }
         // refresh 시엔 별도 srcForm 없음. 현재 페이지 form1 자동 fallback 사용.
         replaceTList(resp.html);
       }
