@@ -90,11 +90,19 @@
  *  - fetch timeout 20초 → 300초(5분). 실제 검색이 20초를 아득히 넘는 게 정상이고
  *    그 느린 검색을 캐시로 저장하는 게 목적. 20초 폴백은 일반 검색도 똑같이 느려
  *    이득 없음 → 끝까지 기다려 저장. 진행 오버레이에 실시간 "N초 경과" 타이머.
+ *
+ *  v3.1.10 변경 내역 (v3.1.9 회귀 fix — 100 선택인데 20개만 조회):
+ *  - v3.1.9 가 상단 t_paging 을 통째 교체하면서 그 안의 pageSize select 를
+ *    응답 것으로 덮음. 응답 HTML 의 pageSize 는 selected 속성이 없어 첫 옵션(20)
+ *    기본 → skin.js 가 세팅한 100 이 20 으로 리셋 → 다음 formToUrl 이 pageSize=20
+ *    을 읽어 20개만 조회됨. → t_paging 교체 전 pageSize·searchSortType select
+ *    노드를 확보했다가 교체 후 되돌림(skin.js 의 100·onChange 그대로 유지).
+ *    캐시 키에 pageSize 가 포함되므로 옛 20개 엔트리는 키가 달라 자연 무효화.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.9';
+  const UB_CACHE_VERSION = '3.1.10';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -314,6 +322,21 @@
       //   → t_list + t_paging 둘 다 교체. 날짜 select 는 t_paging 보다 앞의 검색
       //     테이블이라 안 건드림 → 날짜 유지. form1 엘리먼트 자체는 유지되므로
       //     submit 리스너·hijack 도 그대로(2번째 검색 정상).
+
+      // v3.1.10: pageSize·searchSortType select 노드 보존.
+      //   상단 t_paging 안에 pageSize select 가 들어있는데, 응답 HTML 의 pageSize
+      //   에는 selected 속성이 없어(옵션 20/30/50/100 중 첫 20 기본) t_paging 을
+      //   통째 교체하면 skin.js 가 세팅한 100 이 20 으로 덮임 → 다음 formToUrl 이
+      //   pageSize=20 을 읽어 20개만 조회(v3.1.9 회귀). → 교체 전 이 select 노드를
+      //   확보했다가 교체 후 새 노드 자리에 원래 노드로 되돌림. skin.js 의 100
+      //   선택·onChange 가 그대로 유지 → 항상 100개.
+      const PRESERVE_SELECTS = ['pageSize', 'searchSortType'];
+      const preservedSel = {};
+      PRESERVE_SELECTS.forEach(nm => {
+        const el = curWrap.querySelector('select[name="' + nm + '"]');
+        if (el) preservedSel[nm] = el;
+      });
+
       function swapByClass(cls) {
         const cur = curWrap.querySelectorAll('table.' + cls);
         const neu = newWrap.querySelectorAll('table.' + cls);
@@ -334,6 +357,18 @@
         log('replaceTList: 결과표(t_list) 교체 실패 — fail 처리');
         return false;
       }
+
+      // 보존해둔 pageSize·정렬 select 노드를 새 t_paging 안 새 노드 자리에 되돌림.
+      let restoredSel = 0;
+      PRESERVE_SELECTS.forEach(nm => {
+        const oldEl = preservedSel[nm];
+        if (!oldEl) return;
+        const newEl = curWrap.querySelector('select[name="' + nm + '"]');
+        if (newEl && newEl !== oldEl && newEl.parentNode) {
+          try { newEl.parentNode.replaceChild(oldEl, newEl); restoredSel++; } catch (_) {}
+        }
+      });
+      log('replaceTList: select 노드 보존', { restored: restoredSel, pageSize: preservedSel.pageSize ? preservedSel.pageSize.value : null });
 
       // tooltip 강제 sync — 새 결과행의 tooltip2 는 교체된 table 안에 함께 들어왔지만,
       // 페이지 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾으므로
