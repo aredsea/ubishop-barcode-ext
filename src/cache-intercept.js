@@ -78,13 +78,23 @@
  *    아예 건드리지 않음 → (a) 날짜 리셋 원천 차단(skin.js 가 넣어둔 select 값
  *    유지), (b) document.focus 에러 + 2번째 검색 죽음 제거(페이지 DOM/스크립트
  *    무손상), (c) 합계·헤더·데이터가 모두 t_list 안이라 결과 갱신도 정상.
- *  - "총 N개" 레코드 카운트는 t_list 밖 텍스트라 별도 갱신.
+ *  - "총 N개" 레코드 카운트는 t_list 밖 텍스트라 별도 갱신(→ v3.1.9 에서 폐기).
  *  - tooltip 은 교체된 table 안에 함께 들어오고, body 직속 필요분만 응답에서 보강.
+ *
+ *  v3.1.9 변경 내역:
+ *  - 총갯수·페이지네이션 미갱신 버그 fix. C# 캐시의 실제 응답 HTML 분석 결과,
+ *    "총 N개"·페이지 링크·pageSize/정렬 select 가 전부 table.t_paging 안(상단은
+ *    form1 내부, 하단은 form1 밖)이었음. t_list 만 갈던 v3.1.8 은 t_paging 을
+ *    안 건드려서 총갯수·2페이지가 안 나왔음. → t_list + t_paging 둘 다 교체.
+ *    날짜 select 는 t_paging 보다 앞의 검색 테이블이라 여전히 무손상.
+ *  - fetch timeout 20초 → 300초(5분). 실제 검색이 20초를 아득히 넘는 게 정상이고
+ *    그 느린 검색을 캐시로 저장하는 게 목적. 20초 폴백은 일반 검색도 똑같이 느려
+ *    이득 없음 → 끝까지 기다려 저장. 진행 오버레이에 실시간 "N초 경과" 타이머.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.8';
+  const UB_CACHE_VERSION = '3.1.9';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -163,7 +173,11 @@
    *  응답 구조는 SW fetchUbdstore 와 동일하게 유지 → handleSearchSubmit 분기
    *  로직(ok/aborted/status/bytes) 그대로 재사용.
    */
-  const FETCH_TIMEOUT_MS = 20000;
+  // v3.1.9: 20초 → 300초(5분). 사용자 보고: 실제 검색이 20초를 아득히 넘는
+  //   경우가 많고, 그런 느린 검색을 캐시로 저장하는 게 이 기능의 존재 이유임.
+  //   20초에 폴백하면 일반 검색도 똑같이 오래 걸려 이득이 없음 → 우리 fetch 를
+  //   끝까지 기다려 캐시에 저장. 300초는 무한 hang 방지용 최후 안전선.
+  const FETCH_TIMEOUT_MS = 300000;
   async function fetchUbdstoreDirect(url) {
     const t0 = Date.now();
     const ctrl = new AbortController();
@@ -289,49 +303,37 @@
       // 스크롤 보존
       const oldScroll = window.scrollY || window.pageYOffset || 0;
 
-      // v3.1.8: 결과 테이블(table.t_list)만 외과적으로 교체.
-      //   v3.1.7 까지: wrapper.innerHTML 통째 교체(+ form1 노드 보존). 그런데 실측
-      //   결과, 날짜 select(syear/smonth/sday…)는 form1 밖 형제라 wrapper 교체 시
-      //   응답 default(2000/01/01)로 덮였고, form1 만 보존해도 날짜는 리셋됨.
-      //   또 wrapper 통째 교체가 페이지 스크립트/버튼을 재생성해 document.focus
-      //   에러 + 2번째 검색 죽음(handleSearchSubmit 미실행)까지 유발.
-      //   → 근본 해결: form·날짜 select·검색버튼·페이지 스크립트 전부 안 건드리고
-      //     결과 그리드(table.t_list 전부)만 index 매칭으로 교체. 합계·헤더·데이터
-      //     행이 모두 t_list 안이라 이걸로 결과·합계 갱신 완료. skin.js 사이드바가
-      //     이미 넣어둔 날짜 select 값은 그대로 유지 → 날짜 리셋 원천 차단.
-      const curTables = curWrap.querySelectorAll('table.t_list');
-      const newTables = newWrap.querySelectorAll('table.t_list');
-      if (!curTables.length || !newTables.length) {
-        log('replaceTList: t_list 없음', { cur: curTables.length, new: newTables.length });
+      // v3.1.9: 결과 그리드(table.t_list) + 페이징바(table.t_paging) 만 외과 교체.
+      //   실측(C# 캐시의 실제 응답 HTML) 구조 확정:
+      //     form1 (검색바)
+      //       ├─ 검색 테이블 (syear/smonth/sday… 날짜 select) ← 안 건드림
+      //       └─ 상단 table.t_paging (총 N개 + pageSize/정렬 select + 상단 페이징)
+      //     table.t_list (결과 그리드: 헤더+합계+데이터)       ← form1 밖
+      //     하단 table.t_paging (하단 페이징)                  ← form1 밖
+      //   v3.1.8 은 t_list 만 갈아서 총갯수·페이지네이션(둘 다 t_paging)이 안 바뀜.
+      //   → t_list + t_paging 둘 다 교체. 날짜 select 는 t_paging 보다 앞의 검색
+      //     테이블이라 안 건드림 → 날짜 유지. form1 엘리먼트 자체는 유지되므로
+      //     submit 리스너·hijack 도 그대로(2번째 검색 정상).
+      function swapByClass(cls) {
+        const cur = curWrap.querySelectorAll('table.' + cls);
+        const neu = newWrap.querySelectorAll('table.' + cls);
+        const n = Math.min(cur.length, neu.length);
+        let c = 0;
+        for (let i = 0; i < n; i++) {
+          try {
+            cur[i].parentNode.replaceChild(document.importNode(neu[i], true), cur[i]);
+            c++;
+          } catch (_) {}
+        }
+        return { swapped: c, cur: cur.length, neu: neu.length };
+      }
+      const rList = swapByClass('t_list');
+      const rPage = swapByClass('t_paging');
+      log('replaceTList: 교체', { t_list: rList, t_paging: rPage });
+      if (!rList.swapped) {
+        log('replaceTList: 결과표(t_list) 교체 실패 — fail 처리');
         return false;
       }
-      const nT = Math.min(curTables.length, newTables.length);
-      let swapped = 0;
-      for (let i = 0; i < nT; i++) {
-        try {
-          const imported = document.importNode(newTables[i], true);
-          curTables[i].parentNode.replaceChild(imported, curTables[i]);
-          swapped++;
-        } catch (_) {}
-      }
-      log('replaceTList: t_list 교체', { swapped, curCount: curTables.length, newCount: newTables.length });
-      if (!swapped) return false;
-
-      // "총 N 개" 레코드 카운트 — t_list 밖 텍스트라 별도 갱신(있을 때만).
-      try {
-        const m = (newWrap.textContent || '').match(/총\s*[\d,]+\s*개/);
-        if (m && m[0]) {
-          const walker = document.createTreeWalker(curWrap, NodeFilter.SHOW_TEXT, null);
-          let node;
-          while ((node = walker.nextNode())) {
-            if (node.parentElement && node.parentElement.closest('table.t_list')) continue;
-            if (/총\s*[\d,]+\s*개/.test(node.nodeValue)) {
-              node.nodeValue = node.nodeValue.replace(/총\s*[\d,]+\s*개/, m[0]);
-              break;
-            }
-          }
-        }
-      } catch (_) {}
 
       // tooltip 강제 sync — 새 결과행의 tooltip2 는 교체된 table 안에 함께 들어왔지만,
       // 페이지 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾으므로
@@ -449,15 +451,29 @@
       d.textContent = detail || '';
       o.classList.add('on');
       clearTimeout(showProgress._h);
+      // v3.1.9: fetching 은 오래 걸릴 수 있으니(최대 5분) 실시간 경과 타이머 표시.
+      //   "정지한 게 아니라 서버가 느린 것"임을 사용자가 즉시 알 수 있게.
+      clearInterval(showProgress._timer);
+      if (state === 'fetching') {
+        const base = detail || '';
+        const start = Date.now();
+        showProgress._timer = setInterval(() => {
+          try {
+            const dd = o.querySelector('.ub-po-detail');
+            if (dd) dd.textContent = base + (base ? ' · ' : '') + Math.round((Date.now() - start) / 1000) + '초 경과';
+          } catch (_) {}
+        }, 500);
+      }
       // auto-close (진행형 상태는 안 지움 — 다음 상태가 덮어씀)
       const autoMs = (state === 'hit' || state === 'filled') ? 2200
-                    : (state === 'fallback') ? 3800
+                    : (state === 'fallback') ? 4200
                     : 0;
       if (autoMs) showProgress._h = setTimeout(hideProgress, autoMs);
     } catch (_) {}
   }
   function hideProgress() {
     try {
+      clearInterval(showProgress._timer);
       const o = document.getElementById('ub-cache-overlay');
       if (o) o.classList.remove('on');
     } catch (_) {}
@@ -637,7 +653,7 @@
     }
 
     // 2) miss → 서버 fetch (v3.1.2: SW 경유 폐기, 같은 world 에서 직접 fetch)
-    showProgress('fetching', '서버에서 가져오는 중…', '최대 20초 대기');
+    showProgress('fetching', '서버에서 가져오는 중…', '느린 검색도 끝까지 기다려 캐시에 저장');
     sendBg({ type: 'telemetry', payload: { type: 'cache_miss_search', path: location.pathname } });
     const t0 = Date.now();
     const resp = await fetchUbdstoreDirect(url);
@@ -663,7 +679,7 @@
     // (스피너는 fallback navigate가 끝낼 거라 hide 안 함 — navigate 중엔 정상이라 사용자에겐 자연스러움)
     // 사용자에게 어느 분기인지 명확히: timeout / 서버에러 / 응답 파싱 실패
     let reason = '알 수 없는 실패';
-    if (resp && resp.aborted) reason = '서버 ' + Math.round(resp.elapsedMs / 1000) + '초 timeout (기본값 20초 초과)';
+    if (resp && resp.aborted) reason = '서버 ' + Math.round(resp.elapsedMs / 1000) + '초 timeout (5분 초과)';
     else if (resp && !resp.ok && resp.status) reason = '서버 응답 비정상 (status ' + resp.status + ', ' + (resp.bytes || 0) + 'B)';
     else if (resp && !resp.ok && resp.error) reason = '네트워크 오류: ' + String(resp.error).slice(0, 80);
     else if (resp && resp.ok) reason = '응답에 t_list 없음 (로그인 만료?)';
