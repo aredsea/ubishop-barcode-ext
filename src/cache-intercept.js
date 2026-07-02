@@ -105,11 +105,26 @@
  *    있게 됨. 그 사이 사용자가 다른 검색·페이지로 이동하면 옛 검색 결과로 현재
  *    화면을 덮어쓰는 문제 발생 가능. → 검색 시퀀스 토큰(_searchSeq) 도입, refresh
  *    완료 시 토큰이 그대로일 때만 DOM 갱신(캐시 저장은 항상). 정적 검증 중 발견.
+ *
+ *  v3.1.12 변경 내역 (교체 후 pageSize 20 회귀 — form owner association 소실 fix):
+ *  - 실측(C# 캐시 응답 에코): 첫 검색은 pageSize=100 으로 전송되는데, replaceTList
+ *    한 번 거친 뒤의 검색은 전부 pageSize 파라미터 자체가 빠져 서버 기본 20개 응답.
+ *  - 원인: 유비샵 마크업이 비정형(form1 이 <table class="t_search"> 직후 열리고
+ *    상단 t_paging 테이블 안에서 닫힘). HTML 파서는 테이블 컨텍스트의 form 을 빈
+ *    노드로 두고 필드들을 "파서 시점 form pointer" 로만 귀속시킨다. 이 연결은
+ *    노드를 DOM 에서 떼었다 다시 넣는 순간 리셋되어 영구 소실 → v3.1.10 의
+ *    select 노드 보존(replaceChild 두 번)이 pageSize·searchSortType 을
+ *    form1.elements 에서 탈락시킴 → formToUrl/formKeySource/폴백 submit 모두
+ *    pageSize 누락. 화면 select 는 100 인데 전송은 20 인 괴리의 정체.
+ *  - fix: 교체 전 form1.elements 의 name 스냅샷 → 교체·보존 후 elements 에서
+ *    사라진 name 을 curWrap 에서 찾아 form="<form1 id>" 속성으로 재연결.
+ *    form 속성 연결은 attribute 기반이라 이후 재교체에도 소실되지 않음.
+ *  - submit 로그에 전송 pageSize 추가(F12 검증용).
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.11';
+  const UB_CACHE_VERSION = '3.1.12';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -344,6 +359,19 @@
         if (el) preservedSel[nm] = el;
       });
 
+      // v3.1.12: 교체 전 form1.elements 의 name 스냅샷.
+      //   유비샵 마크업이 비정형이라(form1 이 테이블 중간에서 열리고 닫힘) 필드들은
+      //   DOM 조상 관계가 아니라 파서 시점 form pointer 로만 form1 에 귀속돼 있음.
+      //   이 연결은 노드를 떼었다 다시 넣으면 영구 소실 → 교체 후 사라진 name 을
+      //   form="" 속성으로 재연결하기 위해 교체 전 목록을 확보해 둔다.
+      const assocForm = srcForm || getSearchForm();
+      const namesBefore = [];
+      if (assocForm) {
+        for (const el of assocForm.elements) {
+          if (el.name && namesBefore.indexOf(el.name) < 0) namesBefore.push(el.name);
+        }
+      }
+
       function swapByClass(cls) {
         const cur = curWrap.querySelectorAll('table.' + cls);
         const neu = newWrap.querySelectorAll('table.' + cls);
@@ -376,6 +404,29 @@
         }
       });
       log('replaceTList: select 노드 보존', { restored: restoredSel, pageSize: preservedSel.pageSize ? preservedSel.pageSize.value : null });
+
+      // v3.1.12: form owner 재연결. 교체·보존 과정에서 form1.elements 에서 탈락한
+      //   필드(파서 연결 소실)를 form="<id>" 속성으로 되살린다. 속성 기반 연결은
+      //   이후 재교체에도 유지됨. 다른 form(form2 등) 소속 필드는 건드리지 않음.
+      let reassoc = 0;
+      if (assocForm) {
+        if (!assocForm.id) assocForm.id = 'ubForm1';
+        namesBefore.forEach(nm => {
+          if (assocForm.elements[nm]) return;   // 아직 연결돼 있으면 skip
+          curWrap.querySelectorAll('[name="' + nm + '"]').forEach(el => {
+            const tag = el.tagName;
+            if (tag !== 'INPUT' && tag !== 'SELECT' && tag !== 'TEXTAREA') return;
+            if (el.form) return;                 // 다른 form 소속 → 건드리지 않음
+            el.setAttribute('form', assocForm.id);
+            reassoc++;
+          });
+        });
+        log('replaceTList: form 재연결', {
+          reassoc,
+          pageSizeInForm: !!assocForm.elements.pageSize,
+          pageSize: assocForm.elements.pageSize ? assocForm.elements.pageSize.value : '(elements에 없음!)'
+        });
+      }
 
       // tooltip 강제 sync — 새 결과행의 tooltip2 는 교체된 table 안에 함께 들어왔지만,
       // 페이지 toolTip2.js previewMove() 가 document.getElementById(id) 로 찾으므로
@@ -665,7 +716,10 @@
     const keySrc = formKeySource(f);
     const key = await sha256_16(keySrc);
     const submitTs = Date.now();
-    log('submit', { path: location.pathname, url: url.slice(0, 200), key });
+    log('submit', {
+      path: location.pathname, url: url.slice(0, 200), key,
+      pageSize: (f.elements.pageSize && f.elements.pageSize.value) || '(전송 안 됨!)'
+    });
     showProgress('checking', '캐시 확인 중…', CACHE_PAGES[location.pathname] || location.pathname);
 
     // 1) 캐시 조회
