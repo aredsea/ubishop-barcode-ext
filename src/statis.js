@@ -317,7 +317,6 @@
         `<td>${g.members.length}</td></tr>`;
       const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
         '<tr>' +
-        `<td class="l c">${esc(m.code)}</td>` +
         `<td class="l">${esc(m.name)}</td>` +
         `<td>${nf(m.qty)}</td>` +
         `<td>${nf(m.sup)}</td>` +
@@ -327,7 +326,7 @@
         '</tr>').join('');
       rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
         '<table class="sub"><thead><tr>' +
-        '<th class="l">상품코드</th><th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
+        '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
         `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
     });
 
