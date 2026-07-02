@@ -113,7 +113,7 @@
         if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
         rows.push(r);
       }
-      return { rows, cCode: idx('상품코드'), cQty: idx('수량'), cSup: idx('총공급가'), cSale: idx('판매가') };
+      return { rows, cCode: idx('상품코드'), cQty: idx('수량'), cSup: idx('총공급가'), cSale: idx('판매가'), cDC: idx('DC금액'), cReal: idx('실판매가') };
     }
     return null;
   }
@@ -139,7 +139,9 @@
           code: cn.code, name: cn.name,
           qty: firstNum(r.cells[g.cQty] && r.cells[g.cQty].textContent),
           sup: firstNum(r.cells[g.cSup] && r.cells[g.cSup].textContent),
-          sale: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0
+          sale: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0,
+          dc: g.cDC >= 0 ? firstNum(r.cells[g.cDC] && r.cells[g.cDC].textContent) : 0,
+          real: g.cReal >= 0 ? firstNum(r.cells[g.cReal] && r.cells[g.cReal].textContent) : 0
         });
       }
     }
@@ -158,8 +160,8 @@
       const base = jasa ? jasaBase(it.name) : saipKey(it.name);
       const key = (jasa ? 'J' : 'S') + '' + base;
       let g = map.get(key);
-      if (!g) { g = { type: jasa ? '자사' : '사입', name: base, qty: 0, sup: 0, sale: 0, members: [] }; map.set(key, g); }
-      g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.members.push(it);
+      if (!g) { g = { type: jasa ? '자사' : '사입', name: base, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, members: [] }; map.set(key, g); }
+      g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real; g.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.sup - a.sup);
     return { groups, excluded, kept };
@@ -272,8 +274,17 @@
       '#ub-stat .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700;}',
       '#ub-stat .tj{background:#e0f4fc;color:#0f8fb8;} #ub-stat .ts{background:#fdeede;color:#b8710f;}',
       '#ub-stat .rk{color:#9aa4af;font-weight:700;} #ub-stat .qty{font-weight:800;color:#111;}',
-      '#ub-stat .det td{background:#fafcfe;color:#55636f;font-size:11.5px;text-align:left;}',
-      '#ub-stat .det .m{display:inline-block;margin:2px 10px 2px 0;}'
+      '#ub-stat .exp{color:#35C5F0;font-weight:800;margin-left:5px;font-size:11px;user-select:none;}',
+      '#ub-stat .det > td{background:#eef4f8;padding:8px 10px 12px 34px;}',
+      '#ub-stat table.sub{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dbe6ee;border-radius:8px;overflow:hidden;}',
+      '#ub-stat table.sub thead th{position:static;background:#f3f7fa;color:#54687a;font-weight:700;font-size:11px;',
+      ' padding:6px 9px;border-bottom:1px solid #dce6ee;text-align:right;white-space:nowrap;}',
+      '#ub-stat table.sub thead th.l{text-align:left;}',
+      '#ub-stat table.sub tbody td{padding:5px 9px;border-bottom:1px solid #f1f5f8;text-align:right;font-size:11.5px;white-space:nowrap;color:#33414d;}',
+      '#ub-stat table.sub tbody td.l{text-align:left;}',
+      '#ub-stat table.sub tbody tr:nth-child(even){background:#fafcfe;}',
+      '#ub-stat table.sub tbody tr:last-child td{border-bottom:0;}',
+      '#ub-stat table.sub tbody td.c{color:#0f6f8c;font-weight:700;}'
     ].join('');
     (document.head || document.documentElement).appendChild(s);
   }
@@ -289,31 +300,45 @@
     const groups = result.groups;
     const totQty = groups.reduce((a, g) => a + g.qty, 0);
     const totSup = groups.reduce((a, g) => a + g.sup, 0);
+    const totReal = groups.reduce((a, g) => a + g.real, 0);
 
     let rows = '';
     groups.forEach((g, i) => {
       const tag = g.type === '자사' ? '<span class="tag tj">자사</span>' : '<span class="tag ts">사입</span>';
       rows += `<tr class="g" data-i="${i}">` +
         `<td class="rk">${i + 1}</td>` +
-        `<td class="l">${esc(g.name)}</td>` +
+        `<td class="l">${esc(g.name)} <span class="exp">▸</span></td>` +
         `<td class="l">${tag}</td>` +
         `<td class="qty">${nf(g.qty)}</td>` +
         `<td>${nf(g.sup)}</td>` +
         `<td>${nf(g.sale)}</td>` +
+        `<td>${nf(g.dc)}</td>` +
+        `<td>${nf(g.real)}</td>` +
         `<td>${g.members.length}</td></tr>`;
-      const mem = g.members.slice().sort((a, b) => b.qty - a.qty)
-        .map(m => `<span class="m">· ${esc(m.code)} ${esc(m.name)} <b>(${nf(m.qty)})</b></span>`).join('');
-      rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="6">${mem}</td></tr>`;
+      const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
+        '<tr>' +
+        `<td class="l c">${esc(m.code)}</td>` +
+        `<td class="l">${esc(m.name)}</td>` +
+        `<td>${nf(m.qty)}</td>` +
+        `<td>${nf(m.sup)}</td>` +
+        `<td>${nf(m.sale)}</td>` +
+        `<td>${nf(m.dc)}</td>` +
+        `<td>${nf(m.real)}</td>` +
+        '</tr>').join('');
+      rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
+        '<table class="sub"><thead><tr>' +
+        '<th class="l">상품코드</th><th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
+        `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
     });
 
     box.innerHTML =
       '<div class="hd">' +
         '<span class="t">제품별 판매 통계</span>' +
-        `<span class="sum">제품군 ${groups.length}개 · 총수량 ${nf(totQty)} · 총공급가 ${nf(totSup)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 기간 ${esc(meta)}</span>` +
+        `<span class="sum">제품군 ${groups.length}개 · 총수량 ${nf(totQty)} · 총공급가 ${nf(totSup)}원 · 총실판매가 ${nf(totReal)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 기간 ${esc(meta)}</span>` +
         '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="bd"><table>' +
-        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총공급가</th><th>총판매가</th><th>코드수</th></tr></thead>' +
+        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총공급가</th><th>총판매가</th><th>총DC금액</th><th>총실판매가</th><th>코드수</th></tr></thead>' +
         `<tbody>${rows}</tbody></table></div>`;
 
     document.body.appendChild(mask);
@@ -321,11 +346,16 @@
     box.querySelector('#ub-stat-close').addEventListener('click', close);
     box.querySelectorAll('tr.g').forEach(tr => tr.addEventListener('click', () => {
       const d = box.querySelector(`tr.det[data-d="${tr.dataset.i}"]`);
-      if (d) d.style.display = d.style.display === 'none' ? '' : 'none';
+      const caret = tr.querySelector('.exp');
+      if (d) {
+        const open = d.style.display === 'none';
+        d.style.display = open ? '' : 'none';
+        if (caret) caret.textContent = open ? '▾' : '▸';
+      }
     }));
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
-      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '코드수']];
-      groups.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), g.members.length]));
+      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '코드수']];
+      groups.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), Math.round(g.dc), Math.round(g.real), g.members.length]));
       downloadXlsx(aoa, xlsxName());
       log('xlsx 저장', xlsxName(), aoa.length - 1, '행');
     });
