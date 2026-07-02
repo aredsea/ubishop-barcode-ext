@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.1.14 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.1.16 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -1035,11 +1035,77 @@
     } catch (e) { console.warn('[UB][skin] auto-focus 실패', e); }
   }
 
+  /* ==========================================================================
+   *  상품집계(sheetStatisList) 수량 정렬 (v3.1.16) — 사용자 요청
+   *  기존 정렬은 '상품코드순'(서버) 하나뿐. select[name="searchSortType"] 옆에
+   *  수량 적은순↑/많은순↓/기본 드롭다운을 추가해 현재 화면 결과(table.t_list)를
+   *  클라이언트에서 즉시 재정렬한다.
+   *  ⚠ 서버 재조회 아님 — 현재 페이지에 로드된 행만 정렬(pageSize=100 기본이라
+   *    대개 한 페이지에 담김). 여러 페이지로 나뉘면 현재 페이지 내에서만 정렬.
+   *  실측 구조(콘솔): table.t_list, 헤더행에 '수량' 헤더 존재, 데이터행 = 헤더
+   *    이후 + 첫 셀이 숫자(No)인 행, 각 상품 1행, 합계행은 별도 테이블.
+   * ========================================================================== */
+  const QTY_SORT_RE = /\/statis\/sheet\/saleitem\/sheetStatisList\.do/;
+  function findStatisGrid() {
+    for (const t of document.querySelectorAll('table.t_list')) {
+      for (const r of t.rows) {
+        const idx = [...r.cells].findIndex(c => c.textContent.replace(/\s+/g, '') === '수량');
+        if (idx >= 0) return { table: t, headerRowIndex: r.rowIndex, qtyCol: idx };
+      }
+    }
+    return null;
+  }
+  function numVal(s) {
+    const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
+    return isNaN(n) ? 0 : n;
+  }
+  function addQtySort() {
+    try {
+      if (!state.ubSkin) return;                     // 유비샵 도구 켜졌을 때만
+      if (!QTY_SORT_RE.test(location.pathname)) return;
+      const anchor = document.querySelector('select[name="searchSortType"]');
+      if (!anchor || anchor.dataset.ubQtyBound) return;
+      const grid = findStatisGrid();
+      if (!grid) { console.log('[UB][skin] 수량정렬: t_list/수량 헤더 못 찾음'); return; }
+      anchor.dataset.ubQtyBound = '1';
+
+      const tbody = grid.table.tBodies[0] || grid.table;
+      // 데이터행 = 헤더 이후 + 첫 셀이 순수 숫자(No)인 행(합계·필터행 자동 제외).
+      const dataRows = [...grid.table.rows].filter(r =>
+        r.rowIndex > grid.headerRowIndex &&
+        r.cells.length > grid.qtyCol &&
+        /^\d+$/.test(r.cells[0].textContent.replace(/\s+/g, '')));
+      const original = dataRows.slice();             // 원래 순서(상품코드순) 스냅샷
+
+      const sel = document.createElement('select');
+      sel.className = anchor.className || 'f_small';
+      sel.style.marginLeft = '4px';
+      sel.innerHTML = '<option value="">수량정렬 −</option>'
+                    + '<option value="asc">수량 적은순 ↑</option>'
+                    + '<option value="desc">수량 많은순 ↓</option>';
+      sel.title = '현재 화면 결과를 수량 기준으로 정렬 (서버 재조회 없음)';
+      sel.addEventListener('change', () => {
+        const v = sel.value;
+        let order = original;
+        if (v === 'asc' || v === 'desc') {
+          order = original.slice().sort((a, b) => {
+            const d = numVal(a.cells[grid.qtyCol].textContent) - numVal(b.cells[grid.qtyCol].textContent);
+            return v === 'asc' ? d : -d;
+          });
+        }
+        order.forEach(r => tbody.appendChild(r));    // 데이터행이 표 마지막 → 순서대로 재배치
+      });
+      anchor.parentNode.insertBefore(sel, anchor.nextSibling);
+      console.log('[UB][skin] 수량정렬 드롭다운 추가', { qtyCol: grid.qtyCol, rows: original.length });
+    } catch (e) { console.warn('[UB][skin] 수량정렬 실패', e); }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
     bindCopyListener();
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
+    addQtySort();        // v3.1.16: 상품집계 수량 정렬
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
     startObserver();
