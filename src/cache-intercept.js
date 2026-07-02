@@ -120,11 +120,20 @@
  *    사라진 name 을 curWrap 에서 찾아 form="<form1 id>" 속성으로 재연결.
  *    form 속성 연결은 attribute 기반이라 이후 재교체에도 소실되지 않음.
  *  - submit 로그에 전송 pageSize 추가(F12 검증용).
+ *
+ *  v3.1.13 변경 내역 (페이지네이션도 캐시 경유):
+ *  - 사용자 보고: 검색은 캐시가 도는데 [2]페이지 이동은 여전히 느림. 실측 HTML:
+ *    페이지 번호는 form submit 이 아니라 일반 <a href="...&reqPage=N"> GET 링크
+ *    → 전체 페이지 네비게이션이라 우리 가로채기를 아예 안 탔음(서버 SQL 재실행).
+ *  - fix: document capture click 위임으로 table.t_paging 안의 같은 경로+reqPage
+ *    링크를 가로채 submit 과 동일한 캐시 흐름(hit 즉시 / miss fetch+저장 /
+ *    실패 시 location.href 폴백). 캐시 키 = 링크 URL 쿼리 정렬 직렬화 SHA-256.
+ *    t_paging 은 매 교체마다 새 노드라 위임(delegation)이라야 재바인딩 불필요.
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.12';
+  const UB_CACHE_VERSION = '3.1.13';
 
   const CACHE_PAGES = {
     '/jun/delivitem/delivItemList.do':   '매장출고전표',
@@ -793,6 +802,104 @@
     // hijack 적용된 f.submit 이 아니라 original 호출 (무한루프 방지)
     setTimeout(() => { try { (f._ubOriginalSubmit || HTMLFormElement.prototype.submit).call(f); } catch (_) {} }, 200);
   }
+
+  /* ---- v3.1.13: 페이지네이션 링크 캐시 경유 ----
+   *  t_paging 안 [2][3]… 은 <a href="...&reqPage=N"> GET 링크(form submit 아님)라
+   *  기존 가로채기를 안 탔음. capture click 위임으로 같은 경로+reqPage 링크만
+   *  가로채 submit 과 동일한 hit/miss/fallback 흐름을 태운다.
+   *  키는 링크 URL 쿼리를 정렬 직렬화(SHA-256) — 같은 페이지 재방문 시 hit.
+   */
+  function urlKeySource(url) {
+    const u = new URL(url, location.href);
+    const entries = [];
+    u.searchParams.forEach((v, k) => entries.push(k + '=' + v));
+    entries.sort();
+    return u.pathname + '?' + entries.join('&');
+  }
+
+  async function handlePageNav(url) {
+    const mySeq = ++_searchSeq;
+    const key = await sha256_16(urlKeySource(url));
+    const submitTs = Date.now();
+    const reqPage = (new URL(url, location.href)).searchParams.get('reqPage');
+    log('page nav', { url: url.slice(0, 200), key, reqPage });
+    showProgress('checking', '캐시 확인 중… (' + reqPage + '페이지)', CACHE_PAGES[location.pathname] || location.pathname);
+
+    const cached = await sendBg({ type: 'cacheGetSearch', pathKey: 'search:' + location.pathname, key });
+    const cachedEntry = cached && cached.entry;
+    const cachedHtml = cachedEntry && (cachedEntry.html || cachedEntry.Html);
+    if (cached && cached.hit && cachedHtml) {
+      const ok = replaceTList(cachedHtml);
+      log('page hit', { ok, htmlLen: cachedHtml.length });
+      if (ok) {
+        history.replaceState({}, '', url);
+        hidePageLoaders();
+        postStats({ hits: 1 });
+        const saved = persisted && persisted.lastMs;
+        const savedTxt = (saved && saved > 100) ? ' (서버 ' + (saved / 1000).toFixed(1) + '초 절약)' : '';
+        showProgress('hit', reqPage + '페이지 캐시 즉시 표시', savedTxt ? '서버 대비' + savedTxt : '백그라운드에서 최신 갱신 중');
+        showToast(reqPage + '페이지 캐시 즉시 표시' + savedTxt, 'hit');
+        sendBg({ type: 'telemetry', payload: { type: 'cache_hit_search', path: location.pathname, nav: 'page' } });
+        pushHistory({ result: 'hit', nav: 'page', savedMs: saved || 0, htmlLen: cachedHtml.length, submitMs: Date.now() - submitTs });
+        refreshInBg(url, key, mySeq);
+        return;
+      }
+      log('page hit replaceTList failed → miss 흐름 진입');
+    } else {
+      log('page cache miss', { hit: cached && cached.hit, hasEntry: !!cachedEntry, hasHtml: !!cachedHtml });
+    }
+
+    showProgress('fetching', reqPage + '페이지 서버에서 가져오는 중…', '느린 검색도 끝까지 기다려 캐시에 저장');
+    sendBg({ type: 'telemetry', payload: { type: 'cache_miss_search', path: location.pathname, nav: 'page' } });
+    const t0 = Date.now();
+    const resp = await fetchUbdstoreDirect(url);
+    const ms = Date.now() - t0;
+    log('page miss fetch result', { ok: resp && resp.ok, bytes: resp && resp.bytes, status: resp && resp.status, err: resp && resp.error, ms });
+    if (resp && resp.ok && resp.html) {
+      const ok = replaceTList(resp.html);
+      log('page miss replaceTList', { ok });
+      if (ok) {
+        history.replaceState({}, '', url);
+        hidePageLoaders();
+        postStats({ miss: 1, fillMs: ms, lastMs: ms });
+        showProgress('filled', '서버 ' + (ms / 1000).toFixed(1) + '초 → 캐시 저장', '다음 같은 페이지 이동은 즉시 표시됩니다');
+        showToast('서버 ' + (ms / 1000).toFixed(1) + '초 → 캐시 저장', 'ok');
+        sendBg({ type: 'cachePutSearch', pathKey: 'search:' + location.pathname, key, html: resp.html });
+        sendBg({ type: 'telemetry', payload: { type: 'cache_fill_search', path: location.pathname, nav: 'page', ms } });
+        pushHistory({ result: 'fill', nav: 'page', serverMs: ms, bytes: resp.bytes, submitMs: Date.now() - submitTs });
+        return;
+      }
+    }
+
+    // 모두 실패 → 평소 링크 네비게이션 폴백
+    let reason = '알 수 없는 실패';
+    if (resp && resp.aborted) reason = '서버 ' + Math.round(resp.elapsedMs / 1000) + '초 timeout (5분 초과)';
+    else if (resp && !resp.ok && resp.status) reason = '서버 응답 비정상 (status ' + resp.status + ', ' + (resp.bytes || 0) + 'B)';
+    else if (resp && !resp.ok && resp.error) reason = '네트워크 오류: ' + String(resp.error).slice(0, 80);
+    else if (resp && resp.ok) reason = '응답에 t_list 없음 (로그인 만료?)';
+    showProgress('fallback', '캐시 실패 — 일반 페이지 이동으로', reason);
+    showToast(reason, 'err');
+    log('page fallback', { reason });
+    pushHistory({ result: 'fallback', nav: 'page', reason, respMs: (resp && resp.elapsedMs) || 0, submitMs: Date.now() - submitTs });
+    setTimeout(() => { try { location.href = url; } catch (_) {} }, 200);
+  }
+
+  function onPagingClick(e) {
+    try {
+      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      if (!a.closest('table.t_paging')) return;
+      const href = a.getAttribute('href');
+      if (!href || href.indexOf('javascript:') === 0) return;
+      const u = new URL(href, location.href);
+      if (u.origin !== location.origin || u.pathname !== location.pathname) return;
+      if (!u.searchParams.has('reqPage')) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      handlePageNav(u.toString());
+    } catch (_) {}
+  }
+  document.addEventListener('click', onPagingClick, true);
 
   async function refreshInBg(url, key, seq) {
     try {
