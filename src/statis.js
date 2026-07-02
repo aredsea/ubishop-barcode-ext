@@ -50,12 +50,23 @@
 
   const isJasa = (name) => /^D?자사\//.test(name);
 
-  // 자사 제품명 추출: "D자사/" 제거 → 첫 성별표기(SR|LR|S|L, 경계 뒤) 앞까지.
+  // 자사 제품명 추출: "D자사/" 제거 후
+  //  ① 이름에 '보조' 포함 → 그 앞까지(부모 제품에 종속). 예) 프쉬케보조S → 프쉬케
+  //  ② 성별표기 잘라내되 '피앙세'와 '피앙세S'는 별개 제품으로 구분:
+  //     - SR·LR(2글자): 이름에 붙어 있어도 성별 → 앞까지. 예) 피앙세SR → 피앙세, 루센트-폴드SR → 루센트-폴드
+  //     - 단독 S·L: '구분자(공백/하이픈) 뒤'일 때만 성별. 예) 블링썸 메인-S → 블링썸 메인, 블링썸-L → 블링썸
+  //       (이름에 그대로 붙은 단독 S 는 제품명 일부: 피앙세S-LR → 피앙세S, 피앙세S → 피앙세S)
   function jasaBase(name) {
     let s = name.replace(/^D?자사\//, '').trim();
-    const m = s.match(/(SR|LR|S|L)(?=$|[\s\-(/*0-9])/);
-    if (m) s = s.slice(0, m.index);
-    else { const p = s.search(/[(/]/); if (p >= 0) s = s.slice(0, p); }
+    const bo = s.indexOf('보조');
+    if (bo > 0) return s.slice(0, bo).replace(/[\s\-/]+$/, '').trim() || name;
+    let cut = -1;
+    const m2 = s.match(/(SR|LR)(?=$|[\s\-(/*0-9])/);       // 2글자 성별(글자에 붙어도 성별)
+    if (m2) cut = m2.index;
+    const m1 = s.match(/[\s\-](S|L)(?=$|[\s\-(/*0-9])/);    // 구분자 뒤 단독 S/L (구분자 위치에서 자름)
+    if (m1 && (cut < 0 || m1.index < cut)) cut = m1.index;
+    if (cut < 0) { const p = s.search(/[(/]/); if (p >= 0) cut = p; }
+    if (cut >= 0) s = s.slice(0, cut);
     return s.replace(/[\s\-/]+$/, '').trim() || name;
   }
   // 사입 코드: '(' 또는 '/' 전까지 → 끝 성별 S/L 1글자 제거(병합).
@@ -151,8 +162,9 @@
   /* ---------- 그룹핑 + 필터 ---------- */
   function buildGroups(items) {
     const map = new Map();
-    let excluded = 0, kept = 0;
+    let excluded = 0, kept = 0, gift = 0;
     for (const it of items) {
+      if (/사은품/.test(it.name)) { gift++; continue; }   // 사은품은 순위에서 제외
       const unit = it.qty > 0 ? it.sup / it.qty : 0;   // 단가 = 총공급가 ÷ 수량
       if (unit <= PRICE_MIN) { excluded++; continue; }
       kept++;
@@ -164,7 +176,7 @@
       g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real; g.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.sup - a.sup);
-    return { groups, excluded, kept };
+    return { groups, excluded, kept, gift };
   }
 
   /* ---------- XLSX (라이브러리 없이 최소 구현: stored ZIP) ---------- */
@@ -333,7 +345,7 @@
     box.innerHTML =
       '<div class="hd">' +
         '<span class="t">제품별 판매 통계</span>' +
-        `<span class="sum">제품군 ${groups.length}개 · 총수량 ${nf(totQty)} · 총공급가 ${nf(totSup)}원 · 총실판매가 ${nf(totReal)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 기간 ${esc(meta)}</span>` +
+        `<span class="sum">제품군 ${groups.length}개 · 총수량 ${nf(totQty)} · 총공급가 ${nf(totSup)}원 · 총실판매가 ${nf(totReal)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${esc(meta)}</span>` +
         '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="bd"><table>' +
