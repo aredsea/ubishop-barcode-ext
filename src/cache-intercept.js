@@ -129,14 +129,25 @@
  *    링크를 가로채 submit 과 동일한 캐시 흐름(hit 즉시 / miss fetch+저장 /
  *    실패 시 location.href 폴백). 캐시 키 = 링크 URL 쿼리 정렬 직렬화 SHA-256.
  *    t_paging 은 매 교체마다 새 노드라 위임(delegation)이라야 재바인딩 불필요.
+ *
+ *  v3.1.15 변경 내역:
+ *  - [1] 페이지 링크가 항상 서버 재조회 되던 문제 fix. 실측: [1] 링크는
+ *    `...&reqPage=1` 을 달고 오는데(pageSize=100 포함), 최초 검색은 form 직렬화
+ *    키(reqPage 없음)로 캐시되어 [1] 링크의 urlKeySource(reqPage=1) 키와 달라
+ *    항상 miss → 로딩. → reqPage 가 '1' 이거나 없으면 페이지 이동도 최초 검색과
+ *    동일한 formKeySource 키를 쓰도록 정규화. 2페이지 이상은 그대로 urlKeySource.
+ *  - 매장출고전표(delivItemList.do) 캐시 일시 비활성화(사용자 요청). CACHE_PAGES
+ *    에서 제외 → 해당 페이지는 유비샵 기본 흐름 그대로(가로채기 자체 안 함).
  * ========================================================================== */
 (function () {
   'use strict';
 
-  const UB_CACHE_VERSION = '3.1.13';
+  const UB_CACHE_VERSION = '3.1.15';
 
   const CACHE_PAGES = {
-    '/jun/delivitem/delivItemList.do':   '매장출고전표',
+    // v3.1.15: 매장출고전표(delivItemList.do) 캐시 일시 비활성화(사용자 요청).
+    //   다시 켜려면 아래 줄 주석 해제.
+    // '/jun/delivitem/delivItemList.do':   '매장출고전표',
     '/jun/clientpay/clientPayJunList.do': '매장매출전표'
   };
   if (!CACHE_PAGES[location.pathname]) return;
@@ -819,10 +830,16 @@
 
   async function handlePageNav(url) {
     const mySeq = ++_searchSeq;
-    const key = await sha256_16(urlKeySource(url));
     const submitTs = Date.now();
     const reqPage = (new URL(url, location.href)).searchParams.get('reqPage');
-    log('page nav', { url: url.slice(0, 200), key, reqPage });
+    // v3.1.15: [1] 링크(reqPage=1 또는 없음)는 최초 검색과 같은 데이터인데
+    //   최초 검색은 formKeySource(reqPage 없음) 키로 캐시됨. urlKeySource(reqPage=1)
+    //   로 조회하면 키가 달라 항상 miss → 로딩. → 1페이지는 form 키로 정규화해
+    //   최초 검색 캐시를 그대로 hit. 2페이지 이상만 urlKeySource(페이지별 저장).
+    const isPage1 = !reqPage || reqPage === '1';
+    const f = getSearchForm();
+    const key = await sha256_16((isPage1 && f) ? formKeySource(f) : urlKeySource(url));
+    log('page nav', { url: url.slice(0, 200), key, reqPage, keyMode: (isPage1 && f) ? 'form(page1)' : 'url' });
     showProgress('checking', '캐시 확인 중… (' + reqPage + '페이지)', CACHE_PAGES[location.pathname] || location.pathname);
 
     const cached = await sendBg({ type: 'cacheGetSearch', pathKey: 'search:' + location.pathname, key });
