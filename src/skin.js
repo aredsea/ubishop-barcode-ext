@@ -61,7 +61,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.1.16 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.1.17 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -1036,28 +1036,91 @@
   }
 
   /* ==========================================================================
-   *  상품집계(sheetStatisList) 수량 정렬 (v3.1.16) — 사용자 요청
+   *  상품집계(sheetStatisList) 수량 정렬 (v3.1.17) — 전체 데이터 기준(월단위 통계)
    *  기존 정렬은 '상품코드순'(서버) 하나뿐. select[name="searchSortType"] 옆에
-   *  수량 적은순↑/많은순↓/기본 드롭다운을 추가해 현재 화면 결과(table.t_list)를
-   *  클라이언트에서 즉시 재정렬한다.
-   *  ⚠ 서버 재조회 아님 — 현재 페이지에 로드된 행만 정렬(pageSize=100 기본이라
-   *    대개 한 페이지에 담김). 여러 페이지로 나뉘면 현재 페이지 내에서만 정렬.
-   *  실측 구조(콘솔): table.t_list, 헤더행에 '수량' 헤더 존재, 데이터행 = 헤더
-   *    이후 + 첫 셀이 숫자(No)인 행, 각 상품 1행, 합계행은 별도 테이블.
+   *  수량 적은순↑/많은순↓/기본 드롭다운 추가.
+   *  ★전체 데이터 정렬: 현재 페이지 행만이 아니라, form1(POST)을 큰 pageSize(500)로
+   *    재조회해 전체 결과를 받아온 뒤 정렬한다(500 초과면 reqPage 순차 병합).
+   *    한 번 받은 전체 세트는 검색조건 키로 캐싱 → 정렬 방향만 바꿀 땐 재조회 없음.
+   *  실측 구조(사용자 콘솔): form1 method=POST, action=/statis/sheet/saleitem/
+   *    sheetStatisList.do, 결과 table.t_list, 헤더에 '수량' 컬럼, 데이터행=헤더
+   *    이후+첫 셀 숫자(No), 각 상품 1행, 합계행은 별도 테이블, '총 N 개' 표기,
+   *    pageSize 옵션 20/30/50/100/300/500.
    * ========================================================================== */
   const QTY_SORT_RE = /\/statis\/sheet\/saleitem\/sheetStatisList\.do/;
-  function findStatisGrid() {
-    for (const t of document.querySelectorAll('table.t_list')) {
+  const QTY_FETCH_PS = 500;                          // 서버 지원 최대 옵션
+  function numVal(s) {
+    const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
+    return isNaN(n) ? 0 : n;
+  }
+  // 문서(현재 or 파싱본)에서 수량 헤더가 있는 t_list 와 데이터행 추출
+  function findStatisGridIn(root) {
+    for (const t of root.querySelectorAll('table.t_list')) {
       for (const r of t.rows) {
         const idx = [...r.cells].findIndex(c => c.textContent.replace(/\s+/g, '') === '수량');
-        if (idx >= 0) return { table: t, headerRowIndex: r.rowIndex, qtyCol: idx };
+        if (idx >= 0) {
+          const rows = [...t.rows].filter(rr =>
+            rr.rowIndex > r.rowIndex && rr.cells.length > idx &&
+            /^\d+$/.test(rr.cells[0].textContent.replace(/\s+/g, '')));
+          return { table: t, headerRowIndex: r.rowIndex, qtyCol: idx, rows };
+        }
       }
     }
     return null;
   }
-  function numVal(s) {
-    const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
-    return isNaN(n) ? 0 : n;
+  function statisFormParams() {
+    const sortSel = document.querySelector('select[name="searchSortType"]');
+    const form = sortSel && sortSel.form;
+    if (!form) return null;
+    const params = new URLSearchParams();
+    for (const el of form.elements) {
+      if (!el.name) continue;
+      const t = (el.type || '').toLowerCase();
+      if (['submit', 'button', 'reset', 'image', 'file'].includes(t)) continue;
+      if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
+      params.append(el.name, el.value == null ? '' : el.value);
+    }
+    return { form, action: form.getAttribute('action') || location.pathname, params };
+  }
+  async function fetchStatisHtml(action, params) {
+    const r = await fetch(action, {
+      method: 'POST', credentials: 'include', cache: 'no-cache',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: params.toString()
+    });
+    const buf = await r.arrayBuffer();
+    let html = '';
+    try {
+      html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+    } catch (_) { try { html = new TextDecoder('euc-kr').decode(buf); } catch (__) {} }
+    return html;
+  }
+  function readTotal() {
+    const m = document.body.innerText.match(/총\s*:?\s*([0-9,]+)\s*개/);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+  }
+  // 전체 결과 행(현재 문서에 import된 <tr>) 배열 반환. 실패 시 null.
+  async function fetchAllStatisRows(setStatus) {
+    const fp = statisFormParams();
+    if (!fp) return null;
+    const total = readTotal();
+    const pages = total > 0 ? Math.ceil(total / QTY_FETCH_PS) : 1;
+    const all = [];
+    let qtyCol = 2;
+    for (let p = 1; p <= pages; p++) {
+      setStatus && setStatus(`전체 ${total}건 불러오는 중… (${p}/${pages})`);
+      const params = new URLSearchParams(fp.params);
+      params.set('pageSize', String(QTY_FETCH_PS));
+      params.set('reqPage', String(p));
+      const html = await fetchStatisHtml(fp.action, params);
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const g = findStatisGridIn(doc);
+      if (!g) throw new Error('응답에 t_list/수량 헤더 없음 (로그인 만료?)');
+      qtyCol = g.qtyCol;
+      g.rows.forEach(r => all.push(document.importNode(r, true)));
+    }
+    return { rows: all, qtyCol };
   }
   function addQtySort() {
     try {
@@ -1065,38 +1128,78 @@
       if (!QTY_SORT_RE.test(location.pathname)) return;
       const anchor = document.querySelector('select[name="searchSortType"]');
       if (!anchor || anchor.dataset.ubQtyBound) return;
-      const grid = findStatisGrid();
+      const grid = findStatisGridIn(document);
       if (!grid) { console.log('[UB][skin] 수량정렬: t_list/수량 헤더 못 찾음'); return; }
       anchor.dataset.ubQtyBound = '1';
 
       const tbody = grid.table.tBodies[0] || grid.table;
-      // 데이터행 = 헤더 이후 + 첫 셀이 순수 숫자(No)인 행(합계·필터행 자동 제외).
-      const dataRows = [...grid.table.rows].filter(r =>
-        r.rowIndex > grid.headerRowIndex &&
-        r.cells.length > grid.qtyCol &&
-        /^\d+$/.test(r.cells[0].textContent.replace(/\s+/g, '')));
-      const original = dataRows.slice();             // 원래 순서(상품코드순) 스냅샷
+      const pageRows = grid.rows.slice();            // 현재 페이지에 보이는 행(원래 순서)
 
+      // UI: 정렬 드롭다운 + 상태 문구
       const sel = document.createElement('select');
       sel.className = anchor.className || 'f_small';
       sel.style.marginLeft = '4px';
       sel.innerHTML = '<option value="">수량정렬 −</option>'
                     + '<option value="asc">수량 적은순 ↑</option>'
                     + '<option value="desc">수량 많은순 ↓</option>';
-      sel.title = '현재 화면 결과를 수량 기준으로 정렬 (서버 재조회 없음)';
-      sel.addEventListener('change', () => {
-        const v = sel.value;
-        let order = original;
+      sel.title = '전체 데이터를 수량 기준으로 정렬 (여러 페이지면 전체 재조회)';
+      const status = document.createElement('span');
+      status.style.cssText = 'margin-left:6px;font:600 11px/1 Pretendard,sans-serif;color:#2563eb;vertical-align:middle;';
+      const setStatus = (t) => { status.textContent = t || ''; };
+
+      let fullRows = null;                           // 전체 세트 캐시(import된 <tr>)
+      let fullQtyCol = grid.qtyCol;
+      let busy = false;
+
+      const render = (rows, qtyCol, v) => {
+        let order = rows;
         if (v === 'asc' || v === 'desc') {
-          order = original.slice().sort((a, b) => {
-            const d = numVal(a.cells[grid.qtyCol].textContent) - numVal(b.cells[grid.qtyCol].textContent);
+          order = rows.slice().sort((a, b) => {
+            const d = numVal(a.cells[qtyCol].textContent) - numVal(b.cells[qtyCol].textContent);
             return v === 'asc' ? d : -d;
           });
         }
-        order.forEach(r => tbody.appendChild(r));    // 데이터행이 표 마지막 → 순서대로 재배치
+        // 기존 데이터행 제거 후 새 순서로 채움(헤더/합계는 유지)
+        [...grid.table.rows]
+          .filter(r => r.rowIndex > grid.headerRowIndex && r.cells.length > qtyCol &&
+                       /^\d+$/.test(r.cells[0].textContent.replace(/\s+/g, '')))
+          .forEach(r => r.remove());
+        order.forEach(r => tbody.appendChild(r));
+      };
+
+      sel.addEventListener('change', async () => {
+        const v = sel.value;
+        if (busy) return;
+        const total = readTotal();
+        // 전체가 이미 화면에 있으면(단일 페이지) 현재 행으로 즉시 정렬
+        if (total <= pageRows.length && !fullRows) {
+          render(pageRows, grid.qtyCol, v);
+          return;
+        }
+        // 여러 페이지 → 전체 재조회(1회) 후 캐시로 정렬
+        if (!fullRows) {
+          busy = true; sel.disabled = true;
+          try {
+            const res = await fetchAllStatisRows(setStatus);
+            if (!res) throw new Error('폼 재현 실패');
+            fullRows = res.rows; fullQtyCol = res.qtyCol;
+            setStatus(`전체 ${fullRows.length}건 정렬`);
+            console.log('[UB][skin] 수량정렬 전체 로드', { rows: fullRows.length, qtyCol: fullQtyCol });
+          } catch (e) {
+            setStatus('전체 불러오기 실패 — 현재 페이지만 정렬');
+            console.warn('[UB][skin] 수량정렬 전체 로드 실패', e);
+            render(pageRows, grid.qtyCol, v);
+            busy = false; sel.disabled = false;
+            return;
+          }
+          busy = false; sel.disabled = false;
+        }
+        render(fullRows, fullQtyCol, v);
       });
+
+      anchor.parentNode.insertBefore(status, anchor.nextSibling);
       anchor.parentNode.insertBefore(sel, anchor.nextSibling);
-      console.log('[UB][skin] 수량정렬 드롭다운 추가', { qtyCol: grid.qtyCol, rows: original.length });
+      console.log('[UB][skin] 수량정렬 드롭다운 추가', { qtyCol: grid.qtyCol, pageRows: pageRows.length });
     } catch (e) { console.warn('[UB][skin] 수량정렬 실패', e); }
   }
 
