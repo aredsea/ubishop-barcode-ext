@@ -107,3 +107,88 @@
     });
   } catch (_) {}
 })();
+
+/* =============================================================================
+ *  계정 빠른 전환 — 다계정 관리 + 자동 로그아웃/로그인 트리거
+ *  비번은 AES-GCM 으로 암호화해 chrome.storage.local 에 저장(평문 아님).
+ *  [전환] → ubPendingLogin 저장 + 현재 탭 로그아웃 → autologin.js(honsu114) 가 이어받음.
+ * ========================================================================== */
+(function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const listEl = $('acct-list'), formEl = $('acct-form');
+  if (!listEl) return;
+
+  // autologin.js 와 동일한 키 파생(AES-GCM). 소금은 최초 1회 생성해 저장.
+  async function vaultKey() {
+    let g = await chrome.storage.local.get('ubLoginSalt');
+    let saltB64 = g && g.ubLoginSalt;
+    if (!saltB64) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      saltB64 = btoa(String.fromCharCode(...salt));
+      await chrome.storage.local.set({ ubLoginSalt: saltB64 });
+    }
+    const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
+    const pass = new TextEncoder().encode('ubshop-acct-vault-v1|' + (chrome.runtime && chrome.runtime.id || 'x'));
+    const base = await crypto.subtle.importKey('raw', pass, 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+  async function enc(text) {
+    const key = await vaultKey();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+    return { iv: btoa(String.fromCharCode(...iv)), ct: btoa(String.fromCharCode(...new Uint8Array(ct))) };
+  }
+
+  const uid = () => 'a' + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+  const getAccounts = async () => (await chrome.storage.local.get('ubAccounts')).ubAccounts || [];
+  const setAccounts = (list) => chrome.storage.local.set({ ubAccounts: list });
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  async function renderList() {
+    const accs = await getAccounts();
+    if (!accs.length) { listEl.innerHTML = '<div class="acct-empty">등록된 계정이 없습니다. 아래에서 추가하세요.</div>'; return; }
+    listEl.innerHTML = accs.map(a =>
+      `<div class="acct-row"><div class="acct-meta"><b>${esc(a.alias || a.userid)}</b><span>${esc(a.userid)}</span></div>` +
+      `<button class="acct-go" data-id="${a.id}">전환</button>` +
+      `<button class="acct-del" data-id="${a.id}" title="삭제">✕</button></div>`).join('');
+    listEl.querySelectorAll('.acct-go').forEach(b => b.addEventListener('click', () => switchTo(b.dataset.id)));
+    listEl.querySelectorAll('.acct-del').forEach(b => b.addEventListener('click', () => del(b.dataset.id)));
+  }
+  async function del(id) {
+    if (!confirm('이 계정을 삭제할까요?')) return;
+    await setAccounts((await getAccounts()).filter(a => a.id !== id));
+    renderList();
+  }
+  async function add() {
+    const alias = $('acct-alias').value.trim();
+    const userid = $('acct-id').value.trim();
+    const pw = $('acct-pw').value;
+    if (!userid || !pw) { alert('아이디와 비밀번호를 입력하세요.'); return; }
+    const pwEnc = await enc(pw);
+    const accs = await getAccounts();
+    accs.push({ id: uid(), alias, userid, pwEnc });
+    await setAccounts(accs);
+    $('acct-alias').value = ''; $('acct-id').value = ''; $('acct-pw').value = '';
+    formEl.style.display = 'none';
+    renderList();
+  }
+  async function switchTo(id) {
+    await chrome.storage.local.set({ ubPendingLogin: { accountId: id, ts: Date.now() } });
+    let tab = null;
+    try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch (_) {}
+    let logoutUrl = 'https://ubdstore.ubshop.biz/logout.do';
+    try { const u = new URL(tab.url); if (/(ubshop\.biz|honsu114\.com)$/i.test(u.hostname)) logoutUrl = u.origin + '/logout.do'; } catch (_) {}
+    try { await chrome.tabs.update(tab.id, { url: logoutUrl }); } catch (_) {}
+    window.close();
+  }
+
+  $('acct-add-btn').addEventListener('click', () => {
+    formEl.style.display = formEl.style.display === 'none' ? 'block' : 'none';
+  });
+  $('acct-save').addEventListener('click', add);
+  $('acct-cancel').addEventListener('click', () => { formEl.style.display = 'none'; });
+  renderList();
+})();
