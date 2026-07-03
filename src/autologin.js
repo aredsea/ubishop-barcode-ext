@@ -70,41 +70,74 @@
     } catch (e) { try { form.submit(); } catch (_) {} }
   }
 
+  // 현재 페이지의 '로그아웃' 링크(로그인 상태 판정 겸용)
+  function findLogout() {
+    return [...document.querySelectorAll('a[href]')].find(a => {
+      const t = (a.textContent || '').replace(/\s/g, '');
+      const h = a.getAttribute('href') || '';
+      return /로그아웃|logout/i.test(t) || /logout|logoff|signout/i.test(h);
+    });
+  }
+  function goLogout(link) {
+    const h = link.getAttribute('href') || '';
+    if (h && h.indexOf('javascript:') !== 0) location.href = new URL(h, location.href).href;
+    else { try { link.click(); } catch (_) {} }
+  }
+
   async function run() {
     let pend;
     try { pend = (await chrome.storage.local.get('ubPendingLogin')).ubPendingLogin; } catch (_) { return; }
     if (!pend || !pend.accountId) return;
     if (pend.ts && Date.now() - pend.ts > MAX_AGE) { try { await chrome.storage.local.remove('ubPendingLogin'); } catch (_) {} return; }
 
+    // ★무한루프 하드가드: 매 실행마다 step++, 한도 초과면 중단(더는 이동 안 함).
+    const step = (pend.step || 0) + 1;
+    if (step > 6) { log('반복 초과 — 자동전환 중단(로그아웃/로그인 흐름 점검 필요)'); await chrome.storage.local.remove('ubPendingLogin'); return; }
+
     const form = loginForm();
-    if (!form) {
-      // 로그인 폼 아님(로그아웃 후 홈 등) → 로그인 페이지로 이동
-      if (!/\/mall\/login\.ubs/i.test(location.pathname)) { log('로그인 페이지로 이동'); location.href = LOGIN_URL; }
+
+    // 1) 로그인 폼 있음(=로그아웃 상태) → 아이디/비번 채우고 제출
+    if (form) {
+      const accs = (await chrome.storage.local.get('ubAccounts')).ubAccounts || [];
+      const acc = accs.find(a => a.id === pend.accountId);
+      if (!acc) { await chrome.storage.local.remove('ubPendingLogin'); return; }
+      let pw = '';
+      try { pw = await dec(acc.pwEnc); }
+      catch (e) { log('복호화 실패 — 취소'); await chrome.storage.local.remove('ubPendingLogin'); return; }
+      setVal(form.querySelector('input[name="sysUser.fuserid"]'), acc.userid);
+      setVal(form.querySelector('input[name="sysUser.fpasswd"]'), pw);
+      pw = '';
+      await chrome.storage.local.remove('ubPendingLogin');   // 소비(루프 방지)
+      if (captchaVisible()) {
+        log('캡차 표시 → 자동 제출 안 함(사람이 캡차 입력 후 로그인)');
+        const cap = form.querySelector('input[name="sysUser.fcaptcha"]'); if (cap) cap.focus();
+        return;
+      }
+      log('자동 로그인 제출 →', acc.alias || acc.userid);
+      submitLogin(form);
       return;
     }
 
-    const accs = (await chrome.storage.local.get('ubAccounts')).ubAccounts || [];
-    const acc = accs.find(a => a.id === pend.accountId);
-    if (!acc) { await chrome.storage.local.remove('ubPendingLogin'); return; }
+    // 2) 폼 없음 + 아직 로그인 상태(로그아웃 링크 존재) → 로그아웃 먼저
+    const lo = findLogout();
+    if (lo) {
+      await chrome.storage.local.set({ ubPendingLogin: Object.assign({}, pend, { step }) });
+      log('로그인 상태 감지 → 로그아웃', lo.getAttribute('href'));
+      goLogout(lo);
+      return;
+    }
 
-    let pw = '';
-    try { pw = await dec(acc.pwEnc); }
-    catch (e) { log('복호화 실패 — 자동입력 취소'); await chrome.storage.local.remove('ubPendingLogin'); return; }
+    // 3) 폼 없음 + 로그아웃 상태 → 로그인 페이지로 이동
+    if (!/\/mall\/login\.ubs/i.test(location.pathname)) {
+      await chrome.storage.local.set({ ubPendingLogin: Object.assign({}, pend, { step }) });
+      log('로그인 페이지로 이동');
+      location.href = LOGIN_URL;
+      return;
+    }
 
-    setVal(form.querySelector('input[name="sysUser.fuserid"]'), acc.userid);
-    setVal(form.querySelector('input[name="sysUser.fpasswd"]'), pw);
-    pw = '';
-    // pending 소비(루프/재입력 방지) — 채운 뒤 즉시 제거
+    // 4) 로그인 페이지인데 폼이 없음(이상) → 중단
+    log('로그인 폼을 찾지 못함 — 중단');
     await chrome.storage.local.remove('ubPendingLogin');
-
-    if (captchaVisible()) {
-      log('캡차 표시 → 자동 제출 안 함(사람이 캡차 입력 후 로그인)');
-      const cap = form.querySelector('input[name="sysUser.fcaptcha"]');
-      if (cap) cap.focus();
-      return;
-    }
-    log('자동 로그인 제출 →', acc.alias || acc.userid);
-    submitLogin(form);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);

@@ -176,12 +176,14 @@
     renderList();
   }
   async function switchTo(id) {
-    await chrome.storage.local.set({ ubPendingLogin: { accountId: id, ts: Date.now() } });
+    await chrome.storage.local.set({ ubPendingLogin: { accountId: id, ts: Date.now(), step: 0 } });
     let tab = null;
     try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch (_) {}
-    let logoutUrl = 'https://ubdstore.ubshop.biz/logout.do';
-    try { const u = new URL(tab.url); if (/(ubshop\.biz|honsu114\.com)$/i.test(u.hostname)) logoutUrl = u.origin + '/logout.do'; } catch (_) {}
-    try { await chrome.tabs.update(tab.id, { url: logoutUrl }); } catch (_) {}
+    // 관리자(ubshop.biz)면 확인된 /logout.do 로, 그 외(honsu114 등)면 honsu114 홈으로 보내고
+    // autologin.js 가 페이지의 실제 '로그아웃' 링크로 로그아웃→로그인 흐름을 이어받는다.
+    let url = 'https://www.honsu114.com/';
+    try { const u = new URL(tab.url); if (/ubshop\.biz$/i.test(u.hostname)) url = u.origin + '/logout.do'; } catch (_) {}
+    try { await chrome.tabs.update(tab.id, { url }); } catch (_) {}
     window.close();
   }
 
