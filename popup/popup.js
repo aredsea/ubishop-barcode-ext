@@ -180,12 +180,9 @@
     let tab = null, host = '';
     try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch (_) {}
     try { host = new URL(tab.url).hostname; } catch (_) {}
-    if (/ubshop\.biz$/i.test(host)) {
-      // 관리자: 확인된 /logout.do → honsu114 홈 리다이렉트 → autologin 이 이어받음.
-      try { await chrome.tabs.update(tab.id, { url: new URL(tab.url).origin + '/logout.do' }); } catch (_) {}
-    } else if (/honsu114\.com$/i.test(host)) {
-      // honsu114: 그 탭의 autologin 이 storage 변경을 감지해 즉시 로그아웃→로그인 진행.
-      //   (내비게이션 불필요 — 같은 URL 재이동이 새로고침 안 될 수 있으니 리스너에 맡김)
+    if (/ubshop\.biz$/i.test(host) || /honsu114\.com$/i.test(host)) {
+      // 유비샵/GNSHOP(관리자 PMS 또는 홈): 그 탭의 autologin 이 storage 변경을 감지해
+      //   현재 화면을 판별하고 로그아웃→로그인→PMS 흐름을 즉시 시작한다(내비 불필요).
     } else {
       // 그 외 사이트: honsu114 홈으로 보내 autologin 로드 후 진행.
       try { await chrome.tabs.update(tab.id, { url: 'https://www.honsu114.com/' }); } catch (_) {}

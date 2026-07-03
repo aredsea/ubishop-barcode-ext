@@ -1,35 +1,44 @@
 /* =============================================================================
- *  autologin.js — 계정 빠른 전환: honsu114 로그인 페이지 자동 입력/제출
- *  ISOLATED content script (honsu114.com/*). folder-locked(crx).
+ *  autologin.js — 계정 빠른 전환 상태머신 (honsu114 + ubdstore 양쪽)
+ *  ISOLATED content script. folder-locked(crx).
  *
- *  흐름: 팝업에서 계정 선택 → ubPendingLogin 저장 + 현재 탭 로그아웃(/logout.do)
- *        → honsu114 홈으로 리다이렉트 → (이 스크립트) 로그인 페이지로 이동
- *        → 로그인 폼에 아이디/비번(복호화) 자동 입력 → 자동 제출.
- *  ⚠ 캡차(비번 오답 시)에는 절대 손대지 않음 — 캡차 보이면 자동 제출 중단, 사람이 처리.
- *  ⚠ 비밀번호는 chrome.storage에 AES-GCM 암호화 저장(평문 아님). 여기서만 복호화해 입력.
+ *  유비샵 구조(실측): 로그인 전 = honsu114 GNSHOP 홈 / 로그인 후 = ubdstore PMS 관리자.
+ *  워크플로우(사용자 확정 6단계):
+ *   1) 현재 화면 감지(홈 vs PMS)
+ *   2) 그 화면의 로그아웃 프로토콜로 로그아웃
+ *        · PMS(ubdstore): <a href="/logout.do">  (일반 이동)
+ *        · 홈(honsu114):  <a href="javascript:link('logout')>  (link 함수 실행)
+ *   3) honsu114 홈에서 로그아웃(이미 로그아웃이면 skip)
+ *   4) honsu114 홈 → 로그인 페이지(login.ubs)
+ *   5) 아이디/비번 입력 → 로그인 버튼(<a class=btn_submit onclick="login()">) → login()
+ *   6) 로그인된 홈의 PMS 버튼(<a href=".../pamasLogin.do?...ssId=...">) 클릭 → 관리자 진입
  *
- *  실측(사용자 콘솔): 로그인 action=/mall/login.ubs POST,
- *    아이디=input[name="sysUser.fuserid"], 비번=input[name="sysUser.fpasswd"],
- *    캡차=sysUser.fcaptcha(문자) + g-recaptcha-response(reCAPTCHA), url=www.honsu114.com/mall/login.ubs.
+ *  ⚠ 크롬은 "스크립트가 만든 클릭"으로 javascript: 내비게이션을 막음 → javascript:link()
+ *    는 href 코드를 MAIN world 에 주입 실행(사이트 방식 그대로). onclick 핸들러(login())는
+ *    합성 click 으로 정상 실행됨.
+ *  ⚠ 캡차(비번 오답 시에만)에는 손대지 않음 — 뜨면 중단, 사람이 처리.
+ *  ⚠ 비번은 chrome.storage 에 AES-GCM 암호화 저장. 여기서만 복호화해 입력.
  * ========================================================================== */
 (function () {
   'use strict';
-  if (!/(^|\.)honsu114\.com$/i.test(location.hostname)) return;
+  const IS_HONSU = /(^|\.)honsu114\.com$/i.test(location.hostname);
+  const IS_UB = /(^|\.)ubshop\.biz$/i.test(location.hostname);
+  if (!IS_HONSU && !IS_UB) return;
 
   const LOGIN_URL = 'https://www.honsu114.com/mall/login.ubs';
-  const MAX_AGE = 120000;   // 전환 지시 유효 2분(오래된 pending 무시)
+  const MAX_AGE = 180000;
   const log = (...a) => { try { console.log('[UB][login]', ...a); } catch (_) {} };
+  let _acted = false;   // 이 페이지 로드에서 1회만 행동(중복 실행 방지)
 
-  /* ---- AES-GCM 복호화 (popup.js 와 동일 파생) ---- */
+  /* ---- 복호화 (popup.js 와 동일 파생) ---- */
   async function vaultKey() {
     const g = await chrome.storage.local.get('ubLoginSalt');
-    let saltB64 = g && g.ubLoginSalt;
-    if (!saltB64) return null;   // 소금 없으면 저장된 것도 없음
+    const saltB64 = g && g.ubLoginSalt;
+    if (!saltB64) return null;
     const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
     const pass = new TextEncoder().encode('ubshop-acct-vault-v1|' + (chrome.runtime && chrome.runtime.id || 'x'));
     const base = await crypto.subtle.importKey('raw', pass, 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
       base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   }
   async function dec(obj) {
@@ -37,40 +46,19 @@
     if (!key || !obj) throw new Error('no key');
     const iv = Uint8Array.from(atob(obj.iv), c => c.charCodeAt(0));
     const ct = Uint8Array.from(atob(obj.ct), c => c.charCodeAt(0));
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
-    return new TextDecoder().decode(pt);
+    return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct));
   }
 
-  /* ---- 폼/캡차 탐지 ---- */
+  /* ---- DOM 감지/조작 ---- */
   function loginForm() {
-    const pw = document.querySelector('input[name="sysUser.fpasswd"]') ||
-               document.querySelector('input[type=password]');
+    const pw = document.querySelector('input[name="sysUser.fpasswd"]') || document.querySelector('input[type=password]');
     return pw ? pw.form : null;
   }
   function isVisible(el) { return !!(el && el.offsetParent !== null && el.getClientRects().length); }
   function captchaVisible() {
-    const rc = document.querySelector('iframe[src*="recaptcha"], .g-recaptcha');
-    const cap = document.querySelector('input[name="sysUser.fcaptcha"]');
-    return isVisible(rc) || isVisible(cap);
+    return isVisible(document.querySelector('iframe[src*="recaptcha"], .g-recaptcha')) ||
+           isVisible(document.querySelector('input[name="sysUser.fcaptcha"]'));
   }
-  function setVal(el, v) {
-    if (!el) return;
-    el.value = v;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-  function submitLogin(form) {
-    // 사이트 검증 JS를 타도록 폼 내부 제출 컨트롤 우선 → 없으면 requestSubmit.
-    const btn = form.querySelector('input[type=submit],button[type=submit],input[type=image]') ||
-                form.querySelector('[onclick*="login" i],[onclick*="submit" i]');
-    try {
-      if (btn) { btn.click(); log('제출: 버튼 클릭'); }
-      else if (form.requestSubmit) { form.requestSubmit(); log('제출: requestSubmit'); }
-      else { form.submit(); log('제출: form.submit'); }
-    } catch (e) { try { form.submit(); } catch (_) {} }
-  }
-
-  // 현재 페이지의 '로그아웃' 링크(로그인 상태 판정 겸용)
   function findLogout() {
     return [...document.querySelectorAll('a[href]')].find(a => {
       const t = (a.textContent || '').replace(/\s/g, '');
@@ -78,93 +66,101 @@
       return /로그아웃|logout/i.test(t) || /logout|logoff|signout/i.test(h);
     });
   }
-  // ISOLATED → MAIN world 스크립트 주입. 이 사이트 로그아웃/로그인은 href="javascript:link('logout')"
-  // 형태인데, 크롬이 "스크립트가 만든 클릭"으로 javascript: 내비게이션을 보안상 막는다.
-  // → href 의 코드를 페이지 컨텍스트(MAIN)에서 직접 실행(사이트 방식 그대로, 유저 클릭과 동일 효과).
+  function findPms() { return document.querySelector('a.pms, a[href*="pamasLogin.do" i]'); }
+  function setVal(el, v) {
+    if (!el) return;
+    el.value = v;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  // ISOLATED → MAIN 주입(페이지 함수 직접 실행). 사이트가 javascript:href 를 쓰므로 inline 허용됨.
   function injectMain(code) {
-    try {
-      const s = document.createElement('script');
-      s.textContent = code;
-      (document.head || document.documentElement).appendChild(s);
-      s.remove();
-      return true;
-    } catch (_) { return false; }
+    try { const s = document.createElement('script'); s.textContent = code; (document.head || document.documentElement).appendChild(s); s.remove(); return true; }
+    catch (_) { return false; }
   }
-  function goLogout(link) {
-    const h = link.getAttribute('href') || '';
-    if (/^javascript:/i.test(h)) {
-      const code = h.replace(/^javascript:/i, '');
-      log('로그아웃 실행(link 함수 직접 호출)');
-      if (!injectMain(code)) { try { link.click(); } catch (_) {} }
-    } else if (h) {
-      location.href = new URL(h, location.href).href;
-    } else { try { link.click(); } catch (_) {} }
+  function goLogout(lo) {
+    const h = lo.getAttribute('href') || '';
+    if (/^javascript:/i.test(h)) { log('로그아웃(link 함수 직접 실행)'); if (!injectMain(h.replace(/^javascript:/i, ''))) { try { lo.click(); } catch (_) {} } }
+    else if (h) { log('로그아웃(이동)', h); location.href = new URL(h, location.href).href; }
+    else { try { lo.click(); } catch (_) {} }
   }
+  function submitLogin(form) {
+    // 로그인 버튼은 <a class=btn_submit onclick="login()"> — onclick 은 합성 click 으로 실행됨.
+    let btn = form.querySelector('a.btn_submit, [onclick*="login" i], input[type=submit], button[type=submit], input[type=image]')
+           || document.querySelector('a.btn_submit, [onclick*="login" i]');
+    if (btn) { log('로그인 버튼 클릭'); try { btn.click(); } catch (_) { injectMain('try{login()}catch(e){}'); } }
+    else { log('login() 직접 호출'); if (!injectMain('try{login()}catch(e){}')) { try { form.requestSubmit ? form.requestSubmit() : form.submit(); } catch (_) {} } }
+  }
+
+  const setPending = (o) => chrome.storage.local.set({ ubPendingLogin: o });
+  const clearPending = () => chrome.storage.local.remove('ubPendingLogin');
 
   async function run() {
     let pend;
     try { pend = (await chrome.storage.local.get('ubPendingLogin')).ubPendingLogin; } catch (_) { return; }
     if (!pend || !pend.accountId) return;
-    if (pend.ts && Date.now() - pend.ts > MAX_AGE) { try { await chrome.storage.local.remove('ubPendingLogin'); } catch (_) {} return; }
-
-    // ★무한루프 하드가드: 매 실행마다 step++, 한도 초과면 중단(더는 이동 안 함).
+    if (_acted) return;
+    if (pend.ts && Date.now() - pend.ts > MAX_AGE) { await clearPending(); return; }
     const step = (pend.step || 0) + 1;
-    if (step > 6) { log('반복 초과 — 자동전환 중단(로그아웃/로그인 흐름 점검 필요)'); await chrome.storage.local.remove('ubPendingLogin'); return; }
+    if (step > 8) { log('반복 초과 — 자동전환 중단'); await clearPending(); return; }
+    _acted = true;
 
     const form = loginForm();
 
-    // 1) 로그인 폼 있음(=로그아웃 상태) → 아이디/비번 채우고 제출
+    // A) 로그인 폼 있음 → 아이디/비번 채우고 login()
     if (form) {
       const accs = (await chrome.storage.local.get('ubAccounts')).ubAccounts || [];
       const acc = accs.find(a => a.id === pend.accountId);
-      if (!acc) { await chrome.storage.local.remove('ubPendingLogin'); return; }
+      if (!acc) { await clearPending(); return; }
+      if (captchaVisible()) {
+        log('캡차 표시 → 자동 로그인 중단(비번 확인/캡차 직접 입력)');
+        const cap = form.querySelector('input[name="sysUser.fcaptcha"]'); if (cap) cap.focus();
+        await clearPending(); return;
+      }
       let pw = '';
-      try { pw = await dec(acc.pwEnc); }
-      catch (e) { log('복호화 실패 — 취소'); await chrome.storage.local.remove('ubPendingLogin'); return; }
+      try { pw = await dec(acc.pwEnc); } catch (e) { log('복호화 실패'); await clearPending(); return; }
       setVal(form.querySelector('input[name="sysUser.fuserid"]'), acc.userid);
       setVal(form.querySelector('input[name="sysUser.fpasswd"]'), pw);
       pw = '';
-      await chrome.storage.local.remove('ubPendingLogin');   // 소비(루프 방지)
-      if (captchaVisible()) {
-        log('캡차 표시 → 자동 제출 안 함(사람이 캡차 입력 후 로그인)');
-        const cap = form.querySelector('input[name="sysUser.fcaptcha"]'); if (cap) cap.focus();
-        return;
-      }
+      await setPending(Object.assign({}, pend, { step, didLogin: true }));   // 로그인 시도 → 다음 로그인상태면 PMS
       log('자동 로그인 제출 →', acc.alias || acc.userid);
       submitLogin(form);
       return;
     }
 
-    // 2) 폼 없음 + 아직 로그인 상태(로그아웃 링크 존재) → 로그아웃 먼저
+    // B) 로그인 상태(로그아웃 링크 존재)
     const lo = findLogout();
     if (lo) {
-      await chrome.storage.local.set({ ubPendingLogin: Object.assign({}, pend, { step }) });
-      log('로그인 상태 감지 → 로그아웃', lo.getAttribute('href'));
-      goLogout(lo);
+      if (pend.didLogin) {
+        // 로그인 성공(새 계정) → PMS 진입
+        const pms = findPms();
+        if (pms && pms.href) { log('로그인 완료 → PMS 진입'); await clearPending(); location.href = pms.href; return; }
+        log('로그인 완료(홈) — PMS 링크 없음, 종료'); await clearPending(); return;
+      }
+      await setPending(Object.assign({}, pend, { step }));
+      goLogout(lo);   // 아직 로그아웃 안 함 → 로그아웃
       return;
     }
 
-    // 3) 폼 없음 + 로그아웃 상태 → 로그인 페이지로 이동
+    // C) 로그아웃 상태 + 폼 없음 → 로그인 페이지로
     if (!/\/mall\/login\.ubs/i.test(location.pathname)) {
-      await chrome.storage.local.set({ ubPendingLogin: Object.assign({}, pend, { step }) });
+      await setPending(Object.assign({}, pend, { step }));
       log('로그인 페이지로 이동');
       location.href = LOGIN_URL;
       return;
     }
 
-    // 4) 로그인 페이지인데 폼이 없음(이상) → 중단
-    log('로그인 폼을 찾지 못함 — 중단');
-    await chrome.storage.local.remove('ubPendingLogin');
+    // D) login.ubs 인데 폼이 없음(이상) → 중단
+    log('로그인 폼 못 찾음 — 중단');
+    await clearPending();
   }
 
-  // 팝업에서 [전환] 눌러 ubPendingLogin 이 저장되면, 현재 honsu114 탭에서 즉시 실행
-  // (내비게이션 없이도 로그아웃→로그인 흐름 시작).
+  // 팝업 [전환] → ubPendingLogin 저장 시 현재 탭에서 즉시 실행(내비게이션 없이도 시작).
   try {
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area === 'local' && ch.ubPendingLogin && ch.ubPendingLogin.newValue) { log('전환 지시 감지 → 실행'); run(); }
     });
   } catch (_) {}
-
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
   else run();
 })();
