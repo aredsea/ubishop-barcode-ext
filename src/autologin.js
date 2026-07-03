@@ -78,10 +78,27 @@
       return /로그아웃|logout/i.test(t) || /logout|logoff|signout/i.test(h);
     });
   }
+  // ISOLATED → MAIN world 스크립트 주입. 이 사이트 로그아웃/로그인은 href="javascript:link('logout')"
+  // 형태인데, 크롬이 "스크립트가 만든 클릭"으로 javascript: 내비게이션을 보안상 막는다.
+  // → href 의 코드를 페이지 컨텍스트(MAIN)에서 직접 실행(사이트 방식 그대로, 유저 클릭과 동일 효과).
+  function injectMain(code) {
+    try {
+      const s = document.createElement('script');
+      s.textContent = code;
+      (document.head || document.documentElement).appendChild(s);
+      s.remove();
+      return true;
+    } catch (_) { return false; }
+  }
   function goLogout(link) {
     const h = link.getAttribute('href') || '';
-    if (h && h.indexOf('javascript:') !== 0) location.href = new URL(h, location.href).href;
-    else { try { link.click(); } catch (_) {} }
+    if (/^javascript:/i.test(h)) {
+      const code = h.replace(/^javascript:/i, '');
+      log('로그아웃 실행(link 함수 직접 호출)');
+      if (!injectMain(code)) { try { link.click(); } catch (_) {} }
+    } else if (h) {
+      location.href = new URL(h, location.href).href;
+    } else { try { link.click(); } catch (_) {} }
   }
 
   async function run() {
@@ -139,6 +156,14 @@
     log('로그인 폼을 찾지 못함 — 중단');
     await chrome.storage.local.remove('ubPendingLogin');
   }
+
+  // 팝업에서 [전환] 눌러 ubPendingLogin 이 저장되면, 현재 honsu114 탭에서 즉시 실행
+  // (내비게이션 없이도 로그아웃→로그인 흐름 시작).
+  try {
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === 'local' && ch.ubPendingLogin && ch.ubPendingLogin.newValue) { log('전환 지시 감지 → 실행'); run(); }
+    });
+  } catch (_) {}
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);
   else run();

@@ -177,13 +177,19 @@
   }
   async function switchTo(id) {
     await chrome.storage.local.set({ ubPendingLogin: { accountId: id, ts: Date.now(), step: 0 } });
-    let tab = null;
+    let tab = null, host = '';
     try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch (_) {}
-    // 관리자(ubshop.biz)면 확인된 /logout.do 로, 그 외(honsu114 등)면 honsu114 홈으로 보내고
-    // autologin.js 가 페이지의 실제 '로그아웃' 링크로 로그아웃→로그인 흐름을 이어받는다.
-    let url = 'https://www.honsu114.com/';
-    try { const u = new URL(tab.url); if (/ubshop\.biz$/i.test(u.hostname)) url = u.origin + '/logout.do'; } catch (_) {}
-    try { await chrome.tabs.update(tab.id, { url }); } catch (_) {}
+    try { host = new URL(tab.url).hostname; } catch (_) {}
+    if (/ubshop\.biz$/i.test(host)) {
+      // 관리자: 확인된 /logout.do → honsu114 홈 리다이렉트 → autologin 이 이어받음.
+      try { await chrome.tabs.update(tab.id, { url: new URL(tab.url).origin + '/logout.do' }); } catch (_) {}
+    } else if (/honsu114\.com$/i.test(host)) {
+      // honsu114: 그 탭의 autologin 이 storage 변경을 감지해 즉시 로그아웃→로그인 진행.
+      //   (내비게이션 불필요 — 같은 URL 재이동이 새로고침 안 될 수 있으니 리스너에 맡김)
+    } else {
+      // 그 외 사이트: honsu114 홈으로 보내 autologin 로드 후 진행.
+      try { await chrome.tabs.update(tab.id, { url: 'https://www.honsu114.com/' }); } catch (_) {}
+    }
     window.close();
   }
 
