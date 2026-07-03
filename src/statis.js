@@ -159,6 +159,45 @@
     return { items, total, hasSale: cSaleSeen >= 0 };
   }
 
+  /* ---------- 수기 보정 매핑 ----------
+   *  자동 그룹핑(jasaBase/saipKey)으로 안 잡히는 모델코드→제품명 변환 + 자사/사입 재분류.
+   *  키 = 자동 그룹키(현재 제품명), 값 = { name?: 교정 제품명, type?: '자사'|'사입' }.
+   *  같은 최종 제품명끼리는 자동 병합(예: A18/A18SR→쇼콜라티에, 블링썸/블링썸보조/블링썸 메인→블링썸).
+   *  사용자가 엑셀 '변경된 제품명'·'변경된 구분' 열에 직접 채운 값에서 생성(2026-01~06 기준).
+   *  새 코드가 생기면 이 표에 추가만 하면 됨(loader 파일이라 push 즉시 반영).
+   */
+  const OVERRIDE = {
+    'H839': { name: '메이블리' },
+    '라벤': { type: '사입' },
+    '메리프': { type: '사입' },
+    '토브': { type: '사입' },
+    '시그니처라인': { name: '비투윈', type: '자사' },
+    'N9405R': { name: '러스터S', type: '자사' },
+    '웰리아': { type: '사입' },
+    'N9402R': { name: '러스터 다이아', type: '자사' },
+    '브라이트': { type: '사입' },
+    'N9403R': { name: '러스터 다이아', type: '자사' },
+    '미니시그니처라인': { name: '비투윈2', type: '자사' },
+    'N9406R': { name: '러스터S', type: '자사' },
+    'A18SR': { name: '쇼콜라티에', type: '자사' },
+    '모어': { type: '사입' },
+    'E0121R': { name: '모들 스퀘어', type: '자사' },
+    '라움': { type: '사입' },
+    '블링썸보조': { name: '블링썸', type: '자사' },
+    'P1384': { name: '더-비투윈' },
+    'E0101R': { name: '키싱유', type: '자사' },
+    'A18': { name: '쇼콜라티에', type: '자사' },
+    '프리메': { type: '사입' },
+    '블링썸 메인': { name: '블링썸' },
+    'N9043R-1': { name: '유우니S', type: '자사' },
+    'MH1091': { name: '오웬' },
+    'N9241SR-1': { name: '피앙세', type: '자사' },
+    'E0102R': { name: '그리밍더블', type: '자사' },
+    'N9395R-1': { name: '러스터 1부 다이아', type: '자사' },
+    'N9422R-1': { name: '러스터 러브', type: '자사' },
+    'IR652LR': { name: '에스텔라' }
+  };
+
   /* ---------- 그룹핑 + 필터 ---------- */
   function buildGroups(items) {
     const map = new Map();
@@ -169,10 +208,14 @@
       if (unit <= PRICE_MIN) { excluded++; continue; }
       kept++;
       const jasa = isJasa(it.name);
-      const base = jasa ? jasaBase(it.name) : saipKey(it.name);
-      const key = (jasa ? 'J' : 'S') + '' + base;
+      let name = jasa ? jasaBase(it.name) : saipKey(it.name);
+      let type = jasa ? '자사' : '사입';
+      const ov = OVERRIDE[name];   // 수기 보정 적용
+      if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
+      const key = name;   // 같은 제품명끼리 병합(구분 무관)
       let g = map.get(key);
-      if (!g) { g = { type: jasa ? '자사' : '사입', name: base, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, members: [] }; map.set(key, g); }
+      if (!g) { g = { type, name, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, members: [] }; map.set(key, g); }
+      if (ov && ov.type) g.type = ov.type;   // 교정된 구분 우선
       g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real; g.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.sup - a.sup);
@@ -266,13 +309,19 @@
     const s = document.createElement('style');
     s.id = 'ub-stat-style';
     s.textContent = [
+      // 디자인 지침: Pretendard. 페이지에 없어 폴백되던 문제 → 웹폰트 @font-face 로드.
+      "@font-face{font-family:'PretendardUB';font-style:normal;font-weight:400 800;font-display:swap;src:url('https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/woff2/PretendardVariable.woff2') format('woff2-variations');}",
       '#ub-stat-mask{position:fixed;inset:0;background:rgba(15,20,25,.55);z-index:2147483646;}',
       '#ub-stat{position:fixed;inset:4% 3%;background:#fff;border-radius:14px;z-index:2147483647;',
-      ' display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4);font-family:Pretendard,"Malgun Gothic",sans-serif;color:#1b1b1b;overflow:hidden;}',
+      " display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.4);font-family:'PretendardUB',Pretendard,'Malgun Gothic',sans-serif;color:#1b1b1b;overflow:hidden;}",
+      '#ub-stat *{font-family:inherit;}',
       '#ub-stat .hd{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #e5e7eb;}',
       '#ub-stat .hd .t{font-size:15px;font-weight:800;}',
       '#ub-stat .hd .sum{font-size:12px;color:#6b7280;}',
       '#ub-stat .hd .sp{margin-left:auto;display:flex;gap:8px;}',
+      '#ub-stat .fbtns{display:flex;gap:4px;margin-left:8px;}',
+      '#ub-stat .fbtn{padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700;background:#eef1f5;color:#4b5563;border:0;cursor:pointer;}',
+      '#ub-stat .fbtn.on{background:#35C5F0;color:#fff;}',
       '#ub-stat button{font-family:inherit;border:0;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;padding:8px 14px;}',
       '#ub-stat .bx{background:#1f8f52;color:#fff;} #ub-stat .bc{background:#eef1f5;color:#374151;}',
       '#ub-stat .bd{flex:1;overflow:auto;padding:0 18px 18px;}',
@@ -309,68 +358,92 @@
     const mask = document.createElement('div'); mask.id = 'ub-stat-mask';
     mask.addEventListener('click', close);
     const box = document.createElement('div'); box.id = 'ub-stat';
-    const groups = result.groups;
-    const totQty = groups.reduce((a, g) => a + g.qty, 0);
-    const totSup = groups.reduce((a, g) => a + g.sup, 0);
-    const totReal = groups.reduce((a, g) => a + g.real, 0);
-
-    let rows = '';
-    groups.forEach((g, i) => {
-      const tag = g.type === '자사' ? '<span class="tag tj">자사</span>' : '<span class="tag ts">사입</span>';
-      rows += `<tr class="g" data-i="${i}">` +
-        `<td class="rk">${i + 1}</td>` +
-        `<td class="l">${esc(g.name)} <span class="exp">▸</span></td>` +
-        `<td class="l">${tag}</td>` +
-        `<td class="qty">${nf(g.qty)}</td>` +
-        `<td>${nf(g.sup)}</td>` +
-        `<td>${nf(g.sale)}</td>` +
-        `<td>${nf(g.dc)}</td>` +
-        `<td>${nf(g.real)}</td>` +
-        `<td>${g.members.length}</td></tr>`;
-      const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
-        '<tr>' +
-        `<td class="l">${esc(m.name)}</td>` +
-        `<td>${nf(m.qty)}</td>` +
-        `<td>${nf(m.sup)}</td>` +
-        `<td>${nf(m.sale)}</td>` +
-        `<td>${nf(m.dc)}</td>` +
-        `<td>${nf(m.real)}</td>` +
-        '</tr>').join('');
-      rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
-        '<table class="sub"><thead><tr>' +
-        '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
-        `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
-    });
+    const allGroups = result.groups;
 
     box.innerHTML =
       '<div class="hd">' +
         '<span class="t">제품별 판매 통계</span>' +
-        `<span class="sum">제품군 ${groups.length}개 · 총수량 ${nf(totQty)} · 총공급가 ${nf(totSup)}원 · 총실판매가 ${nf(totReal)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${esc(meta)}</span>` +
+        '<span class="fbtns">' +
+          '<button class="fbtn on" data-f="all">전체</button>' +
+          '<button class="fbtn" data-f="자사">자사</button>' +
+          '<button class="fbtn" data-f="사입">타사</button>' +
+        '</span>' +
+        '<span class="sum" id="ub-stat-sum"></span>' +
         '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="bd"><table>' +
         '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총공급가</th><th>총판매가</th><th>총DC금액</th><th>총실판매가</th><th>코드수</th></tr></thead>' +
-        `<tbody>${rows}</tbody></table></div>`;
+        '<tbody id="ub-stat-tbody"></tbody></table></div>';
 
     document.body.appendChild(mask);
     document.body.appendChild(box);
+
+    let filter = 'all';
+    let curList = allGroups;
+
+    function rowsHtml(list) {
+      let rows = '';
+      list.forEach((g, i) => {
+        const tag = g.type === '자사' ? '<span class="tag tj">자사</span>' : '<span class="tag ts">사입</span>';
+        rows += `<tr class="g" data-i="${i}">` +
+          `<td class="rk">${i + 1}</td>` +
+          `<td class="l">${esc(g.name)} <span class="exp">▸</span></td>` +
+          `<td class="l">${tag}</td>` +
+          `<td class="qty">${nf(g.qty)}</td>` +
+          `<td>${nf(g.sup)}</td>` +
+          `<td>${nf(g.sale)}</td>` +
+          `<td>${nf(g.dc)}</td>` +
+          `<td>${nf(g.real)}</td>` +
+          `<td>${g.members.length}</td></tr>`;
+        const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
+          '<tr>' +
+          `<td class="l">${esc(m.name)}</td>` +
+          `<td>${nf(m.qty)}</td>` +
+          `<td>${nf(m.sup)}</td>` +
+          `<td>${nf(m.sale)}</td>` +
+          `<td>${nf(m.dc)}</td>` +
+          `<td>${nf(m.real)}</td>` +
+          '</tr>').join('');
+        rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
+          '<table class="sub"><thead><tr>' +
+          '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
+          `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
+      });
+      return rows;
+    }
+    function bindRows() {
+      box.querySelectorAll('tr.g').forEach(tr => tr.addEventListener('click', () => {
+        const d = box.querySelector(`tr.det[data-d="${tr.dataset.i}"]`);
+        const caret = tr.querySelector('.exp');
+        if (d) {
+          const open = d.style.display === 'none';
+          d.style.display = open ? '' : 'none';
+          if (caret) caret.textContent = open ? '▾' : '▸';
+        }
+      }));
+    }
+    function apply() {
+      curList = (filter === 'all') ? allGroups : allGroups.filter(g => g.type === filter);
+      box.querySelector('#ub-stat-tbody').innerHTML = rowsHtml(curList);
+      bindRows();
+      const q = curList.reduce((a, g) => a + g.qty, 0);
+      const sup = curList.reduce((a, g) => a + g.sup, 0);
+      const real = curList.reduce((a, g) => a + g.real, 0);
+      box.querySelector('#ub-stat-sum').textContent =
+        `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${meta}`;
+      box.querySelectorAll('.fbtn').forEach(b => b.classList.toggle('on', b.dataset.f === filter));
+    }
+
     box.querySelector('#ub-stat-close').addEventListener('click', close);
-    box.querySelectorAll('tr.g').forEach(tr => tr.addEventListener('click', () => {
-      const d = box.querySelector(`tr.det[data-d="${tr.dataset.i}"]`);
-      const caret = tr.querySelector('.exp');
-      if (d) {
-        const open = d.style.display === 'none';
-        d.style.display = open ? '' : 'none';
-        if (caret) caret.textContent = open ? '▾' : '▸';
-      }
-    }));
+    box.querySelectorAll('.fbtn').forEach(b => b.addEventListener('click', () => { filter = b.dataset.f; apply(); }));
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
       const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '코드수']];
-      groups.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), Math.round(g.dc), Math.round(g.real), g.members.length]));
+      curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), Math.round(g.dc), Math.round(g.real), g.members.length]));
       downloadXlsx(aoa, xlsxName());
-      log('xlsx 저장', xlsxName(), aoa.length - 1, '행');
+      log('xlsx 저장', xlsxName(), aoa.length - 1, '행', 'filter=' + filter);
     });
-    log('통계 렌더', { groups: groups.length, excluded: result.excluded, kept: result.kept });
+    apply();
+    log('통계 렌더', { groups: allGroups.length, excluded: result.excluded, kept: result.kept });
   }
 
   /* ---------- 버튼 ---------- */
