@@ -37,6 +37,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'cacheGetSearch')   { cacheGet(msg.pathKey || 'search', msg.key).then(sendResponse); return true; }
   if (msg.type === 'cachePutSearch')   { cachePut(msg.pathKey || 'search', msg.key, msg.html).then(sendResponse); return true; }
   if (msg.type === 'cacheFetchSearch') { fetchUbdstore(msg.url).then(sendResponse); return true; }
+
+  // ---- 계정 빠른 전환 오케스트레이션(팝업 → SW) ----
+  if (msg.type === 'ubSwitchAccount') { startSwitch(msg).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
 });
 
 /* ---- transparent caching용 — ubdstore에서 단일 URL fetch ----
@@ -285,3 +288,162 @@ try {
   chrome.alarms.onAlarm.addListener(a => { if (a.name === UPDATE_ALARM) checkUpdate(); });
 } catch (e) {}
 // ★ SW 깨어날 때마다 호출하던 checkUpdate(); 즉시호출 제거 — onStartup/onInstalled/알람만.
+
+/* =============================================================================
+ *  계정 빠른 전환 오케스트레이터 (v3.3.0)
+ *  ⚠ honsu114 는 CSP(script-src) 로 inline <script> 주입을 막는다 → content-script
+ *    주입 방식은 로그아웃/로그인 함수 실행이 통째로 차단됨. 대신 확장 권한으로
+ *    chrome.scripting.executeScript({world:'MAIN'}) 를 쓰면 페이지 CSP 무관하게
+ *    페이지 전역 함수(link/login)를 직접 호출할 수 있다(= 이 파일이 SW인 이유).
+ *
+ *  6단계 흐름(사용자 확정): 현재화면 감지 → 로그아웃(홈=link('logout'), PMS=/logout.do)
+ *    → honsu114 홈 로그아웃(이미면 skip) → login.ubs → 아이디/비번+login() → PMS 진입.
+ *
+ *  탭 로딩 완료(onUpdated complete)를 신호로 단계 전진. 상태는 storage(ubLoginFlow).
+ * ========================================================================== */
+const UB_LOGIN_URL = 'https://www.honsu114.com/mall/login.ubs';
+const UB_HOME_URL = 'https://www.honsu114.com/';
+const ubLog = (...a) => { try { console.log('[UB][login]', ...a); } catch (_) {} };
+
+/* ---- MAIN world 주입 함수(직렬화되어 페이지에서 실행, 외부변수 사용불가) ---- */
+function UB_PROBE() {
+  const q = s => document.querySelector(s);
+  const pw = q('input[name="sysUser.fpasswd"]') || q('input[type=password]');
+  const vis = el => !!(el && el.offsetParent !== null && el.getClientRects().length);
+  const logout = [...document.querySelectorAll('a[href]')].find(a => {
+    const t = (a.textContent || '').replace(/\s/g, ''); const h = a.getAttribute('href') || '';
+    return /로그아웃|logout/i.test(t) || /logout|logoff|signout/i.test(h);
+  });
+  const pms = q('a.pms') || q('a[href*="pamasLogin.do" i]');
+  const captcha = vis(q('iframe[src*="recaptcha"]')) || vis(q('.g-recaptcha')) || vis(q('input[name="sysUser.fcaptcha"]'));
+  return { url: location.href, host: location.hostname, path: location.pathname,
+    hasForm: !!(pw && pw.form), hasLogout: !!logout, hasPms: !!pms, pmsHref: pms ? pms.href : null, captcha: !!captcha };
+}
+function UB_DO_LOGOUT() {
+  try { if (typeof link === 'function') { link('logout'); return { via: 'link' }; } } catch (e) {}
+  const a = [...document.querySelectorAll('a[href]')].find(x => {
+    const t = (x.textContent || '').replace(/\s/g, ''); const h = x.getAttribute('href') || '';
+    return /로그아웃|logout/i.test(t) || /logout/i.test(h);
+  });
+  if (a) { const h = a.getAttribute('href') || ''; if (!/^javascript:/i.test(h)) { location.href = new URL(h, location.href).href; return { via: 'href' }; } }
+  location.href = '/logout.do'; return { via: 'fallback' };
+}
+function UB_FILL_LOGIN(userid, pw) {
+  const q = s => document.querySelector(s);
+  const set = (el, v) => { if (!el) return false; el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; };
+  const okId = set(q('input[name="sysUser.fuserid"]'), userid);
+  const okPw = set(q('input[name="sysUser.fpasswd"]'), pw);
+  let via = '';
+  try { if (typeof login === 'function') { login(); via = 'login()'; } } catch (e) { via = 'err'; }
+  if (via !== 'login()') {
+    const btn = document.querySelector('a.btn_submit, [onclick*="login" i]');
+    if (btn) { btn.click(); via += '|btn'; }
+    else { const f = q('input[name="sysUser.fpasswd"]') && q('input[name="sysUser.fpasswd"]').form; if (f) { try { f.submit(); via += '|submit'; } catch (e) {} } }
+  }
+  return { okId, okPw, via };
+}
+function UB_FOCUS_CAPTCHA() { const c = document.querySelector('input[name="sysUser.fcaptcha"]'); if (c) c.focus(); }
+
+/* ---- exec / 상태 / 복호화 ---- */
+async function ubExec(tabId, func, args) {
+  try {
+    const res = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args: args || [] });
+    return res && res[0] ? res[0].result : null;
+  } catch (e) { ubLog('exec 실패', e && e.message); return null; }
+}
+const ubGetFlow = async () => (await chrome.storage.local.get('ubLoginFlow')).ubLoginFlow;
+const ubSetFlow = (f) => chrome.storage.local.set({ ubLoginFlow: f });
+const ubEndFlow = () => chrome.storage.local.remove('ubLoginFlow');
+async function ubVaultKey() {
+  const { ubLoginSalt } = await chrome.storage.local.get('ubLoginSalt');
+  if (!ubLoginSalt) return null;
+  const salt = Uint8Array.from(atob(ubLoginSalt), c => c.charCodeAt(0));
+  const pass = new TextEncoder().encode('ubshop-acct-vault-v1|' + (chrome.runtime.id || 'x'));
+  const base = await crypto.subtle.importKey('raw', pass, 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+}
+async function ubAccount(id) { const { ubAccounts } = await chrome.storage.local.get('ubAccounts'); return (ubAccounts || []).find(a => a.id === id); }
+async function ubDecrypt(acc) {
+  const key = await ubVaultKey(); if (!key) throw new Error('no key');
+  const o = acc.pwEnc; const iv = Uint8Array.from(atob(o.iv), c => c.charCodeAt(0)); const ct = Uint8Array.from(atob(o.ct), c => c.charCodeAt(0));
+  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct));
+}
+
+/* ---- 단계 진행 ---- */
+async function ubStep(tabId) {
+  const flow = await ubGetFlow();
+  if (!flow || !flow.active || flow.tabId !== tabId) return;
+  flow.tries = (flow.tries || 0) + 1;
+  if (flow.tries > 12) { ubLog('반복 초과 — 중단'); await ubEndFlow(); return; }
+  await ubSetFlow(flow);
+
+  const p = await ubExec(tabId, UB_PROBE);
+  if (!p) return;   // 페이지 준비 전 — 다음 complete 에 재시도
+  ubLog('감지', p.host, JSON.stringify({ form: p.hasForm, logout: p.hasLogout, pms: p.hasPms, cap: p.captcha }), 'phase=' + flow.phase);
+
+  // A) 로그인 폼
+  if (p.hasForm) {
+    if (p.captcha) { ubLog('캡차 표시 → 중단(비번 확인/캡차 직접 입력)'); await ubExec(tabId, UB_FOCUS_CAPTCHA); await ubEndFlow(); return; }
+    if (flow.phase === 'submitted') { ubLog('로그인 폼 재표시 → 실패로 판단, 중단'); await ubEndFlow(); return; }
+    const acc = await ubAccount(flow.accountId);
+    if (!acc) { await ubEndFlow(); return; }
+    let pw = ''; try { pw = await ubDecrypt(acc); } catch (e) { ubLog('복호화 실패'); await ubEndFlow(); return; }
+    flow.phase = 'submitted'; await ubSetFlow(flow);
+    const r = await ubExec(tabId, UB_FILL_LOGIN, [acc.userid, pw]);
+    pw = '';
+    ubLog('로그인 입력/제출 →', acc.alias || acc.userid, JSON.stringify(r));
+    return;
+  }
+
+  // B) 로그인 상태(로그아웃 링크 존재)
+  if (p.hasLogout) {
+    if (flow.phase === 'submitted') {
+      // 로그인 성공(새 계정) → PMS 진입
+      if (p.pmsHref) { ubLog('로그인 완료 → PMS 진입'); await ubEndFlow(); chrome.tabs.update(tabId, { url: p.pmsHref }); return; }
+      ubLog('로그인 완료(홈) — PMS 링크 없음, 종료'); await ubEndFlow(); return;
+    }
+    ubLog('로그아웃 실행');
+    await ubExec(tabId, UB_DO_LOGOUT);
+    flow.phase = 'loggingout'; await ubSetFlow(flow);
+    return;
+  }
+
+  // C) 로그아웃 상태 + 폼 없음 → 로그인 페이지로
+  if (!/\/mall\/login\.ubs/i.test(p.path || '')) {
+    ubLog('로그인 페이지로 이동');
+    flow.phase = 'tologin'; await ubSetFlow(flow);
+    chrome.tabs.update(tabId, { url: UB_LOGIN_URL });
+    return;
+  }
+  ubLog('로그인 폼 못 찾음 — 중단'); await ubEndFlow();
+}
+
+async function startSwitch(msg) {
+  const tabId = msg.tabId;
+  if (tabId == null) return { ok: false, error: 'no tab' };
+  await ubSetFlow({ active: true, accountId: msg.accountId, tabId, phase: 'start', tries: 0 });
+  let host = ''; try { host = new URL(msg.tabUrl).hostname; } catch (_) {}
+  ubLog('전환 시작', host || '(unknown)');
+  if (!/ubshop\.biz$|honsu114\.com$/i.test(host)) {
+    chrome.tabs.update(tabId, { url: UB_HOME_URL });   // 유비샵/GNSHOP 아닌 곳 → 홈으로
+    return { ok: true, nav: 'home' };
+  }
+  ubStep(tabId);
+  return { ok: true };
+}
+
+/* ---- 탭 로딩 완료마다 다음 단계 ---- */
+const _ubLastStep = {};
+try {
+  chrome.tabs.onUpdated.addListener((tabId, info) => {
+    if (info.status !== 'complete') return;
+    chrome.storage.local.get('ubLoginFlow', ({ ubLoginFlow }) => {
+      if (!ubLoginFlow || !ubLoginFlow.active || ubLoginFlow.tabId !== tabId) return;
+      const now = Date.now();
+      if (_ubLastStep[tabId] && now - _ubLastStep[tabId] < 400) return;  // 중복 complete 디바운스
+      _ubLastStep[tabId] = now;
+      ubStep(tabId);
+    });
+  });
+} catch (e) {}

@@ -176,17 +176,11 @@
     renderList();
   }
   async function switchTo(id) {
-    await chrome.storage.local.set({ ubPendingLogin: { accountId: id, ts: Date.now(), step: 0 } });
-    let tab = null, host = '';
+    // background(SW) 오케스트레이터가 chrome.scripting(MAIN world)로 CSP 우회하며
+    // 현재 화면 판별 → 로그아웃 → 로그인 → PMS 진입까지 진행한다.
+    let tab = null;
     try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch (_) {}
-    try { host = new URL(tab.url).hostname; } catch (_) {}
-    if (/ubshop\.biz$/i.test(host) || /honsu114\.com$/i.test(host)) {
-      // 유비샵/GNSHOP(관리자 PMS 또는 홈): 그 탭의 autologin 이 storage 변경을 감지해
-      //   현재 화면을 판별하고 로그아웃→로그인→PMS 흐름을 즉시 시작한다(내비 불필요).
-    } else {
-      // 그 외 사이트: honsu114 홈으로 보내 autologin 로드 후 진행.
-      try { await chrome.tabs.update(tab.id, { url: 'https://www.honsu114.com/' }); } catch (_) {}
-    }
+    try { chrome.runtime.sendMessage({ source: 'ub', type: 'ubSwitchAccount', accountId: id, tabId: tab && tab.id, tabUrl: tab && tab.url }); } catch (_) {}
     window.close();
   }
 
