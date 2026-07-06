@@ -334,15 +334,21 @@
       case 'yesterday': start.setDate(today.getDate() - 1); end.setDate(today.getDate() - 1); break;
       case 'd3':        start.setDate(today.getDate() - 2); break;
       case 'd7':        start.setDate(today.getDate() - 6); break;
-      case 'm1':        start.setMonth(today.getMonth() - 1); break;
-      case 'q1':        start.setMonth(today.getMonth() - 3); break;
+      case 'm1':        start.setDate(today.getDate() - 29); break;
+      case 'pm': {
+        const s = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const e = new Date(today.getFullYear(), today.getMonth(), 0);
+        return { s: ymd(s), e: ymd(e) };
+      }
       case 'y1':        start.setFullYear(today.getFullYear() - 1); break;
+      case 'origin':    start.setFullYear(2000, 0, 1); break;
     }
     return { s: ymd(start), e: ymd(end) };
   }
   // 페이지 폼의 syear/smonth/sday/eyear/emonth/eday 값만 변경. 검색은 X.
-  function setDateSelects(kind) {
-    const r = dateRange(kind);
+  // kind='custom' 이면 dateRange()를 거치지 않고 customRange({s,e})를 그대로 사용.
+  function setDateSelects(kind, customRange) {
+    const r = (kind === 'custom' && customRange) ? customRange : dateRange(kind);
     const map = {
       syear: String(r.s.y), smonth: pad2(r.s.m), sday: pad2(r.s.d),
       eyear: String(r.e.y), emonth: pad2(r.e.m), eday: pad2(r.e.d)
@@ -518,6 +524,17 @@
     /* 그리드 */
     .ub-sidebar .ub-sb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     .ub-sidebar .ub-sb-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+
+    /* 커스텀 날짜 — 그리드 밖 별도 블록 */
+    .ub-sidebar .ub-sb-custom { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .ub-sidebar .ub-sb-custom-row { display: flex; align-items: center; gap: 6px; }
+    .ub-sidebar .ub-sb-custom-sep { font-size: 11px; color: var(--ub-sub); flex: none; }
+    .ub-sidebar .ub-sb-date {
+      flex: 1 1 0; min-width: 0; padding: 7px 6px; border: 1px solid var(--ub-line);
+      background: var(--ub-bg); border-radius: 8px; font-family: 'Pretendard','Malgun Gothic',sans-serif;
+      font-size: 11px; font-weight: 600; color: var(--ub-fg);
+    }
+    .ub-sidebar .ub-sb-date:focus { outline: none; border-color: var(--ub-on); }
 
     /* 기본 버튼 */
     .ub-sidebar .ub-sb-btn {
@@ -781,6 +798,8 @@
     const codes = Array.isArray(state.ubBarcodes) ? state.ubBarcodes : [];
     const modeIcon  = isFloat ? ICONS.panelLeft : ICONS.move;
     const modeTitle = isFloat ? '왼쪽으로 붙이기' : '플로팅 모드로';
+    let savedCustom = null;
+    try { savedCustom = JSON.parse(localStorage.getItem('UB_CUSTOM_DATE_v1')); } catch (_) {}
 
     bar.innerHTML = `
       <div class="ub-sb-hd">
@@ -800,9 +819,18 @@
             <button class="ub-sb-btn" data-r="yesterday">어제</button>
             <button class="ub-sb-btn" data-r="d3">3일간</button>
             <button class="ub-sb-btn" data-r="d7">7일간</button>
-            <button class="ub-sb-btn" data-r="m1">한 달</button>
-            <button class="ub-sb-btn" data-r="q1">분기</button>
-            <button class="ub-sb-btn ub-sb-wide" data-r="y1">일 년</button>
+            <button class="ub-sb-btn" data-r="m1">30일간</button>
+            <button class="ub-sb-btn" data-r="pm">전 달</button>
+            <button class="ub-sb-btn" data-r="y1">일 년</button>
+            <button class="ub-sb-btn" data-r="origin">태초</button>
+          </div>
+          <div class="ub-sb-custom">
+            <div class="ub-sb-custom-row">
+              <input type="date" class="ub-sb-date" id="ub-sb-cs" value="${savedCustom && savedCustom.s ? savedCustom.s : ''}">
+              <span class="ub-sb-custom-sep">~</span>
+              <input type="date" class="ub-sb-date" id="ub-sb-ce" value="${savedCustom && savedCustom.e ? savedCustom.e : ''}">
+            </div>
+            <button class="ub-sb-btn ub-sb-wide" data-act="custom-apply">커스텀 적용</button>
           </div>
         </div>
       ` : `
@@ -852,6 +880,21 @@
       const n = setDateSelects(b.dataset.r);
       showToast(bar, n ? '날짜 변경됨 (' + n + '개 필드)' : '날짜 필드를 찾지 못함');
     }));
+
+    // 커스텀 날짜 적용 — [data-r] 핸들러와 분리된 별도 리스너.
+    const customApplyBtn = bar.querySelector('[data-act="custom-apply"]');
+    if (customApplyBtn) customApplyBtn.addEventListener('click', () => {
+      const csEl = bar.querySelector('#ub-sb-cs'), ceEl = bar.querySelector('#ub-sb-ce');
+      let sVal = csEl ? csEl.value : '', eVal = ceEl ? ceEl.value : '';
+      if (!sVal || !eVal) { showToast(bar, '시작/종료 날짜를 모두 입력하세요'); return; }
+      if (sVal > eVal) { const t = sVal; sVal = eVal; eVal = t; }
+      const [sy, sm, sd] = sVal.split('-').map(Number);
+      const [ey, em, ed] = eVal.split('-').map(Number);
+      const customRange = { s: { y: sy, m: sm, d: sd }, e: { y: ey, m: em, d: ed } };
+      const n = setDateSelects('custom', customRange);
+      try { localStorage.setItem('UB_CUSTOM_DATE_v1', JSON.stringify({ s: sVal, e: eVal })); } catch (_) {}
+      showToast(bar, n ? '날짜 변경됨 (' + n + '개 필드)' : '날짜 필드를 찾지 못함');
+    });
 
     // 바코드 버튼 — 단일 클릭 = 복사, 더블 클릭 = 삭제.
     // 200ms timeout으로 단/더블 분리. 더블 시 단일 클릭 timeout 취소.

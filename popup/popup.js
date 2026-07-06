@@ -146,14 +146,34 @@
   const getAccounts = async () => (await chrome.storage.local.get('ubAccounts')).ubAccounts || [];
   const setAccounts = (list) => chrome.storage.local.set({ ubAccounts: list });
   const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const normName = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+
+  // 활성 탭이 honsu114 면 현재 로그인 표시명(li.user "쇼핑몰 님")을 읽어 정규화 반환.
+  // 확장 페이지라 chrome.scripting 사용 가능(manifest scripting 권한·host_permissions honsu114).
+  // 실패/미해당이면 '' → 배지 없이 렌더(부가기능이므로 조용히 생략).
+  async function currentLoginName() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.id || !/honsu114\.com$/i.test(new URL(tab.url).hostname)) return '';
+      const res = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, world: 'MAIN',
+        func: () => { const u = document.querySelector('li.user') || document.querySelector('.user'); return u ? (u.textContent || '').replace(/\s*님\s*$/, '').replace(/\s+/g, ' ').trim() : ''; }
+      });
+      return (res && res[0] && res[0].result) || '';
+    } catch (_) { return ''; }
+  }
 
   async function renderList() {
     const accs = await getAccounts();
     if (!accs.length) { listEl.innerHTML = '<div class="acct-empty">등록된 계정이 없습니다. 아래에서 추가하세요.</div>'; return; }
-    listEl.innerHTML = accs.map(a =>
-      `<div class="acct-row"><div class="acct-meta"><b>${esc(a.alias || a.userid)}</b><span>${esc(a.userid)}</span></div>` +
-      `<button class="acct-go" data-id="${a.id}">전환</button>` +
-      `<button class="acct-del" data-id="${a.id}" title="삭제">✕</button></div>`).join('');
+    const cur = normName(await currentLoginName());
+    listEl.innerHTML = accs.map(a => {
+      const isCur = cur && a.loginName && normName(a.loginName) === cur;
+      return `<div class="acct-row${isCur ? ' acct-cur' : ''}"><div class="acct-meta"><b>${esc(a.alias || a.userid)}</b><span>${esc(a.userid)}</span></div>` +
+        (isCur ? `<span class="acct-badge" title="현재 로그인된 계정">● 현재</span>` : '') +
+        `<button class="acct-go" data-id="${a.id}">전환</button>` +
+        `<button class="acct-del" data-id="${a.id}" title="삭제">✕</button></div>`;
+    }).join('');
     listEl.querySelectorAll('.acct-go').forEach(b => b.addEventListener('click', () => switchTo(b.dataset.id)));
     listEl.querySelectorAll('.acct-del').forEach(b => b.addEventListener('click', () => del(b.dataset.id)));
   }

@@ -316,8 +316,12 @@ function UB_PROBE() {
   });
   const pms = q('a.pms') || q('a[href*="pamasLogin.do" i]');
   const captcha = vis(q('iframe[src*="recaptcha"]')) || vis(q('.g-recaptcha')) || vis(q('input[name="sysUser.fcaptcha"]'));
+  // 로그인된 홈의 현재 계정 표시(li.user "쇼핑몰 님" 등) → "님" 접미사·중복공백 제거.
+  // PMS 관리자 화면 등 표시 요소가 없으면 '' (비교 불가로 안전하게 일반 진행).
+  const u = q('li.user') || q('.user');
+  const loginName = u ? (u.textContent || '').replace(/\s*님\s*$/, '').replace(/\s+/g, ' ').trim() : '';
   return { url: location.href, host: location.hostname, path: location.pathname,
-    hasForm: !!(pw && pw.form), hasLogout: !!logout, hasPms: !!pms, pmsHref: pms ? pms.href : null, captcha: !!captcha };
+    hasForm: !!(pw && pw.form), hasLogout: !!logout, hasPms: !!pms, pmsHref: pms ? pms.href : null, captcha: !!captcha, loginName };
 }
 function UB_DO_LOGOUT() {
   try { if (typeof link === 'function') { link('logout'); return { via: 'link' }; } } catch (e) {}
@@ -354,6 +358,19 @@ async function ubExec(tabId, func, args) {
 const ubGetFlow = async () => (await chrome.storage.local.get('ubLoginFlow')).ubLoginFlow;
 const ubSetFlow = (f) => chrome.storage.local.set({ ubLoginFlow: f });
 const ubEndFlow = () => chrome.storage.local.remove('ubLoginFlow');
+// 표시명 비교용 정규화(공백 접기·소문자화). loginName 저장/비교에 공통 사용.
+const ubNormName = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+// 대상 계정의 loginName 필드를 갱신해 저장(실패해도 흐름은 계속).
+async function ubSaveLoginName(accountId, loginName) {
+  try {
+    const { ubAccounts } = await chrome.storage.local.get('ubAccounts');
+    const list = ubAccounts || [];
+    const acc = list.find(a => a.id === accountId);
+    if (!acc || acc.loginName === loginName) return;
+    acc.loginName = loginName;
+    await chrome.storage.local.set({ ubAccounts: list });
+  } catch (e) { ubLog('loginName 저장 실패', e && e.message); }
+}
 async function ubVaultKey() {
   const { ubLoginSalt } = await chrome.storage.local.get('ubLoginSalt');
   if (!ubLoginSalt) return null;
@@ -399,9 +416,21 @@ async function ubStep(tabId) {
   // B) 로그인 상태(로그아웃 링크 존재)
   if (p.hasLogout) {
     if (flow.phase === 'submitted') {
-      // 로그인 성공(새 계정) → PMS 진입
+      // 로그인 성공(새 계정) → 표시명 실시간 갱신 후 PMS 진입.
+      if (p.loginName) await ubSaveLoginName(flow.accountId, p.loginName);
       if (p.pmsHref) { ubLog('로그인 완료 → PMS 진입'); await ubEndFlow(); chrome.tabs.update(tabId, { url: p.pmsHref }); return; }
       ubLog('로그인 완료(홈) — PMS 링크 없음, 종료'); await ubEndFlow(); return;
+    }
+    // 최초 진입(start)에 이미 로그인된 상태 → 대상 계정과 표시명 비교.
+    // 일치하면 로그아웃/로그인 반복(꼬임)을 피하고 바로 PMS 진입 또는 종료.
+    if (flow.phase === 'start' && p.loginName) {
+      const acc = await ubAccount(flow.accountId);
+      const saved = acc && acc.loginName;
+      if (saved && ubNormName(saved) === ubNormName(p.loginName)) {
+        ubLog('이미 해당 계정으로 로그인됨 — 전환 생략');
+        if (p.pmsHref) { await ubEndFlow(); chrome.tabs.update(tabId, { url: p.pmsHref }); return; }
+        await ubEndFlow(); return;
+      }
     }
     ubLog('로그아웃 실행');
     await ubExec(tabId, UB_DO_LOGOUT);
