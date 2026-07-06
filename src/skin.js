@@ -965,7 +965,7 @@
    *  페이지별 커서 자동 포커스 + 한/영 표시 아이콘 (v3.1.13) — 유비샵 도구 상시기능
    *   · 주문전표(orderItemList)              → 고객명 입력에 포커스
    *   · 발주전표(baljuItemJunList)           → 매입처명 입력에 포커스
-   *   · 입고전표(inputItemJunList)           → 매입처명 입력에 포커스
+   *   · 상품입고장 검색(inputItemJunList)    → 입고장번호 입력에 포커스
    *  타이틀이 이미지라 URL(pathname) 기반으로 판별.
    *  ⚠ 브라우저 정책상 IME(한/영) 상태를 JS로 강제할 수 없음 → 대신 입력칸 옆에
    *    한/영 상태 아이콘을 붙이고, 실제 타이핑(조합 이벤트)으로 한/영을 감지해
@@ -974,7 +974,7 @@
   const AUTO_FOCUS_PAGES = {
     '/jun/orderitem/orderItemList.do':    ['고객명'],
     '/jun/baljuitem/baljuItemJunList.do': ['매입처명', '매입처'],
-    '/jun/inputitem/inputItemJunList.do': ['매입처명', '매입처']
+    '/jun/inputitem/inputItemJunList.do': ['입고장번호']
   };
   function focusableInputs() {
     return [...document.querySelectorAll('input[type="text"], input:not([type])')]
