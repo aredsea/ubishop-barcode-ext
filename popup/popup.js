@@ -129,7 +129,7 @@
       await chrome.storage.local.set({ ubLoginSalt: saltB64 });
     }
     const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
-    const pass = new TextEncoder().encode('ubshop-acct-vault-v1|' + (chrome.runtime && chrome.runtime.id || 'x'));
+    const pass = new TextEncoder().encode('ubshop-acct-vault-v2');
     const base = await crypto.subtle.importKey('raw', pass, 'PBKDF2', false, ['deriveKey']);
     return crypto.subtle.deriveKey(
       { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },

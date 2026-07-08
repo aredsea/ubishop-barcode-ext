@@ -1287,6 +1287,45 @@
     } catch (e) { console.warn('[UB][skin] 수량정렬 실패', e); }
   }
 
+  // ===========================================================================
+  //  계정 빠른전환 데이터 영속화 — chrome.storage.local(ubAccounts/ubLoginSalt)
+  //  은 확장 ID 에 종속돼 압축해제 확장을 제거/재로드하면 소멸한다. ubdstore
+  //  origin 의 localStorage 에 미러해 두고, 재설치 후 ubdstore 페이지를 한 번
+  //  열면 여기서 자동 복원한다. (게이팅 없음 — 스킨 on/off 와 무관)
+  // ===========================================================================
+  const ACCT_MIRROR_KEY = 'UB_ACCOUNTS_MIRROR_v1';
+  function mirrorAccounts() {
+    try {
+      chrome.storage.local.get(['ubAccounts', 'ubLoginSalt'], d => {
+        try {
+          // 계정이 하나라도 있을 때만 미러(빈 값으로 백업 덮어쓰지 않음).
+          if (d && d.ubAccounts && d.ubAccounts.length) {
+            localStorage.setItem(ACCT_MIRROR_KEY, JSON.stringify({
+              ubAccounts: d.ubAccounts, ubLoginSalt: d.ubLoginSalt || ''
+            }));
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
+  }
+  function restoreAccountsFromMirror() {
+    try {
+      chrome.storage.local.get(['ubAccounts', 'ubLoginSalt'], d => {
+        try {
+          // 이미 계정이 있으면 백업만 최신화하고 끝(복원 불필요).
+          if (d && d.ubAccounts && d.ubAccounts.length) { mirrorAccounts(); return; }
+          const raw = localStorage.getItem(ACCT_MIRROR_KEY);
+          if (!raw) return;
+          const m = JSON.parse(raw);
+          if (m && m.ubAccounts && m.ubAccounts.length) {
+            chrome.storage.local.set({ ubAccounts: m.ubAccounts, ubLoginSalt: m.ubLoginSalt || '' });
+            try { console.log('[UB][skin] 계정 데이터 로컬 백업에서 복원 ' + m.ubAccounts.length + '건'); } catch (_) {}
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
@@ -1295,6 +1334,7 @@
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
+    restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
     startObserver();
@@ -1347,4 +1387,12 @@
       }
     });
   } catch (e) {}
+  // 계정 빠른전환: popup 에서 계정 추가/삭제 시(사용자가 ubdstore 탭에 있을 때)
+  // 로컬백업을 실시간 갱신. mirrorAccounts 는 localStorage 만 쓰므로 이 onChanged
+  // 를 재유발하지 않는다(무한루프 없음).
+  try {
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === 'local' && (ch.ubAccounts || ch.ubLoginSalt)) mirrorAccounts();
+    });
+  } catch (_) {}
 })();
