@@ -433,6 +433,22 @@
       if (codes.length && addBarcodes(codes)) renderSidebar();
     }, true);
   }
+  // 검색칸(바코드)에 수기 입력 후 검색하면, 검색 후 페이지에 그 값이 남아있으므로
+  // 로드 시 바코드 검색칸 값을 읽어 클립보드에 자동 등록. (라벨 '바코드' 우선, name 폴백)
+  function captureSearchBarcode() {
+    try {
+      if (!on('ubSidebar')) return;
+      let el = findLabeledInput(['바코드']);
+      if (!el || !el.value) {
+        const n = document.querySelector('input[name*="barcode" i]:not([type="hidden"])');
+        if (n && n.value) el = n;
+      }
+      const v = el && el.value ? el.value.trim() : '';
+      if (!v) return;
+      const codes = extractBarcodes(v);
+      if (codes.length && addBarcodes(codes)) renderSidebar();
+    } catch (_) {}
+  }
 
   /* ==========================================================================
    *  6) 좌측/플로팅 사이드바 + 드래그 + 접힌 핸들
@@ -1250,6 +1266,7 @@
     ensureDefaultPageSize();
     bindThumbEdit(document);
     bindCopyListener();
+    captureSearchBarcode();   // v3.3.3: 바코드 검색칸 입력값 → 클립보드 자동 등록
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
