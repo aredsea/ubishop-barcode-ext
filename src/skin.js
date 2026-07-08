@@ -992,6 +992,31 @@
     '/jun/baljuitem/baljuItemJunList.do': ['매입처명', '매입처'],
     '/jun/inputitem/inputItemJunList.do': ['입고장번호']
   };
+  // 특정 페이지에서 자동으로 채워지는 필드를 강제 공란 처리(로드 직후 여러 번 재확인).
+  //  · 상품입고장 검색 팝업: 입고담당자(searchRegId=쇼핑몰01 자동주입)를 항상 비움.
+  const CLEAR_FIELDS_PAGES = {
+    '/jun/inputitem/inputItemJunList.do': { names: ['searchRegId'], labels: ['입고담당자'] }
+  };
+  function clearForcedFields() {
+    try {
+      if (!state.ubSkin) return;
+      const cfg = CLEAR_FIELDS_PAGES[location.pathname];
+      if (!cfg) return;
+      const clearOnce = () => {
+        let done = false;
+        (cfg.names || []).forEach(nm => {
+          const el = document.querySelector('input[name="' + nm + '"]');
+          if (el && el.value) { el.value = ''; try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {} done = true; }
+        });
+        if (!done) {
+          const el = findLabeledInput(cfg.labels || []);   // name 못 찾을 때 라벨 폴백
+          if (el && el.value) { el.value = ''; try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {} }
+        }
+      };
+      clearOnce();
+      [150, 450, 900].forEach(ms => setTimeout(clearOnce, ms));   // 페이지 자동채움 이후 재확인
+    } catch (_) {}
+  }
   function focusableInputs() {
     return [...document.querySelectorAll('input[type="text"], input:not([type])')]
       .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
@@ -1268,6 +1293,7 @@
     bindCopyListener();
     captureSearchBarcode();   // v3.3.3: 바코드 검색칸 입력값 → 클립보드 자동 등록
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
+    clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
