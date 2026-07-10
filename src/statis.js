@@ -32,7 +32,9 @@
   /* ---------- 숫자/문자 유틸 ---------- */
   // 셀에 두 줄로 숫자가 겹쳐 들어오는 경우가 있어 "첫 번째 숫자"만 취한다.
   function firstNum(s) {
-    const m = String(s == null ? '' : s).match(/-?[\d,]+(?:\.\d+)?/);
+    // ⚠유비샵 금액셀은 "206,111<br>206,111<br>0" 처럼 여러 숫자가 구분자 없이 붙는다.
+    //   콤마 3자리 그룹으로 끝나는 '첫 정상 숫자'만 취한다(그리디 [\d,]+ 는 전체를 삼켜 오배).
+    const m = String(s == null ? '' : s).match(/-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?/);
     return m ? parseFloat(m[0].replace(/,/g, '')) : 0;
   }
   function esc(s) {
@@ -1066,10 +1068,82 @@
   }
 
   /* ---------- #4 페이지 결과표에 '직원' 열 자동 주입(IS_ORDER 전용) ---------- */
-  //  상품집계 주문탭 결과표(table.t_list, 수량헤더)의 각 데이터행에 전표 조인으로 직원 셀 추가.
-  //  전표 lookup 은 buildLookup(날짜키 모듈 캐시)로 1회. 실패/미매칭은 조용히 빈칸.
-  async function injectStaffColumn() {
-    // 결과표(수량 헤더 보유) + 헤더행 찾기
+  //  상품집계 주문탭 결과표 리디자인(2026) + 직원열(전표 조인) + 직원별 보기 그룹핑.
+  //  전부 statis.js(loader)라 push 로 반영. IS_ORDER 에서만. 로컬 목업으로 디자인 검증 완료.
+  let _injecting = false, _injTimer = 0, _mo = null, _groupOn = false;
+  function ensureOrderTableStyle() {
+    if (document.getElementById('ub-otbl-style')) return;
+    const s = document.createElement('style');
+    s.id = 'ub-otbl-style';
+    s.textContent = [
+      "@font-face{font-family:'PretendardUB';font-style:normal;font-weight:100 900;font-display:swap;src:url('https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/woff2/PretendardVariable.woff2') format('woff2-variations');}",
+      'table.t_list.ubm{border-collapse:separate;border-spacing:0;font-family:"PretendardUB","Malgun Gothic",sans-serif;}',
+      'table.t_list.ubm td,table.t_list.ubm th{border:0;vertical-align:middle;}',
+      'table.t_list.ubm tr.sum1 td{background:#f2f9fc;color:#0e2a37;font-weight:800;font-size:12.5px;padding:12px 9px;border-bottom:1px solid #e2eef4;}',
+      'table.t_list.ubm tr.sum1 .f_gray{display:none;}',
+      'table.t_list.ubm tr.title_line td,table.t_list.ubm tr.title_line th{background:linear-gradient(180deg,#123542,#0e2a37);color:#bfe4f1;font-weight:700;font-size:11px;padding:11px 8px;text-align:center;white-space:nowrap;border-bottom:2px solid #2fbfe8;line-height:1.25;}',
+      'table.t_list.ubm tr.title_line th.ub-staff-h{color:#7fe6ff;}',
+      'table.t_list.ubm tr.ubm-row td{padding:9px 8px;color:#3c4b57;border-bottom:1px solid #eef2f5;line-height:1.35;}',
+      'table.t_list.ubm tr.ubm-row:nth-child(even) td{background:#fafcfd;}',
+      'table.t_list.ubm tr.ubm-row:hover td{background:#eff9fd;}',
+      'table.t_list.ubm .f_bold{font-weight:700;color:#1f2c35;}',
+      'table.t_list.ubm .f_gray{color:#a4b3be;font-size:10.5px;}',
+      'table.t_list.ubm .f_blue_note{color:#2c8fb8;font-weight:600;}',
+      'table.t_list.ubm .f_green{display:inline-block;padding:3px 9px;border-radius:999px;background:#e5f7ed;color:#12995a;font-weight:700;font-size:10.5px;}',
+      'table.t_list.ubm .f_red{display:inline-block;padding:3px 9px;border-radius:999px;background:#fdecec;color:#e0483f;font-weight:700;font-size:10.5px;}',
+      'table.t_list.ubm img{border-radius:9px;box-shadow:0 1px 3px rgba(16,40,60,.18);}',
+      'table.t_list.ubm td.ub-staff-c{text-align:center;}',
+      'table.t_list.ubm td.ub-staff-c .stf{display:inline-block;padding:4px 10px;border-radius:999px;background:#e4f4fb;color:#0d7ba0;font-weight:800;font-size:11px;white-space:nowrap;}',
+      'table.t_list.ubm td.ub-staff-c .stf.miss{background:#f1f3f5;color:#9aa6b0;}',
+      'table.t_list.ubm tr.ubm-grp td{background:#0e2a37;color:#eaf7fc;font-weight:800;font-size:12px;padding:10px 14px;text-align:left;}',
+      'table.t_list.ubm tr.ubm-grp td .cnt{color:#7fe6ff;font-weight:700;margin-left:8px;font-size:11px;}',
+      'table.t_list.ubm tr.ubm-grp td .sub{float:right;color:#a9cede;font-weight:600;font-size:11px;}'
+    ].join('');
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function restoreOrder(table) {
+    const tb = table.tBodies[0] || table;
+    [...table.querySelectorAll('tr.ubm-row')]
+      .sort((a, b) => (+a.dataset.ubOrd || 0) - (+b.dataset.ubOrd || 0))
+      .forEach(r => tb.appendChild(r));
+  }
+  function applyGroup(table, headRow, cSup) {
+    const tb = table.tBodies[0] || table;
+    const by = new Map();
+    [...table.querySelectorAll('tr.ubm-row')].forEach(r => {
+      const el = r.querySelector('.stf');
+      const s = (el ? el.textContent : '').trim() || '(미지정)';
+      if (!by.has(s)) by.set(s, []);
+      by.get(s).push(r);
+    });
+    const colspan = headRow.cells.length;
+    [...by.keys()].sort((a, b) => by.get(b).length - by.get(a).length).forEach(s => {
+      const list = by.get(s);
+      let sup = 0;
+      if (cSup >= 0) list.forEach(r => { sup += firstNum(r.cells[cSup] ? r.cells[cSup].textContent : ''); });
+      const g = document.createElement('tr');
+      g.className = 'ubm-grp';
+      g.innerHTML = '<td colspan="' + colspan + '">● ' + esc(s) + ' <span class="cnt">' + list.length + '건</span>' +
+        (cSup >= 0 ? '<span class="sub">예상총공급가 ' + Math.round(sup).toLocaleString('ko-KR') + '원</span>' : '') + '</td>';
+      tb.appendChild(g);
+      list.forEach(r => tb.appendChild(r));
+    });
+  }
+  function addGroupToggle() {
+    const anchor = document.querySelector('select[name="searchSortType"]');
+    if (!anchor || document.getElementById('ub-grp-btn')) return;
+    const b = document.createElement('button');
+    b.id = 'ub-grp-btn';
+    b.type = 'button';
+    b.textContent = '직원별 보기';
+    b.style.cssText = 'margin-left:6px;padding:3px 12px;border:0;border-radius:6px;font:700 12px/1.5 Pretendard,sans-serif;cursor:pointer;vertical-align:middle;';
+    const paint = () => { b.style.background = _groupOn ? '#0e2a37' : '#eaf1f5'; b.style.color = _groupOn ? '#fff' : '#41525e'; };
+    paint();
+    b.addEventListener('click', () => { _groupOn = !_groupOn; paint(); safeInject(); });
+    anchor.parentNode.appendChild(b);
+  }
+  async function enhanceOrderTable() {
+    ensureOrderTableStyle();
     let table = null, headRow = null, cells = null;
     for (const t of document.querySelectorAll('table.t_list')) {
       for (const r of t.rows) {
@@ -1079,55 +1153,66 @@
       if (table) break;
     }
     if (!table || !headRow) return;
+    table.classList.add('ubm');
     const cDate = findCol(cells, [/주문일/]);
     const cProd = findCol(cells, [/바코드/, /상품번호/]);
     const cStore = findCol(cells, [/매장명/]);
-    if (cProd < 0 || cStore < 0) return;   // 필요한 컬럼 없으면 스킵
-    const { map: lookup } = await buildLookup(null);
-    if (!lookup || !lookup.size) return;
-    // 헤더 th 1회
-    if (!headRow.querySelector('th.ub-staff-h')) {
-      const th = document.createElement('th');
-      th.className = 'ub-staff-h';
-      th.textContent = '주문직원';
-      headRow.appendChild(th);
-    }
-    // 데이터행 td
+    const cSup = findCol(cells, [/예상총공급가/, /총공급가/]);
+    // 데이터행: ubm-row 부여 + 인라인 hover 제거(CSS hover 적용) + 원본순서 기록
+    let ord = 0;
     for (const r of table.rows) {
-      if (r === headRow) continue;
+      if (r === headRow || r.classList.contains('sum1') || r.classList.contains('ubm-grp')) continue;
       if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
-      if (r.querySelector('td.ub-staff-c')) continue;   // 이미 주입됨
-      const prod = splitSheetProd(cProd >= 0 && r.cells[cProd] ? r.cells[cProd].textContent : '');
-      const ss = splitStoreStaff(cStore >= 0 && r.cells[cStore] ? r.cells[cStore].textContent : '');
-      const dRaw = cDate >= 0 && r.cells[cDate] ? r.cells[cDate].textContent.replace(/\s+/g, '') : '';
-      const hit = lookup.get(joinKey(dRaw, prod.barcode, ss.store, ss.staff));   // 괄호 안 = 고객
-      const td = document.createElement('td');
-      td.className = 'ub-staff-c';
-      td.style.cssText = 'text-align:center;font-weight:700;color:#0f6f8c;';
-      td.textContent = hit ? hit.staff : '';
-      r.appendChild(td);
+      if (!r.classList.contains('ubm-row')) { r.classList.add('ubm-row'); r.onmouseover = null; r.onmouseout = null; }
+      if (!r.dataset.ubOrd) r.dataset.ubOrd = String(ord);
+      ord++;
     }
+    // 직원열(전표 조인) — lookup 있으면
+    if (cProd >= 0 && cStore >= 0) {
+      let lookup = null;
+      try { lookup = (await buildLookup(null)).map; } catch (_) {}
+      if (lookup && lookup.size) {
+        if (!headRow.querySelector('th.ub-staff-h')) {
+          const th = document.createElement('th');
+          th.className = 'ub-staff-h';
+          th.textContent = '주문직원';
+          headRow.appendChild(th);
+        }
+        for (const r of table.querySelectorAll('tr.ubm-row')) {
+          if (r.querySelector('td.ub-staff-c')) continue;
+          const prod = splitSheetProd(r.cells[cProd] ? r.cells[cProd].textContent : '');
+          const ss = splitStoreStaff(r.cells[cStore] ? r.cells[cStore].textContent : '');
+          const dRaw = cDate >= 0 && r.cells[cDate] ? r.cells[cDate].textContent.replace(/\s+/g, '') : '';
+          const hit = lookup.get(joinKey(dRaw, prod.barcode, ss.store, ss.staff));   // 괄호 안 = 고객
+          const td = document.createElement('td');
+          td.className = 'ub-staff-c';
+          const sp = document.createElement('span');
+          sp.className = 'stf' + (hit ? '' : ' miss');
+          sp.textContent = hit ? hit.staff : '-';
+          td.appendChild(sp);
+          r.appendChild(td);
+        }
+      }
+    }
+    // 직원별 보기: 그룹핑 or 원복
+    [...table.querySelectorAll('tr.ubm-grp')].forEach(x => x.remove());
+    if (_groupOn) { applyGroup(table, headRow, cSup); table.dataset.ubGrouped = '1'; }
+    else if (table.dataset.ubGrouped) { restoreOrder(table); table.dataset.ubGrouped = ''; }
+    addGroupToggle();
   }
-  let _injecting = false, _injTimer = 0;
   async function safeInject() {
     if (_injecting) return;
     _injecting = true;
-    try { await injectStaffColumn(); } catch (_) { /* 조용히 무시 */ } finally { _injecting = false; }
+    if (_mo) { try { _mo.disconnect(); } catch (_) {} }   // 우리 변경은 관측 안 함 → 루프 방지
+    try { await enhanceOrderTable(); } catch (_) { /* 조용히 무시 */ }
+    finally { _injecting = false; if (_mo) setTimeout(() => { try { _mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {} }, 80); }
   }
   function scheduleInject() { clearTimeout(_injTimer); _injTimer = setTimeout(safeInject, 300); }
   function initStaffColumn() {
     safeInject();
-    // 서버가 표를 다시 그리면(검색·페이지) 재적용. 우리 셀 추가는 무시해 루프 방지.
-    const mo = new MutationObserver(muts => {
-      for (const m of muts) {
-        for (const n of m.addedNodes) {
-          if (n.nodeType === 1 && n.classList &&
-            (n.classList.contains('ub-staff-c') || n.classList.contains('ub-staff-h'))) continue;
-          scheduleInject(); return;
-        }
-      }
-    });
-    try { mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+    // 서버 재렌더(검색·페이지) 시 재적용. 우리 변경 중엔 옵저버 일시중단으로 루프 방지.
+    _mo = new MutationObserver(() => scheduleInject());
+    try { _mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
   }
 
   function init() {
