@@ -89,11 +89,38 @@
     const customer = after.split(/주문\s*비고/)[0].trim();
     return { barcode, name, customer };
   }
+  // 상품집계(sheetStatisList) 제품셀: "<바코드> 옵션/제품명(…)/규격" → {barcode, name}
+  //  · 주문전표와 달리 '주문 비고'·고객이 없음(고객은 매장셀 괄호 안). splitProdCell 응용.
+  //  · 예) "T-BF-Q-WG-QB-00AN RD B/신주팔찌(Brass)/2.0m" → barcode=T-BF-Q-WG-QB-00AN,
+  //    name=바코드 앞부분(있으면) 아니면 뒷부분. name 은 표시·그룹핑용(조인 키는 barcode).
+  function splitSheetProd(cellText) {
+    const t = String(cellText == null ? '' : cellText).replace(/\s+/g, ' ').trim();
+    const bc = t.match(/[A-Za-z0-9]+(?:-[A-Za-z0-9]+){4,}/);
+    const barcode = bc ? bc[0] : '';
+    let name = t;
+    if (bc) {
+      const before = t.slice(0, bc.index).trim();
+      const after = t.slice(bc.index + barcode.length).trim();
+      name = before || after;   // 바코드가 맨 앞이면 뒷부분을 제품명으로
+    }
+    return { barcode, name };
+  }
   // 매장/직원 셀: "매장명(직원명)" → {store, staff}
+  //  · 상품집계에서는 괄호 안이 '고객명'이므로 호출부에서 staff→customer 로 해석해 재사용.
   function splitStoreStaff(ssText) {
     const s = String(ssText == null ? '' : ssText).replace(/\s+/g, ' ').trim();
     const mm = s.match(/^(.+?)\s*\((.+)\)\s*$/);
     return { store: mm ? mm[1].trim() : s, staff: mm ? mm[2].trim() : '' };
+  }
+  // 주문일 정규화: 숫자만 뽑아 YYMMDD 6자리(두 소스의 26-07-09 / 2026-07-09 형식 흡수).
+  function normDate(s) {
+    const d = String(s == null ? '' : s).replace(/\D/g, '');
+    return d.length >= 6 ? d.slice(-6) : d;
+  }
+  // 조인 키 = 주문일|바코드|매장|고객 (상품집계 ↔ 주문전표 매칭용)
+  function joinKey(date, barcode, store, customer) {
+    return normDate(date) + '|' + String(barcode == null ? '' : barcode).trim() +
+      '|' + String(store == null ? '' : store).trim() + '|' + String(customer == null ? '' : customer).trim();
   }
   // 헤더 셀 배열에서 정규식(배열) 중 하나라도 일치하는 첫 컬럼 인덱스
   function findCol(cells, res) {
@@ -216,6 +243,7 @@
       }
       return {
         rows,
+        cDate: findCol(cells, [/주문일/]),
         cProd: findCol(cells, [/고객명/, /매입처상품코드/]),
         cQty: findCol(cells, [/수량/]),
         cPrice: findCol(cells, [/주문가/]),
@@ -230,14 +258,53 @@
     const m = String(txt).match(/총\s*:?\s*([0-9,]+)\s*개/);
     return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
   }
-  async function orderLoadAll(setStatus) {
+  // 상품집계(sheetStatisList orderitem) 응답 → 컬럼 인덱스 + 데이터행
+  //  예상총공급가(원가)·예상판매가의 primary 소스. 주문일/바코드/매장명/수량 컬럼 확보.
+  function parseSheetOrderDoc(doc) {
+    for (const t of doc.querySelectorAll('table.t_list')) {
+      let hi = -1, cells = null;
+      for (const r of t.rows) {
+        const cs = [...r.cells].map(c => c.textContent.replace(/\s+/g, ' ').trim());
+        if (cs.some(c => /수량/.test(c))) { hi = r.rowIndex; cells = cs; break; }
+      }
+      if (hi < 0) continue;
+      const rows = [];
+      for (let i = hi + 1; i < t.rows.length; i++) {
+        const r = t.rows[i];
+        if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
+        rows.push(r);
+      }
+      return {
+        rows,
+        cDate: findCol(cells, [/주문일/]),
+        cProd: findCol(cells, [/바코드/, /상품번호/]),
+        cStore: findCol(cells, [/매장명/]),
+        cQty: findCol(cells, [/수량/]),
+        cSup: findCol(cells, [/예상총공급가|총공급가/]),
+        cSale: findCol(cells, [/예상판매가|판매가/])
+      };
+    }
+    return null;
+  }
+
+  /* ---------- 주문전표 lookup(직원·주문가) ---------- */
+  // 날짜범위 키로 모듈 캐시(#4 페이지 직원열 주입과 통계 버튼이 공유, 1회 fetch).
+  const _lookupCache = new Map();
+  function orderDateKey() {
+    const f = document.querySelector('form[name="form1"]');
+    const g = n => { const el = f && f.elements[n]; return el ? el.value : ''; };
+    return ['syear', 'smonth', 'sday', 'eyear', 'emonth', 'eday'].map(g).join('-');
+  }
+  async function buildLookup(setStatus) {
+    const ckey = orderDateKey();
+    if (_lookupCache.has(ckey)) return _lookupCache.get(ckey);
     const p0 = orderParams();
-    if (!p0) throw new Error('검색폼(form1)을 찾지 못했습니다');
+    if (!p0) return { map: new Map(), total: 0 };
     const action = location.origin + '/jun/orderitem/orderItemList.do?tcode=order_item';
-    const items = [];
+    const map = new Map();
     let total = 0, pages = 1;
     for (let p = 1; p <= pages; p++) {
-      setStatus(p === 1 ? '주문전표 불러오는 중…' : `주문전표 ${total}건 불러오는 중… (${p}/${pages})`);
+      if (setStatus) setStatus(p === 1 ? '주문전표 불러오는 중…' : `주문전표 ${total}건… (${p}/${pages})`);
       const params = new URLSearchParams(p0);
       params.set('pageSize', String(FETCH_PS));
       params.set('reqPage', String(p));
@@ -245,19 +312,57 @@
       const doc = new DOMParser().parseFromString(html, 'text/html');
       if (p === 1) { total = readTotalDoc(doc); pages = total > 0 ? Math.ceil(total / FETCH_PS) : 1; }
       const g = parseOrderDoc(doc);
-      if (!g) throw new Error('주문전표 표(t_list)를 파싱하지 못했습니다 (로그인 만료?)');
+      if (!g) break;
       for (const r of g.rows) {
         const prod = splitProdCell(g.cProd >= 0 && r.cells[g.cProd] ? r.cells[g.cProd].textContent : '');
         const ss = splitStoreStaff(g.cStore >= 0 && r.cells[g.cStore] ? r.cells[g.cStore].textContent : '');
+        const dRaw = g.cDate >= 0 && r.cells[g.cDate] ? r.cells[g.cDate].textContent.replace(/\s+/g, '') : '';
+        const price = g.cPrice >= 0 ? firstNum(r.cells[g.cPrice] && r.cells[g.cPrice].textContent) : 0;
+        const k = joinKey(dRaw.slice(0, 8), prod.barcode, ss.store, prod.customer);
+        if (!map.has(k)) map.set(k, { staff: ss.staff, price });
+      }
+    }
+    const res = { map, total };
+    _lookupCache.set(ckey, res);
+    return res;
+  }
+  // 상품집계(primary) 전체 로드 → 주문전표 lookup 으로 직원·주문가 조인.
+  async function orderLoadAll(setStatus) {
+    const { map: lookup, total: orderTotal } = await buildLookup(setStatus);
+    const fp = formParams();
+    if (!fp) throw new Error('검색폼(form1)을 찾지 못했습니다');
+    const total = readTotal();
+    const pages = total > 0 ? Math.ceil(total / FETCH_PS) : 1;
+    const items = [];
+    let matched = 0;
+    for (let p = 1; p <= pages; p++) {
+      setStatus(`상품집계 ${total}건 불러오는 중… (${p}/${pages})`);
+      const params = new URLSearchParams(fp.params);
+      params.set('tcode', 'statis_sheet_barcode');   // 상품집계(바코드) 강제
+      params.set('pageSize', String(FETCH_PS));
+      params.set('reqPage', String(p));
+      const html = await fetchHtml(fp.action, params);
+      const g = parseSheetOrderDoc(new DOMParser().parseFromString(html, 'text/html'));
+      if (!g) throw new Error('상품집계 표(t_list)를 파싱하지 못했습니다 (로그인 만료?)');
+      for (const r of g.rows) {
+        const prod = splitSheetProd(g.cProd >= 0 && r.cells[g.cProd] ? r.cells[g.cProd].textContent : '');
+        const ss = splitStoreStaff(g.cStore >= 0 && r.cells[g.cStore] ? r.cells[g.cStore].textContent : '');
+        const store = ss.store, customer = ss.staff;   // 상품집계: 괄호 안 = 고객
+        const dRaw = g.cDate >= 0 && r.cells[g.cDate] ? r.cells[g.cDate].textContent.replace(/\s+/g, '') : '';
+        const hit = lookup.get(joinKey(dRaw, prod.barcode, store, customer));
+        if (hit) matched++;
         items.push({
-          code: prod.barcode, name: prod.name, customer: prod.customer,
+          date: dRaw, code: prod.barcode, name: prod.name, store, customer,
           qty: firstNum(r.cells[g.cQty] && r.cells[g.cQty].textContent),
-          price: g.cPrice >= 0 ? firstNum(r.cells[g.cPrice] && r.cells[g.cPrice].textContent) : 0,
-          store: ss.store, staff: ss.staff
+          supExp: g.cSup >= 0 ? firstNum(r.cells[g.cSup] && r.cells[g.cSup].textContent) : 0,
+          saleExp: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0,
+          price: hit ? hit.price : 0,
+          staff: hit ? hit.staff : '(미지정)'
         });
       }
     }
-    return { items, total };
+    log('조인', matched + '/' + items.length);
+    return { items, total, orderTotal, matched };
   }
 
   /* ---------- 수기 보정 매핑 ----------
@@ -323,23 +428,55 @@
     return { groups, excluded, kept, gift };
   }
 
-  /* ---------- 그룹핑(주문용): 단가필터 없음, 사은품만 제외, 수량/주문가 합산 ---------- */
+  // 제품명 정규화 + 수기 보정(OVERRIDE) 적용 → {name, type}. 제품별·직원별 그룹 공용.
+  function normProduct(rawName) {
+    const jasa = isJasa(rawName);
+    let name = jasa ? jasaBase(rawName) : saipKey(rawName);
+    let type = jasa ? '자사' : '사입';
+    const ov = OVERRIDE[name];
+    if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
+    return { name, type };
+  }
+  // 라인단위 임계값 필터: 단가(예상총공급가/수량) <= threshold 인 라인 제외(threshold<=0 이면 전체).
+  function thresholdFilter(items, threshold) {
+    if (!threshold || threshold <= 0) return items;
+    return items.filter(it => {
+      const unit = it.qty > 0 ? it.supExp / it.qty : 0;
+      return unit > threshold;
+    });
+  }
+  /* ---------- 그룹핑(제품별): 사은품만 제외, 수량/예상총공급가/예상판매가/주문가 합산 ---------- */
   function buildOrderGroups(items) {
     const map = new Map();
     let gift = 0;
     for (const it of items) {
       if (/사은품/.test(it.name)) { gift++; continue; }   // 사은품은 순위에서 제외
-      const jasa = isJasa(it.name);
-      let name = jasa ? jasaBase(it.name) : saipKey(it.name);
-      let type = jasa ? '자사' : '사입';
-      const ov = OVERRIDE[name];   // 판매탭과 동일한 수기 보정 재사용
-      if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
-      let g = map.get(name);
-      if (!g) { g = { type, name, qty: 0, price: 0, members: [] }; map.set(name, g); }
-      if (ov && ov.type) g.type = ov.type;
-      g.qty += it.qty; g.price += it.price; g.members.push(it);
+      const np = normProduct(it.name);   // 판매탭과 동일한 수기 보정 재사용
+      let g = map.get(np.name);
+      if (!g) { g = { type: np.type, name: np.name, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; map.set(np.name, g); }
+      g.type = np.type;
+      g.qty += it.qty; g.supExp += it.supExp; g.saleExp += it.saleExp; g.price += it.price; g.members.push(it);
     }
-    const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.price - a.price);
+    const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
+    return { groups, gift };
+  }
+  /* ---------- 그룹핑(직원별): 직원 → 그 직원이 계약한 제품 목록 ---------- */
+  function buildStaffGroups(items) {
+    const map = new Map();
+    let gift = 0;
+    for (const it of items) {
+      if (/사은품/.test(it.name)) { gift++; continue; }
+      const staff = it.staff || '(미지정)';
+      let sg = map.get(staff);
+      if (!sg) { sg = { staff, qty: 0, supExp: 0, price: 0, products: new Map() }; map.set(staff, sg); }
+      sg.qty += it.qty; sg.supExp += it.supExp; sg.price += it.price;
+      const np = normProduct(it.name);
+      let pg = sg.products.get(np.name);
+      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, price: 0, members: [] }; sg.products.set(np.name, pg); }
+      pg.qty += it.qty; pg.supExp += it.supExp; pg.price += it.price; pg.members.push(it);
+    }
+    const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
+    groups.forEach(sg => { sg.productList = [...sg.products.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp); });
     return { groups, gift };
   }
 
@@ -483,15 +620,32 @@
     const s = document.createElement('style');
     s.id = 'ub-ostat-style';
     s.textContent = [
-      '#ub-stat .ofl{padding:10px 18px;border-bottom:1px solid #e5e7eb;display:flex;flex-direction:column;gap:7px;background:#fafcfe;}',
+      // 주문 모달은 더 크게(판매탭 공유 #ub-stat 은 미변경, 클래스로만 오버라이드)
+      '#ub-stat.ub-o-wide{inset:2%;}',
+      '#ub-stat .hd .sub-t{font-size:11.5px;color:#8a97a3;font-weight:600;margin-left:-6px;}',
+      // 뷰 토글(직원별/제품별) 세그먼트
+      '#ub-stat .vbtns{display:flex;gap:3px;background:#eef1f5;border-radius:9px;padding:3px;}',
+      '#ub-stat .vbtn{padding:6px 15px;border-radius:7px;font-size:12.5px;font-weight:800;background:transparent;color:#5b6b78;border:0;cursor:pointer;}',
+      '#ub-stat .vbtn.on{background:#1f8f52;color:#fff;box-shadow:0 1px 3px rgba(0,0,0,.15);}',
+      // 필터 바(매장/직원/상품명/임계값)
+      '#ub-stat .ofl{padding:11px 20px;border-bottom:1px solid #e5e7eb;display:flex;flex-direction:column;gap:8px;background:#fafcfe;}',
       '#ub-stat .ofl-row{display:flex;align-items:flex-start;gap:8px;font-size:12px;}',
+      '#ub-stat .ofl-row2{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}',
       '#ub-stat .ofl-lb{flex:0 0 42px;font-weight:800;color:#0f6f8c;padding-top:3px;}',
       '#ub-stat .ofl-all{flex:0 0 auto;font-weight:700;color:#374151;padding-top:2px;white-space:nowrap;}',
       '#ub-stat .ofl-chips{display:flex;flex-wrap:wrap;gap:4px 10px;}',
       '#ub-stat .ofl-chip{display:inline-flex;align-items:center;gap:3px;color:#374151;white-space:nowrap;}',
       '#ub-stat .ofl-chip input,#ub-stat .ofl-all input,#ub-stat .ub-o-pick{vertical-align:middle;cursor:pointer;margin:0;}',
-      '#ub-stat .ofl-search{flex:1;max-width:280px;padding:5px 9px;border:1px solid #cdd8e0;border-radius:7px;font-size:12px;}',
-      '#ub-stat th.ub-ck,#ub-stat td.ub-ck{text-align:center;}'
+      '#ub-stat .ofl-search{flex:1;max-width:280px;padding:6px 10px;border:1px solid #cdd8e0;border-radius:7px;font-size:12px;}',
+      '#ub-stat .ofl-thr{display:inline-flex;align-items:center;gap:6px;color:#374151;font-size:12px;font-weight:700;white-space:nowrap;}',
+      '#ub-stat .ofl-thr input{width:110px;padding:6px 9px;border:1px solid #cdd8e0;border-radius:7px;font-size:12px;text-align:right;}',
+      '#ub-stat .ofl-thr .u{color:#8a97a3;font-weight:600;}',
+      // 표: 직원별/제품별 공통(밀도↑)
+      '#ub-stat th.ub-ck,#ub-stat td.ub-ck{text-align:center;}',
+      '#ub-stat .stf{font-weight:800;color:#111;}',
+      '#ub-stat td.sup{color:#0f6f8c;font-weight:700;} #ub-stat td.prc{color:#1f8f52;font-weight:700;}',
+      '#ub-stat table.sub tbody td.sup{color:#0f6f8c;} #ub-stat table.sub tbody td.prc{color:#1f8f52;}',
+      '#ub-stat .miss{color:#b45309;font-weight:700;}'
     ].join('');
     (document.head || document.documentElement).appendChild(s);
   }
@@ -593,34 +747,43 @@
   }
 
   /* ---------- 주문 통계 오버레이(renderOrder) ---------- */
+  //  기본 뷰 = 직원별(직원 → 그 직원 계약 제품). 제품별 토글 제공.
+  //  예상총공급가(원가)=상품집계, 직원·주문가=주문전표 조인. 임계값(예상총공급가/수량) 이하 라인 숨김.
   function renderOrder(items, meta) {
     ensureStyle();
     ensureOrderStyle();
     close();
     const mask = document.createElement('div'); mask.id = 'ub-stat-mask';
     mask.addEventListener('click', close);
-    const box = document.createElement('div'); box.id = 'ub-stat';
+    const box = document.createElement('div'); box.id = 'ub-stat'; box.className = 'ub-o-wide';
 
     const stores = [...new Set(items.map(it => it.store).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'));
     const staffs = [...new Set(items.map(it => it.staff).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'));
     const selStores = new Set(stores);
     const selStaff = new Set(staffs);
-    const excluded = new Set();      // 해제(제외)된 제품명 — 합계·XLSX에서 제외
+    const excluded = new Set();       // 해제(제외)된 제품명(제품별 뷰) — 합계·XLSX에서 제외
+    let view = 'staff';               // 'staff'(직원별, 기본) | 'product'(제품별)
     let typeFilter = 'all';
     let nameQuery = '';
-    let curGroups = [];              // 현재 매장∩직원 그룹(구분/검색과 무관한 전체)
+    let threshold = 0;                // 예상총공급가 단가(원가/수량) 임계값. 이하 라인 숨김(0=전체)
+    let prodGroups = [];              // 매장∩직원∩임계값 라인 → 제품별 그룹
+    let staffGroups = [];             // 동일 라인 → 직원별 그룹
     let lastGift = 0;
 
     box.innerHTML =
       '<div class="hd">' +
-        '<span class="t">제품별 주문 통계 (전표 기준)</span>' +
+        '<span class="t">주문 통계</span>' +
+        '<span class="sub-t">예상총공급가=상품집계 · 직원·주문가=주문전표</span>' +
+        '<span class="vbtns">' +
+          '<button class="vbtn on" data-v="staff">직원별</button>' +
+          '<button class="vbtn" data-v="product">제품별</button>' +
+        '</span>' +
         '<span class="fbtns">' +
           '<button class="fbtn on" data-f="all">전체</button>' +
           '<button class="fbtn" data-f="자사">자사</button>' +
           '<button class="fbtn" data-f="사입">타사</button>' +
         '</span>' +
-        '<span class="sum" id="ub-stat-sum"></span>' +
-        '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
+        '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="ofl">' +
         '<div class="ofl-row"><span class="ofl-lb">매장</span>' +
@@ -629,41 +792,82 @@
         '<div class="ofl-row"><span class="ofl-lb">직원</span>' +
           '<label class="ofl-all"><input type="checkbox" id="ub-o-staff-all" checked> 전체</label>' +
           '<span class="ofl-chips" id="ub-o-staffs"></span></div>' +
-        '<div class="ofl-row"><span class="ofl-lb">상품명</span>' +
-          '<input type="text" id="ub-o-search" class="ofl-search" placeholder="상품명으로 검색…"></div>' +
+        '<div class="ofl-row2">' +
+          '<input type="text" id="ub-o-search" class="ofl-search" placeholder="상품명으로 검색…">' +
+          '<span class="ofl-thr">예상총공급가 <input type="number" id="ub-o-thr" min="0" step="1000" value="0"> <span class="u">원 이하 숨김</span></span>' +
+        '</div>' +
+        '<div class="ofl-row"><span class="sum" id="ub-stat-sum"></span></div>' +
       '</div>' +
-      '<div class="bd"><table>' +
-        '<thead><tr><th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총주문가</th><th>코드수</th></tr></thead>' +
-        '<tbody id="ub-stat-tbody"></tbody></table></div>';
+      '<div class="bd" id="ub-o-bd"></div>';
 
     document.body.appendChild(mask);
     document.body.appendChild(box);
 
-    const tbody = box.querySelector('#ub-stat-tbody');
+    const bd = box.querySelector('#ub-o-bd');
     const sumEl = box.querySelector('#ub-stat-sum');
-    const allCb = box.querySelector('#ub-o-all');
 
-    function countedGroups() { return curGroups.filter(g => !excluded.has(g.name)); }
-    function displayGroups() {
-      let list = curGroups;
+    /* ----- 표시 필터(구분/검색) : 재그룹 없이 표시만 ----- */
+    function productDisplay() {
+      let list = prodGroups;
       if (typeFilter !== 'all') list = list.filter(g => g.type === typeFilter);
       if (nameQuery) { const q = nameQuery.toLowerCase(); list = list.filter(g => g.name.toLowerCase().indexOf(q) >= 0); }
       return list;
     }
-    function renderSummary() {
-      const c = countedGroups();
-      const q = c.reduce((a, g) => a + g.qty, 0);
-      const pr = c.reduce((a, g) => a + g.price, 0);
-      sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총주문가 ${nf(pr)}원 · 사은품 제외 ${lastGift} · 기간 ${meta}`;
+    function countedProducts() { return productDisplay().filter(g => !excluded.has(g.name)); }
+    function staffDisplay() {
+      const q = nameQuery.toLowerCase();
+      const out = [];
+      staffGroups.forEach(sg => {
+        let prods = sg.productList;
+        if (typeFilter !== 'all') prods = prods.filter(p => p.type === typeFilter);
+        if (q) prods = prods.filter(p => p.name.toLowerCase().indexOf(q) >= 0);
+        if (!prods.length) return;
+        out.push({
+          staff: sg.staff, products: prods,
+          qty: prods.reduce((a, p) => a + p.qty, 0),
+          supExp: prods.reduce((a, p) => a + p.supExp, 0),
+          price: prods.reduce((a, p) => a + p.price, 0)
+        });
+      });
+      out.sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
+      return out;
     }
-    function syncProductAll() {
-      const total = curGroups.length;
-      const on = curGroups.filter(g => !excluded.has(g.name)).length;
-      allCb.checked = total > 0 && on === total;
-      allCb.indeterminate = on > 0 && on < total;
+    const memStores = (mem) => [...new Set(mem.map(m => m.store).filter(Boolean))].join(', ');
+
+    /* ----- 직원별 뷰 ----- */
+    function renderStaffView() {
+      const list = staffDisplay();
+      let rows = '';
+      list.forEach((sg, i) => {
+        rows += '<tr class="g">' +
+          `<td class="rk">${i + 1}</td>` +
+          `<td class="l stf">${esc(sg.staff)} <span class="exp">▸</span></td>` +
+          `<td class="qty">${nf(sg.qty)}</td>` +
+          `<td class="sup">${nf(sg.supExp)}</td>` +
+          `<td class="prc">${nf(sg.price)}</td>` +
+          `<td>${sg.products.length}</td></tr>`;
+        const pr = sg.products.map(p =>
+          '<tr>' +
+          `<td class="l">${esc(p.name)}</td>` +
+          `<td>${nf(p.qty)}</td>` +
+          `<td class="sup">${nf(p.supExp)}</td>` +
+          `<td class="prc">${nf(p.price)}</td>` +
+          `<td class="l">${esc(memStores(p.members))}</td>` +
+          '</tr>').join('');
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="5">' +
+          '<table class="sub"><thead><tr>' +
+          '<th class="l">제품명</th><th>수량</th><th>예상총공급가</th><th>주문가</th><th class="l">매장</th>' +
+          `</tr></thead><tbody>${pr}</tbody></table></td></tr>`;
+      });
+      bd.innerHTML = '<table><thead><tr>' +
+        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총예상총공급가</th><th>총주문가</th><th>제품수</th>' +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+      bindExpanders();
     }
-    function renderRows() {
-      const list = displayGroups();
+
+    /* ----- 제품별 뷰 ----- */
+    function renderProductView() {
+      const list = productDisplay();
       let rows = '';
       list.forEach((g, i) => {
         const on = !excluded.has(g.name);
@@ -674,50 +878,92 @@
           `<td class="l">${esc(g.name)} <span class="exp">▸</span></td>` +
           `<td class="l">${tag}</td>` +
           `<td class="qty">${nf(g.qty)}</td>` +
-          `<td>${nf(g.price)}</td>` +
+          `<td class="sup">${nf(g.supExp)}</td>` +
+          `<td class="prc">${nf(g.price)}</td>` +
           `<td>${g.members.length}</td></tr>`;
         const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
           '<tr>' +
           `<td class="l">${esc(m.name)}</td>` +
           `<td class="l">${esc(m.code)}</td>` +
           `<td>${nf(m.qty)}</td>` +
-          `<td>${nf(m.price)}</td>` +
+          `<td class="sup">${nf(m.supExp)}</td>` +
+          `<td class="prc">${nf(m.price)}</td>` +
           `<td class="l">${esc(m.store)}</td>` +
-          `<td class="l">${esc(m.staff)}</td>` +
+          `<td class="l${m.staff === '(미지정)' ? ' miss' : ''}">${esc(m.staff)}</td>` +
           `<td class="l">${esc(m.customer)}</td>` +
           '</tr>').join('');
-        rows += '<tr class="det" style="display:none"><td></td><td colspan="6">' +
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="7">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>주문가</th><th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
+          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>예상총공급가</th><th>주문가</th><th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
           `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
       });
-      tbody.innerHTML = rows;
-      const grows = [...tbody.querySelectorAll('tr.g')];
+      bd.innerHTML = '<table><thead><tr>' +
+        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총예상총공급가</th><th>총주문가</th><th>코드수</th>' +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+      // 개별 ON/OFF 체크박스 배선(합계·XLSX 제외) — 제품별 뷰 전용, 현행 유지
+      const allCb = bd.querySelector('#ub-o-all');
+      const grows = [...bd.querySelectorAll('tr.g')];
+      function syncAll() {
+        const t = list.length, onN = list.filter(g => !excluded.has(g.name)).length;
+        allCb.checked = t > 0 && onN === t;
+        allCb.indeterminate = onN > 0 && onN < t;
+      }
       grows.forEach((tr, idx) => {
         const g = list[idx];
         const cb = tr.querySelector('.ub-o-pick');
         cb.addEventListener('click', e => e.stopPropagation());
         cb.addEventListener('change', () => {
           if (cb.checked) excluded.delete(g.name); else excluded.add(g.name);
-          renderSummary(); syncProductAll();
-        });
-        tr.addEventListener('click', () => {
-          const det = tr.nextElementSibling;
-          if (det && det.classList.contains('det')) {
-            const open = det.style.display === 'none';
-            det.style.display = open ? '' : 'none';
-            const caret = tr.querySelector('.exp');
-            if (caret) caret.textContent = open ? '▾' : '▸';
-          }
+          renderSummary(); syncAll();
         });
       });
-      syncProductAll();
+      allCb.addEventListener('change', function () {
+        if (this.checked) list.forEach(g => excluded.delete(g.name));
+        else list.forEach(g => excluded.add(g.name));
+        this.indeterminate = false;
+        renderProductView(); renderSummary();
+      });
+      bindExpanders(); syncAll();
+    }
+
+    function bindExpanders() {
+      bd.querySelectorAll('tr.g').forEach(tr => tr.addEventListener('click', () => {
+        const det = tr.nextElementSibling;
+        if (det && det.classList.contains('det')) {
+          const open = det.style.display === 'none';
+          det.style.display = open ? '' : 'none';
+          const caret = tr.querySelector('.exp');
+          if (caret) caret.textContent = open ? '▾' : '▸';
+        }
+      }));
+    }
+
+    function renderSummary() {
+      if (view === 'staff') {
+        const list = staffDisplay();
+        const q = list.reduce((a, s) => a + s.qty, 0);
+        const sup = list.reduce((a, s) => a + s.supExp, 0);
+        const pr = list.reduce((a, s) => a + s.price, 0);
+        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 사은품 제외 ${lastGift} · 기간 ${meta}`;
+      } else {
+        const c = countedProducts();
+        const q = c.reduce((a, g) => a + g.qty, 0);
+        const sup = c.reduce((a, g) => a + g.supExp, 0);
+        const pr = c.reduce((a, g) => a + g.price, 0);
+        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 사은품 제외 ${lastGift} · 기간 ${meta}`;
+      }
+    }
+
+    function render() {
+      if (view === 'staff') renderStaffView(); else renderProductView();
+      box.querySelectorAll('.vbtn').forEach(b => b.classList.toggle('on', b.dataset.v === view));
+      renderSummary();
     }
     function recompute() {
-      const base = items.filter(it => selStores.has(it.store) && selStaff.has(it.staff));
-      const r = buildOrderGroups(base);
-      curGroups = r.groups; lastGift = r.gift;
-      renderRows(); renderSummary();
+      const base = thresholdFilter(items.filter(it => selStores.has(it.store) && selStaff.has(it.staff)), threshold);
+      const rp = buildOrderGroups(base); prodGroups = rp.groups; lastGift = rp.gift;
+      const rs = buildStaffGroups(base); staffGroups = rs.groups;
+      render();
     }
 
     // 매장/직원 칩 생성 + 바인딩(변경 시 재계산)
@@ -745,28 +991,34 @@
     buildChips('ub-o-staffs', staffs, selStaff, 'ub-o-staff-all');
 
     box.querySelector('#ub-stat-close').addEventListener('click', close);
+    box.querySelectorAll('.vbtn').forEach(b => b.addEventListener('click', () => { view = b.dataset.v; render(); }));
     box.querySelectorAll('.fbtn').forEach(b => b.addEventListener('click', () => {
       typeFilter = b.dataset.f;
       box.querySelectorAll('.fbtn').forEach(x => x.classList.toggle('on', x.dataset.f === typeFilter));
-      renderRows();
+      render();
     }));
-    box.querySelector('#ub-o-search').addEventListener('input', e => { nameQuery = e.target.value.trim(); renderRows(); });
-    allCb.addEventListener('change', function () {
-      if (this.checked) curGroups.forEach(g => excluded.delete(g.name));
-      else curGroups.forEach(g => excluded.add(g.name));
-      this.indeterminate = false;
-      renderRows(); renderSummary();
+    box.querySelector('#ub-o-search').addEventListener('input', e => { nameQuery = e.target.value.trim(); render(); });
+    let thrTimer = 0;
+    box.querySelector('#ub-o-thr').addEventListener('input', e => {
+      clearTimeout(thrTimer);
+      const v = Math.max(0, firstNum(e.target.value));
+      thrTimer = setTimeout(() => { threshold = v; recompute(); }, 300);
     });
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
-      const c = countedGroups();
-      const aoa = [['순위', '제품명', '구분', '총수량', '총주문가', '코드수']];
-      c.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.price), g.members.length]));
+      let aoa;
+      if (view === 'staff') {
+        aoa = [['순위', '직원', '총수량', '총예상총공급가', '총주문가', '제품수']];
+        staffDisplay().forEach((s, i) => aoa.push([i + 1, s.staff, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length]));
+      } else {
+        aoa = [['순위', '제품명', '구분', '총수량', '총예상총공급가', '총주문가', '코드수']];
+        countedProducts().forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.supExp), Math.round(g.price), g.members.length]));
+      }
       downloadXlsx(aoa, orderXlsxName());
-      log('주문 xlsx 저장', orderXlsxName(), aoa.length - 1, '행');
+      log('주문 xlsx 저장', orderXlsxName(), aoa.length - 1, '행', 'view=' + view);
     });
 
     recompute();
-    log('주문 통계 렌더', { items: items.length, stores: stores.length, staffs: staffs.length, groups: curGroups.length });
+    log('주문 통계 렌더', { items: items.length, stores: stores.length, staffs: staffs.length, products: prodGroups.length, staff: staffGroups.length });
   }
 
   /* ---------- 버튼 ---------- */
@@ -780,8 +1032,8 @@
       const f = document.querySelector('form[name="form1"]');
       const g = n => { const el = f && f.elements[n]; return el ? el.value : ''; };
       if (IS_ORDER) {
-        const { items, total } = await orderLoadAll(setStatus);
-        const meta = `${g('syear')}-${g('smonth')}-${g('sday')} ~ ${g('eyear')}-${g('emonth')}-${g('eday')} (전표 ${total}건)`;
+        const { items, total, orderTotal, matched } = await orderLoadAll(setStatus);
+        const meta = `${g('syear')}-${g('smonth')}-${g('sday')} ~ ${g('eyear')}-${g('emonth')}-${g('eday')} (집계 ${total}건 · 전표조인 ${matched}/${items.length}, 전표 ${orderTotal}건)`;
         renderOrder(items, meta);
       } else {
         const { items, total } = await loadAll(setStatus);
@@ -804,7 +1056,7 @@
     b.id = 'ub-stat-btn';
     b.type = 'button';
     b.textContent = '제품별 통계화';
-    b.title = IS_ORDER ? '주문전표 기준 제품별 통계' : '단가 5만원 초과 제품을 제품별로 묶어 판매 통계 + 엑셀 다운로드';
+    b.title = IS_ORDER ? '직원별/제품별 주문 통계(상품집계+주문전표 조인)' : '단가 5만원 초과 제품을 제품별로 묶어 판매 통계 + 엑셀 다운로드';
     b.style.cssText = 'margin-left:6px;padding:3px 12px;background:#35C5F0;color:#fff;border:0;border-radius:6px;' +
       'font:700 12px/1.5 Pretendard,sans-serif;cursor:pointer;vertical-align:middle;';
     b.addEventListener('click', () => runStats(b));
@@ -813,6 +1065,75 @@
     log('통계화 버튼 추가');
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addButton);
-  else addButton();
+  /* ---------- #4 페이지 결과표에 '직원' 열 자동 주입(IS_ORDER 전용) ---------- */
+  //  상품집계 주문탭 결과표(table.t_list, 수량헤더)의 각 데이터행에 전표 조인으로 직원 셀 추가.
+  //  전표 lookup 은 buildLookup(날짜키 모듈 캐시)로 1회. 실패/미매칭은 조용히 빈칸.
+  async function injectStaffColumn() {
+    // 결과표(수량 헤더 보유) + 헤더행 찾기
+    let table = null, headRow = null, cells = null;
+    for (const t of document.querySelectorAll('table.t_list')) {
+      for (const r of t.rows) {
+        const cs = [...r.cells].map(c => c.textContent.replace(/\s+/g, ' ').trim());
+        if (cs.some(c => /수량/.test(c))) { table = t; headRow = r; cells = cs; break; }
+      }
+      if (table) break;
+    }
+    if (!table || !headRow) return;
+    const cDate = findCol(cells, [/주문일/]);
+    const cProd = findCol(cells, [/바코드/, /상품번호/]);
+    const cStore = findCol(cells, [/매장명/]);
+    if (cProd < 0 || cStore < 0) return;   // 필요한 컬럼 없으면 스킵
+    const { map: lookup } = await buildLookup(null);
+    if (!lookup || !lookup.size) return;
+    // 헤더 th 1회
+    if (!headRow.querySelector('th.ub-staff-h')) {
+      const th = document.createElement('th');
+      th.className = 'ub-staff-h';
+      th.textContent = '주문직원';
+      headRow.appendChild(th);
+    }
+    // 데이터행 td
+    for (const r of table.rows) {
+      if (r === headRow) continue;
+      if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
+      if (r.querySelector('td.ub-staff-c')) continue;   // 이미 주입됨
+      const prod = splitSheetProd(cProd >= 0 && r.cells[cProd] ? r.cells[cProd].textContent : '');
+      const ss = splitStoreStaff(cStore >= 0 && r.cells[cStore] ? r.cells[cStore].textContent : '');
+      const dRaw = cDate >= 0 && r.cells[cDate] ? r.cells[cDate].textContent.replace(/\s+/g, '') : '';
+      const hit = lookup.get(joinKey(dRaw, prod.barcode, ss.store, ss.staff));   // 괄호 안 = 고객
+      const td = document.createElement('td');
+      td.className = 'ub-staff-c';
+      td.style.cssText = 'text-align:center;font-weight:700;color:#0f6f8c;';
+      td.textContent = hit ? hit.staff : '';
+      r.appendChild(td);
+    }
+  }
+  let _injecting = false, _injTimer = 0;
+  async function safeInject() {
+    if (_injecting) return;
+    _injecting = true;
+    try { await injectStaffColumn(); } catch (_) { /* 조용히 무시 */ } finally { _injecting = false; }
+  }
+  function scheduleInject() { clearTimeout(_injTimer); _injTimer = setTimeout(safeInject, 300); }
+  function initStaffColumn() {
+    safeInject();
+    // 서버가 표를 다시 그리면(검색·페이지) 재적용. 우리 셀 추가는 무시해 루프 방지.
+    const mo = new MutationObserver(muts => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) {
+          if (n.nodeType === 1 && n.classList &&
+            (n.classList.contains('ub-staff-c') || n.classList.contains('ub-staff-h'))) continue;
+          scheduleInject(); return;
+        }
+      }
+    });
+    try { mo.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+  }
+
+  function init() {
+    addButton();
+    if (IS_ORDER) initStaffColumn();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 })();
