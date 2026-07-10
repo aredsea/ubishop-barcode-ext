@@ -1131,7 +1131,7 @@
    *    이후+첫 셀 숫자(No), 각 상품 1행, 합계행은 별도 테이블, '총 N 개' 표기,
    *    pageSize 옵션 20/30/50/100/300/500.
    * ========================================================================== */
-  const QTY_SORT_RE = /\/statis\/sheet\/saleitem\/sheetStatisList\.do/;
+  const QTY_SORT_RE = /\/statis\/sheet\/(saleitem|orderitem)\/sheetStatisList\.do/;
   const QTY_FETCH_PS = 500;                          // 서버 지원 최대 옵션
   function numVal(s) {
     const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
