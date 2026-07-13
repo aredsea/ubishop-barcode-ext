@@ -64,7 +64,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.5.0 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.6.0 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -548,6 +548,94 @@
   }
 
   /* ==========================================================================
+   *  5.6) 회전입고 자동화 — rotateItemWriteForm.do 사이드바 섹션.
+   *   본사반품확인(opdelivedItemWrite) → 회전입고(rotateItemWrite) 2단 자동화.
+   *   사용자 수동 3단계(반품확인·새매장선택·회전입고)를 그대로 1건씩 재현.
+   *   ⚠ skin.js 는 ISOLATED world → 페이지의 checkBarcode/movePageForm 호출 불가.
+   *     필드세팅 + form1.submit() 로 대체(재고화 loadVoucher 와 동일 방식).
+   * ========================================================================== */
+  const ROT_TAG = '[UB][rotate]';
+  const rotLog = (...a) => { try { console.log(ROT_TAG, ...a); } catch (_) {} };
+  function isRotateWrite() { return /\/rotate\/item\/rotateItemWriteForm\.do/.test(location.pathname); }
+  // 회전입고 새매장 옵션(tmpShop) — 실측 하드코딩(안정적).
+  const ROT_SHOPS = [
+    { v: '',   t: '--' },
+    { v: 'GE', t: '거제점' },
+    { v: 'GJ', t: '광주점' },
+    { v: 'KH', t: '김해점' },
+    { v: 'NU', t: '누리엔점' },
+    { v: 'DG', t: '대구점' },
+    { v: 'ME', t: '메리움점' },
+    { v: 'CT', t: '센텀점' },
+    { v: 'SW', t: '수원점' },
+    { v: 'US', t: '울산점' },
+    { v: 'IN', t: '인천점' },
+    { v: 'CW', t: '창원점' },
+    { v: 'LT', t: 'FASHION' },
+    { v: '00', t: 'D102본사' }
+  ];
+  const rotShopName = (v) => { const s = ROT_SHOPS.find(o => o.v === v); return s ? s.t : (v || ''); };
+  // 응답 script 의 alert() 문구에서 명백한 실패만 감지(best-effort). alert 없으면 성공 간주.
+  function hasFailureAlert(doc) {
+    const failRe = /(실패|오류|에러|없습니다|아닙니다|불가|잘못|error)/i;
+    for (const s of doc.querySelectorAll('script')) {
+      const txt = s.textContent || '';
+      const re = /alert\s*\(\s*['"]([^'"]*)['"]/g;
+      let m;
+      while ((m = re.exec(txt))) { if (failRe.test(m[1])) return true; }
+    }
+    return false;
+  }
+  // 본사반품확인: 폼페이지 GET → form1 name있는 요소 전부 수집(신선한 sKey 포함)
+  //  → POST opdelivedItemWrite.do(그 필드 + barcode). 실패 alert 감지 시 false.
+  async function confirmOpdelivedReturn(barcode) {
+    try {
+      const r = await fetch('/opdeliv/item/opdelivedItemWriteForm.do?tcode=opdeliv_item', {
+        method: 'GET', credentials: 'include', cache: 'no-cache'
+      });
+      const buf = await r.arrayBuffer();
+      let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const form = doc.querySelector('form[name="form1"]');
+      if (!form) { rotLog('반품확인: form1 없음'); return false; }
+      const params = new URLSearchParams();
+      for (const el of form.elements) {
+        if (!el.name) continue;
+        const t = (el.type || '').toLowerCase();
+        if (['submit', 'button', 'reset', 'image', 'file'].includes(t)) continue;
+        if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
+        params.append(el.name, el.value == null ? '' : el.value);
+      }
+      params.set('barcode', barcode);   // 수집된 빈 barcode 를 실제 값으로 교체
+      const doc2 = await postDoc('/opdeliv/item/opdelivedItemWrite.do?tcode=opdeliv_item', params);
+      if (hasFailureAlert(doc2)) { rotLog('반품확인 실패 alert 감지'); return false; }
+      return true;
+    } catch (e) { rotLog('반품확인 실패', e); return false; }
+  }
+  let rotBusy = false;
+  async function rotateRun(barcode, shop, setStatus) {
+    barcode = (barcode || '').trim();
+    if (barcode.length !== 6) { setStatus('바코드 6자리를 입력하세요', 'warn'); return; }
+    if (rotBusy) return; rotBusy = true;
+    try {
+      setStatus('본사반품확인 처리 중…', 'go');
+      const ok = await confirmOpdelivedReturn(barcode);
+      if (!ok) { setStatus('본사반품확인 실패 — 반품 신청된 건인지 확인', 'err'); return; }
+      setStatus('회전입고 실행 중…', 'go');
+      const f = document.forms['form1'];
+      if (!f || !f.barcode) { setStatus('회전입고 폼(form1)을 찾지 못함', 'err'); return; }
+      if (f.tmpShop) f.tmpShop.value = shop;
+      f.barcode.value = barcode;
+      try { localStorage.setItem('UB_ROTATE_LAST', JSON.stringify({ barcode: barcode, shop: shop })); } catch (_) {}
+      rotLog('barcode', barcode, '→ shop', shop, '→ form1.submit');
+      f.submit();   // 전체제출 → 결과 페이지로 이동
+    } catch (e) {
+      rotLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
+    } finally { rotBusy = false; }
+  }
+
+  /* ==========================================================================
    *  6) 좌측/플로팅 사이드바 + 드래그 + 접힌 핸들
    * ========================================================================== */
   const SIDEBAR_ID = 'ub-sidebar';
@@ -688,6 +776,17 @@
     .ub-sidebar .ub-stk-st.ok { color: #12995a; }
     .ub-sidebar .ub-stk-st.err { color: #e0483f; }
     .ub-sidebar .ub-stk-st.warn { color: #c77a12; }
+
+    /* 회전입고 (rotateItemWriteForm) — 새매장 select + 재고화 input 톤 재사용 */
+    .ub-sidebar .ub-rot-shop-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .ub-sidebar .ub-rot-lb { font-size: 11px; color: var(--ub-sub); flex: none; }
+    .ub-sidebar .ub-rot-shop {
+      flex: 1 1 0; min-width: 0; padding: 7px 6px; border: 1px solid var(--ub-line);
+      background: var(--ub-bg); border-radius: 8px;
+      font-family: 'Pretendard','Malgun Gothic',sans-serif;
+      font-size: 11px; font-weight: 600; color: var(--ub-fg);
+    }
+    .ub-sidebar .ub-rot-shop:focus { outline: none; border-color: var(--ub-on); }
 
     /* 보조 / 텍스트 버튼 */
     .ub-sidebar .ub-sb-btn.ub-sb-link {
@@ -1071,6 +1170,23 @@
         </div>
       ` : ''}
 
+      ${isRotateWrite() ? `
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.barcode}<span>회전입고 자동화</span></div>
+          <div class="ub-rot-shop-row">
+            <span class="ub-rot-lb">새매장</span>
+            <select id="ub-rot-shop" class="ub-rot-shop">
+              ${ROT_SHOPS.map(o => `<option value="${o.v}">${o.t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="ub-stk-row">
+            <input id="ub-rot-in" class="ub-stk-in" placeholder="바코드 입력 후 Enter" autocomplete="off" spellcheck="false">
+            <button class="ub-sb-btn ub-stk-go" id="ub-rot-go">회전입고</button>
+          </div>
+          <div class="ub-stk-st" id="ub-rot-st"></div>
+        </div>
+      ` : ''}
+
       ${renderCacheSection()}
 
       <div class="ub-sb-rz-x" title="너비 조절 (드래그)"></div>
@@ -1167,6 +1283,30 @@
         if (last && last.junNum) setStkStatus('직전: ' + last.barcode + ' → 입고장 ' + last.junNum + ' 불러옴 ✓', 'ok');
       } catch (_) {}
       setTimeout(() => { try { stkIn.focus(); } catch (_) {} }, 400);
+    }
+
+    // 회전입고 배선 (rotateItemWriteForm.do) — 재렌더마다 재바인딩되니 정상.
+    const rotIn = bar.querySelector('#ub-rot-in');
+    const rotStEl = bar.querySelector('#ub-rot-st');
+    const rotShopSel = bar.querySelector('#ub-rot-shop');
+    if (rotIn && rotStEl && rotShopSel) {
+      const setRotStatus = (t, k) => { rotStEl.textContent = t || ''; rotStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
+      // 새매장 기본값 = localStorage(UB_ROTATE_SHOP) || '00'(D102본사)
+      let savedShop = '00';
+      try { savedShop = localStorage.getItem('UB_ROTATE_SHOP') || '00'; } catch (_) {}
+      if ([...rotShopSel.options].some(o => o.value === savedShop)) rotShopSel.value = savedShop;
+      rotShopSel.addEventListener('change', () => {
+        try { localStorage.setItem('UB_ROTATE_SHOP', rotShopSel.value); } catch (_) {}
+      });
+      const goRot = () => rotateRun(rotIn.value, rotShopSel.value, setRotStatus);
+      const rotGoBtn = bar.querySelector('#ub-rot-go');
+      if (rotGoBtn) rotGoBtn.addEventListener('click', goRot);
+      rotIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goRot(); } });
+      try {
+        const last = JSON.parse(localStorage.getItem('UB_ROTATE_LAST') || 'null');
+        if (last && last.barcode) setRotStatus('직전: ' + last.barcode + ' → ' + rotShopName(last.shop) + ' 회전입고 실행됨', 'ok');
+      } catch (_) {}
+      setTimeout(() => { try { rotIn.focus(); } catch (_) {} }, 400);
     }
 
     // (cache-run/cancel 핸들러는 Phase 2 본격 구현 시 form submit 가로채기로 대체됨)
