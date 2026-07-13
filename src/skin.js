@@ -12,6 +12,8 @@
  *    ubSbMode  : 'docked' | 'floating'   (default docked)
  *    ubSbX, ubSbY : floating 위치(px)
  *    ubSbCollapsed: true 면 접힘
+ *    ubSbWidth, ubSbHeight : 사이드바 크기(px, docked=너비만)
+ *    ubSbLocked : true 면 이동·크기조절 잠금
  *    ubBarcodes : 사용자 복사 바코드 [{c,t}] (최대 12, FIFO)
  *
  *  v2.7.0 — 날짜=select 변경(검색X) / 사이드바 floating·드래그·핸들 / 바코드 클립보드.
@@ -24,6 +26,7 @@
     ubSkin: false, ubDark: false, ubThumbEdit: true,
     ubSidebar: true, ubPageSize: true, ubAutoSync: false,
     ubSbMode: 'docked', ubSbX: 24, ubSbY: 24, ubSbCollapsed: false,
+    ubSbWidth: 256, ubSbHeight: 440, ubSbLocked: false,
     ubBarcodes: []
   };
   const state = Object.assign({}, D);
@@ -61,7 +64,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.2.5 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.5.0 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -451,6 +454,100 @@
   }
 
   /* ==========================================================================
+   *  5.5) 상품 재고화 — inputItemWriteForm.do 사이드바 섹션(stockmacro.js 이관).
+   *   바코드 → inputItemList(입고장번호) → inputItemJunList(junSeq) → form2.jun 제출.
+   *   ⚠ 등록(재고화 쓰기)은 절대 자동 안 함 — 입고장 로드까지만. 날짜=태초(2000-01-01)~오늘.
+   *   skin.js 는 ISOLATED world 지만 fetch(credentials)·document.forms['form2'].submit()
+   *   은 DOM 공유로 정상 동작.
+   * ========================================================================== */
+  const STK_TAG = '[UB][stock]';
+  const stkLog = (...a) => { try { console.log(STK_TAG, ...a); } catch (_) {} };
+  function isInboundWrite() { return /\/input\/item\/inputItemWriteForm\.do/.test(location.pathname); }
+  function dateParams() {
+    const d = new Date();
+    return {
+      syear: '2000', smonth: '01', sday: '01',
+      eyear: String(d.getFullYear()),
+      emonth: String(d.getMonth() + 1).padStart(2, '0'),
+      eday: String(d.getDate()).padStart(2, '0')
+    };
+  }
+  async function postDoc(action, params) {
+    const r = await fetch(action, {
+      method: 'POST', credentials: 'include', cache: 'no-cache',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: params.toString()
+    });
+    const buf = await r.arrayBuffer();
+    let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+    return new DOMParser().parseFromString(html, 'text/html');
+  }
+  function firstDataRow(doc) {
+    for (const t of doc.querySelectorAll('table.t_list')) {
+      let hi = -1, cells = null;
+      for (const r of t.rows) {
+        const cs = [...r.cells].map(c => c.textContent.replace(/\s+/g, ' ').trim());
+        if (cs.some(c => /수량|입고장/.test(c))) { hi = r.rowIndex; cells = cs; break; }
+      }
+      if (hi < 0) continue;
+      for (let i = hi + 1; i < t.rows.length; i++) {
+        const r = t.rows[i];
+        if (/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, '')))
+          return { headers: cells, row: r };
+      }
+    }
+    return null;
+  }
+  const colIdx = (headers, re) => { for (let i = 0; i < headers.length; i++) if (re.test(headers[i])) return i; return -1; };
+  async function barcodeToJunNum(barcode) {
+    const p = new URLSearchParams({ ...dateParams(), searchBarcode: barcode, pageSize: '100' });
+    const doc = await postDoc('/jun/inputitem/inputItemList.do?tcode=input_item', p);
+    const g = firstDataRow(doc);
+    if (!g) return null;
+    const ci = colIdx(g.headers, /입고장번호/);
+    if (ci < 0) return null;
+    const jn = (g.row.cells[ci] ? g.row.cells[ci].textContent : '').replace(/\s+/g, '').trim();
+    return jn || null;
+  }
+  async function junNumToSeq(junNum) {
+    const p = new URLSearchParams({ ...dateParams(), searchJunNum: junNum, searchItemType: '1', pageSize: '100' });
+    const doc = await postDoc('/jun/inputitem/inputItemJunList.do?tcode=input_item_jun', p);
+    const g = firstDataRow(doc);
+    if (!g) return null;
+    const m = g.row.innerHTML.match(/view\(\s*'?(\d+)'?\s*\)/);
+    return m ? m[1] : null;
+  }
+  function loadVoucher(seq) {
+    const f2 = document.forms['form2'];
+    if (!f2 || !f2.jun) { stkLog('form2/jun 없음'); return false; }
+    f2.jun.value = seq;
+    stkLog('form2.jun =', seq, '→ submit');
+    f2.submit();
+    return true;
+  }
+  let stkBusy = false;
+  async function run(barcode, setStatus) {
+    barcode = (barcode || '').trim();
+    if (!barcode) { setStatus('바코드를 입력하세요', 'warn'); return; }
+    if (stkBusy) return; stkBusy = true;
+    try {
+      setStatus('전표 조회 중…', 'go');
+      const junNum = await barcodeToJunNum(barcode);
+      if (!junNum) { setStatus('입고장번호를 못 찾음 — 바코드 확인', 'err'); return; }
+      setStatus('입고장 ' + junNum + ' 확인 중…', 'go');
+      const seq = await junNumToSeq(junNum);
+      if (!seq) { setStatus('입고장 seq를 못 찾음 (' + junNum + ')', 'err'); return; }
+      try { localStorage.setItem('UB_STOCK_LAST', JSON.stringify({ barcode: barcode, junNum: junNum, seq: seq })); } catch (_) {}
+      stkLog('barcode', barcode, '→ junNum', junNum, '→ seq', seq);
+      setStatus('입고장 ' + junNum + ' 불러오는 중…', 'go');
+      loadVoucher(seq);   // 페이지 리로드 → 입고장 로드(사람이 확인 후 재고화 등록)
+    } catch (e) {
+      stkLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
+    } finally { stkBusy = false; }
+  }
+
+  /* ==========================================================================
    *  6) 좌측/플로팅 사이드바 + 드래그 + 접힌 핸들
    * ========================================================================== */
   const SIDEBAR_ID = 'ub-sidebar';
@@ -480,7 +577,7 @@
       -webkit-font-smoothing: antialiased;
     }
     .ub-sidebar.ub-mode-docked {
-      position: fixed; top: 0; left: 0; height: 100vh; width: 248px;
+      position: fixed; top: 0; left: 0; height: 100vh; width: var(--ub-sb-w, 256px);
       border-radius: 0; border-left: none; border-top: none; border-bottom: none;
       box-shadow: 2px 0 12px rgba(15,20,25,.06);
     }
@@ -498,7 +595,7 @@
       --ub-on-soft: #1c2733;
       box-shadow: 0 8px 24px rgba(0,0,0,.5) !important;
     }
-    html.ub-sidebar-docked body { margin-left: 256px !important; }
+    html.ub-sidebar-docked body { margin-left: var(--ub-sb-w, 256px) !important; }
     @media (max-width: 900px) { html.ub-sidebar-docked body { margin-left: 0 !important; } }
 
     /* 헤더 */
@@ -572,6 +669,26 @@
       padding: 10px 4px;
     }
 
+    /* 상품 재고화 (inputItemWriteForm) */
+    .ub-sidebar .ub-stk-row { display: flex; gap: 6px; }
+    .ub-sidebar .ub-stk-in {
+      flex: 1 1 0; min-width: 0; padding: 8px 8px; border: 1px solid var(--ub-line);
+      background: var(--ub-bg); border-radius: 8px;
+      font-family: 'Pretendard','Malgun Gothic',sans-serif;
+      font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--ub-fg);
+    }
+    .ub-sidebar .ub-stk-in:focus { outline: none; border-color: var(--ub-on); }
+    .ub-sidebar .ub-stk-in::placeholder { color: var(--ub-sub); font-weight: 500; letter-spacing: 0; }
+    .ub-sidebar .ub-sb-btn.ub-stk-go { flex: none; padding: 10px 12px; }
+    .ub-sidebar .ub-stk-st {
+      margin-top: 7px; font-size: 11px; font-weight: 600; min-height: 14px;
+      line-height: 1.4; color: var(--ub-sub);
+    }
+    .ub-sidebar .ub-stk-st.go { color: var(--ub-on); }
+    .ub-sidebar .ub-stk-st.ok { color: #12995a; }
+    .ub-sidebar .ub-stk-st.err { color: #e0483f; }
+    .ub-sidebar .ub-stk-st.warn { color: #c77a12; }
+
     /* 보조 / 텍스트 버튼 */
     .ub-sidebar .ub-sb-btn.ub-sb-link {
       background: transparent; border-color: transparent; color: var(--ub-sub);
@@ -594,6 +711,23 @@
       pointer-events: none; opacity: 0; transition: opacity .2s;
     }
     .ub-sidebar .ub-toast.show { opacity: 1; }
+
+    /* 리사이즈 핸들 + 잠금 */
+    .ub-sidebar .ub-sb-rz-x {
+      position: absolute; right: 0; top: 0; width: 6px; height: 100%;
+      cursor: ew-resize; z-index: 3;
+    }
+    .ub-sidebar .ub-sb-rz-x:hover { background: var(--ub-on-soft); }
+    .ub-sidebar .ub-sb-rz {
+      position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px;
+      cursor: nwse-resize; z-index: 3;
+      background: linear-gradient(135deg, transparent 46%, var(--ub-line) 46%, var(--ub-line) 56%, transparent 56%, transparent 68%, var(--ub-line) 68%, var(--ub-line) 78%, transparent 78%);
+    }
+    .ub-sidebar.ub-mode-docked .ub-sb-rz { display: none; }
+    .ub-sidebar.ub-mode-floating .ub-sb-rz-x { display: none; }
+    .ub-sidebar.ub-locked .ub-sb-rz, .ub-sidebar.ub-locked .ub-sb-rz-x { display: none; }
+    .ub-sidebar.ub-locked.ub-mode-floating .ub-sb-hd { cursor: default; }
+    .ub-sidebar .ub-ico.ub-on { color: var(--ub-on); border-color: var(--ub-on); background: var(--ub-on-soft); }
 
     /* 접힌 상태 핸들 — Lucide chevron-right SVG */
     #ub-sb-handle {
@@ -638,11 +772,24 @@
       document.documentElement.classList.remove('ub-sidebar-docked');
     }
   }
+  // 크기 적용: docked=너비만(CSS 변수 --ub-sb-w 로 body margin 과 동기), floating=너비+높이.
+  function applySbSize(bar) {
+    const w = Math.min(Math.max(200, state.ubSbWidth | 0), 480);
+    if (state.ubSbMode === 'floating') {
+      const h = Math.max(160, state.ubSbHeight | 0);
+      bar.style.width = w + 'px';
+      bar.style.height = h + 'px';
+    } else {
+      bar.style.width = ''; bar.style.height = '';   // 인라인 사이즈 해제 → CSS 변수 사용
+      document.documentElement.style.setProperty('--ub-sb-w', w + 'px');
+    }
+  }
   function bindDrag(bar) {
     const hd = bar.querySelector('.ub-sb-hd');
     if (!hd) return;
     let dragging = false, ox = 0, oy = 0;
     hd.addEventListener('mousedown', (e) => {
+      if (state.ubSbLocked) return;               // 잠금 시 이동 X
       if (state.ubSbMode !== 'floating') return;
       if (e.target.closest('.ub-ico')) return;   // 아이콘 클릭은 드래그 X
       dragging = true;
@@ -665,6 +812,47 @@
       try { chrome.storage.local.set({ ubSbX: x, ubSbY: y }); } catch (_) {}
     });
   }
+  // 리사이즈: docked=오른쪽 세로 핸들(너비), floating=우하단 코너 그립(너비+높이). 잠금 시 무시.
+  function bindResize(bar) {
+    const hx = bar.querySelector('.ub-sb-rz-x');   // docked 너비 핸들
+    if (hx) hx.addEventListener('mousedown', (e) => {
+      if (state.ubSbLocked || state.ubSbMode !== 'docked') return;
+      e.preventDefault(); e.stopPropagation();
+      const startX = e.clientX, startW = bar.getBoundingClientRect().width;
+      const mv = (ev) => {
+        const w = Math.min(Math.max(200, startW + (ev.clientX - startX)), 480);
+        document.documentElement.style.setProperty('--ub-sb-w', w + 'px');
+        state.ubSbWidth = w;
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', mv);
+        window.removeEventListener('mouseup', up);
+        try { chrome.storage.local.set({ ubSbWidth: state.ubSbWidth }); } catch (_) {}
+      };
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    });
+    const rz = bar.querySelector('.ub-sb-rz');     // floating 코너 그립
+    if (rz) rz.addEventListener('mousedown', (e) => {
+      if (state.ubSbLocked || state.ubSbMode !== 'floating') return;
+      e.preventDefault(); e.stopPropagation();
+      const sx = e.clientX, sy = e.clientY;
+      const r = bar.getBoundingClientRect(), ow = r.width, oh = r.height;
+      const mv = (ev) => {
+        const w = Math.min(Math.max(200, ow + (ev.clientX - sx)), 480);
+        const h = Math.max(160, oh + (ev.clientY - sy));
+        bar.style.width = w + 'px'; bar.style.height = h + 'px';
+        state.ubSbWidth = w; state.ubSbHeight = h;
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', mv);
+        window.removeEventListener('mouseup', up);
+        try { chrome.storage.local.set({ ubSbWidth: state.ubSbWidth, ubSbHeight: state.ubSbHeight }); } catch (_) {}
+      };
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    });
+  }
   // Lucide SVG 아이콘(인라인). stroke=currentColor, 24x24 viewBox.
   const ICONS = {
     chevronRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
@@ -675,7 +863,9 @@
     calendar:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>',
     barcode:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5v14"/><path d="M8 5v14"/><path d="M12 5v14"/><path d="M17 5v14"/><path d="M21 5v14"/></svg>',
     database:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>',
-    play:         '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>'
+    play:         '<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>',
+    lock:         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    unlock:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V6a4 4 0 0 1 7.5-2"/></svg>'
   };
 
   /* 전표 자동 캐시 섹션 — 자동 작동 안내 + 세션 통계 */
@@ -807,7 +997,8 @@
       bar.id = SIDEBAR_ID;
       document.body.appendChild(bar);
     }
-    bar.className = 'ub-sidebar ub-mode-' + (state.ubSbMode === 'floating' ? 'floating' : 'docked');
+    bar.className = 'ub-sidebar ub-mode-' + (state.ubSbMode === 'floating' ? 'floating' : 'docked')
+      + (state.ubSbLocked ? ' ub-locked' : '');
 
     const isFloat = state.ubSbMode === 'floating';
     const dateBtns = isDateSearchPage();
@@ -822,6 +1013,7 @@
         <div class="ub-sb-brand">D</div>
         <div class="ub-sb-title">D102 도구</div>
         <div class="ub-sb-actions">
+          <button class="ub-ico${state.ubSbLocked ? ' ub-on' : ''}" data-act="lock" title="${state.ubSbLocked ? '잠금 해제' : '크기·위치 잠금'}">${state.ubSbLocked ? ICONS.lock : ICONS.unlock}</button>
           <button class="ub-ico" data-act="mode" title="${modeTitle}">${modeIcon}</button>
           <button class="ub-ico" data-act="collapse" title="접기">${ICONS.chevronLeft}</button>
         </div>
@@ -868,13 +1060,29 @@
         `}
       </div>
 
+      ${isInboundWrite() ? `
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.barcode}<span>상품 재고화</span></div>
+          <div class="ub-stk-row">
+            <input id="ub-stk-in" class="ub-stk-in" placeholder="바코드 입력 후 Enter" autocomplete="off" spellcheck="false">
+            <button class="ub-sb-btn ub-stk-go" id="ub-stk-go">재고화</button>
+          </div>
+          <div class="ub-stk-st" id="ub-stk-st"></div>
+        </div>
+      ` : ''}
+
       ${renderCacheSection()}
+
+      <div class="ub-sb-rz-x" title="너비 조절 (드래그)"></div>
+      <div class="ub-sb-rz" title="크기 조절 (드래그)"></div>
     `;
 
-    // 위치 적용
+    // 위치 / 크기 적용
     applySbPosition(bar);
-    // 드래그
+    applySbSize(bar);
+    // 드래그 / 리사이즈
     bindDrag(bar);
+    bindResize(bar);
 
     // 헤더 액션
     bar.querySelectorAll('.ub-ico').forEach(b => b.addEventListener('click', (e) => {
@@ -887,6 +1095,10 @@
       } else if (act === 'collapse') {
         state.ubSbCollapsed = true;
         try { chrome.storage.local.set({ ubSbCollapsed: true }); } catch (_) {}
+        renderSidebar();
+      } else if (act === 'lock') {
+        state.ubSbLocked = !state.ubSbLocked;
+        try { chrome.storage.local.set({ ubSbLocked: state.ubSbLocked }); } catch (_) {}
         renderSidebar();
       }
     }));
@@ -940,6 +1152,22 @@
       try { chrome.storage.local.set({ ubBarcodes: [] }); } catch (_) {}
       renderSidebar();
     });
+
+    // 상품 재고화 배선 (inputItemWriteForm.do) — 재렌더마다 재바인딩되니 정상.
+    const stkIn = bar.querySelector('#ub-stk-in');
+    const stkStEl = bar.querySelector('#ub-stk-st');
+    if (stkIn && stkStEl) {
+      const setStkStatus = (t, k) => { stkStEl.textContent = t || ''; stkStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
+      const goStk = () => run(stkIn.value, setStkStatus);
+      const stkGoBtn = bar.querySelector('#ub-stk-go');
+      if (stkGoBtn) stkGoBtn.addEventListener('click', goStk);
+      stkIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goStk(); } });
+      try {
+        const last = JSON.parse(localStorage.getItem('UB_STOCK_LAST') || 'null');
+        if (last && last.junNum) setStkStatus('직전: ' + last.barcode + ' → 입고장 ' + last.junNum + ' 불러옴 ✓', 'ok');
+      } catch (_) {}
+      setTimeout(() => { try { stkIn.focus(); } catch (_) {} }, 400);
+    }
 
     // (cache-run/cancel 핸들러는 Phase 2 본격 구현 시 form submit 가로채기로 대체됨)
   }
