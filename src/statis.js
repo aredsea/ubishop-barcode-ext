@@ -439,12 +439,15 @@
     if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
     return { name, type };
   }
-  // 라인단위 임계값 필터: 단가(예상총공급가/수량) <= threshold 인 라인 제외(threshold<=0 이면 전체).
-  function thresholdFilter(items, threshold) {
-    if (!threshold || threshold <= 0) return items;
+  // 라인단위 예상총공급가 단가(예상총공급가/수량) 범위 필터: min 이하·max 이상 제외(0=무제한).
+  function thresholdFilter(items, min, max) {
+    const lo = min > 0 ? min : 0, hi = max > 0 ? max : 0;
+    if (!lo && !hi) return items;
     return items.filter(it => {
       const unit = it.qty > 0 ? it.supExp / it.qty : 0;
-      return unit > threshold;
+      if (lo && unit <= lo) return false;
+      if (hi && unit >= hi) return false;
+      return true;
     });
   }
   /* ---------- 그룹핑(제품별): 사은품만 제외, 수량/예상총공급가/예상판매가/주문가 합산 ---------- */
@@ -452,8 +455,7 @@
     const map = new Map();
     let gift = 0;
     for (const it of items) {
-      if (/사은품/.test(it.name)) { gift++; continue; }   // 사은품은 순위에서 제외
-      const np = normProduct(it.name);   // 판매탭과 동일한 수기 보정 재사용
+      const np = normProduct(it.name);   // 사은품 포함(제외 안 함) · 판매탭과 동일한 수기 보정 재사용
       let g = map.get(np.name);
       if (!g) { g = { type: np.type, name: np.name, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; map.set(np.name, g); }
       g.type = np.type;
@@ -467,7 +469,6 @@
     const map = new Map();
     let gift = 0;
     for (const it of items) {
-      if (/사은품/.test(it.name)) { gift++; continue; }
       const staff = it.staff || '(미지정)';
       let sg = map.get(staff);
       if (!sg) { sg = { staff, qty: 0, supExp: 0, price: 0, products: new Map() }; map.set(staff, sg); }
@@ -640,7 +641,7 @@
       '#ub-stat .ofl-chip input,#ub-stat .ofl-all input,#ub-stat .ub-o-pick{vertical-align:middle;cursor:pointer;margin:0;}',
       '#ub-stat .ofl-search{flex:1;max-width:280px;padding:6px 10px;border:1px solid #cdd8e0;border-radius:7px;font-size:12px;}',
       '#ub-stat .ofl-thr{display:inline-flex;align-items:center;gap:6px;color:#374151;font-size:12px;font-weight:700;white-space:nowrap;}',
-      '#ub-stat .ofl-thr input{width:110px;padding:6px 9px;border:1px solid #cdd8e0;border-radius:7px;font-size:12px;text-align:right;}',
+      '#ub-stat .ofl-thr input{width:88px;padding:6px 9px;border:1px solid #cdd8e0;border-radius:7px;font-size:12px;text-align:right;}',
       '#ub-stat .ofl-thr .u{color:#8a97a3;font-weight:600;}',
       // 표: 직원별/제품별 공통(밀도↑)
       '#ub-stat th.ub-ck,#ub-stat td.ub-ck{text-align:center;}',
@@ -767,7 +768,7 @@
     let view = 'staff';               // 'staff'(직원별, 기본) | 'product'(제품별)
     let typeFilter = 'all';
     let nameQuery = '';
-    let threshold = 0;                // 예상총공급가 단가(원가/수량) 임계값. 이하 라인 숨김(0=전체)
+    let thrMin = 0, thrMax = 0;       // 예상총공급가 단가(원가/수량) 범위. 이하·이상 숨김(0=무제한)
     let prodGroups = [];              // 매장∩직원∩임계값 라인 → 제품별 그룹
     let staffGroups = [];             // 동일 라인 → 직원별 그룹
     let lastGift = 0;
@@ -796,7 +797,7 @@
           '<span class="ofl-chips" id="ub-o-staffs"></span></div>' +
         '<div class="ofl-row2">' +
           '<input type="text" id="ub-o-search" class="ofl-search" placeholder="상품명으로 검색…">' +
-          '<span class="ofl-thr">예상총공급가 <input type="number" id="ub-o-thr" min="0" step="1000" value="0"> <span class="u">원 이하 숨김</span></span>' +
+          '<span class="ofl-thr">예상총공급가 <input type="number" id="ub-o-thr-min" min="0" step="1000" value="0"> <span class="u">원 이하 ·</span> <input type="number" id="ub-o-thr-max" min="0" step="1000" value="0"> <span class="u">원 이상 숨김</span></span>' +
         '</div>' +
         '<div class="ofl-row"><span class="sum" id="ub-stat-sum"></span></div>' +
       '</div>' +
@@ -946,13 +947,13 @@
         const q = list.reduce((a, s) => a + s.qty, 0);
         const sup = list.reduce((a, s) => a + s.supExp, 0);
         const pr = list.reduce((a, s) => a + s.price, 0);
-        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 사은품 제외 ${lastGift} · 기간 ${meta}`;
+        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 기간 ${meta}`;
       } else {
         const c = countedProducts();
         const q = c.reduce((a, g) => a + g.qty, 0);
         const sup = c.reduce((a, g) => a + g.supExp, 0);
         const pr = c.reduce((a, g) => a + g.price, 0);
-        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 사은품 제외 ${lastGift} · 기간 ${meta}`;
+        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 기간 ${meta}`;
       }
     }
 
@@ -962,7 +963,7 @@
       renderSummary();
     }
     function recompute() {
-      const base = thresholdFilter(items.filter(it => selStores.has(it.store) && selStaff.has(it.staff)), threshold);
+      const base = thresholdFilter(items.filter(it => selStores.has(it.store) && selStaff.has(it.staff)), thrMin, thrMax);
       const rp = buildOrderGroups(base); prodGroups = rp.groups; lastGift = rp.gift;
       const rs = buildStaffGroups(base); staffGroups = rs.groups;
       render();
@@ -1001,11 +1002,16 @@
     }));
     box.querySelector('#ub-o-search').addEventListener('input', e => { nameQuery = e.target.value.trim(); render(); });
     let thrTimer = 0;
-    box.querySelector('#ub-o-thr').addEventListener('input', e => {
+    const onThr = () => {
       clearTimeout(thrTimer);
-      const v = Math.max(0, firstNum(e.target.value));
-      thrTimer = setTimeout(() => { threshold = v; recompute(); }, 300);
-    });
+      thrTimer = setTimeout(() => {
+        thrMin = Math.max(0, firstNum(box.querySelector('#ub-o-thr-min').value));
+        thrMax = Math.max(0, firstNum(box.querySelector('#ub-o-thr-max').value));
+        recompute();
+      }, 300);
+    };
+    box.querySelector('#ub-o-thr-min').addEventListener('input', onThr);
+    box.querySelector('#ub-o-thr-max').addEventListener('input', onThr);
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
       let aoa;
       if (view === 'staff') {
