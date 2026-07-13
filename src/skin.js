@@ -64,7 +64,7 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.6.0 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  try { console.log('[UB][skin] v3.6.1 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
@@ -575,19 +575,15 @@
     { v: '00', t: 'D102본사' }
   ];
   const rotShopName = (v) => { const s = ROT_SHOPS.find(o => o.v === v); return s ? s.t : (v || ''); };
-  // 응답 script 의 alert() 문구에서 명백한 실패만 감지(best-effort). alert 없으면 성공 간주.
-  function hasFailureAlert(doc) {
-    const failRe = /(실패|오류|에러|없습니다|아닙니다|불가|잘못|error)/i;
-    for (const s of doc.querySelectorAll('script')) {
-      const txt = s.textContent || '';
-      const re = /alert\s*\(\s*['"]([^'"]*)['"]/g;
-      let m;
-      while ((m = re.exec(txt))) { if (failRe.test(m[1])) return true; }
-    }
-    return false;
-  }
-  // 본사반품확인: 폼페이지 GET → form1 name있는 요소 전부 수집(신선한 sKey 포함)
-  //  → POST opdelivedItemWrite.do(그 필드 + barcode). 실패 alert 감지 시 false.
+  // form1 의 confirm 필수 hidden 필드. 이 페이지는 폼 중첩이 깨진 옛 HTML 이라
+  //  DOMParser 의 form.elements 로는 hidden 들이 form1 밖으로 빠져 하나도 안 잡힌다(실측).
+  //  → GET HTML 에서 정규식으로 직접 추출해야 서버가 실제로 확인 커밋을 한다.
+  const OPDELIV_FIELDS = ['sKey', 'pageSize', 'searchSortType', 'jun', 'opdelivedDate', 'listFlag', 'searchShop'];
+  // 본사반품확인: 폼페이지 GET → HTML 에서 form1 hidden 필드(GET마다 새로 발급되는 sKey 포함)
+  //  정규식 추출 → POST opdelivedItemWrite.do(그 필드 + barcode).
+  //  성공·실패 모두 opdelivedItemWriteForm.do 로 리다이렉트되며, 실패일 때만 리다이렉트 URL 의
+  //  msg 파라미터에 에러문구(예 "본사반품확인 가능한 상태가 아닙니다...")가 실린다.
+  //  → msg 비어있으면 성공. { ok, msg } 반환.
   async function confirmOpdelivedReturn(barcode) {
     try {
       const r = await fetch('/opdeliv/item/opdelivedItemWriteForm.do?tcode=opdeliv_item', {
@@ -596,22 +592,29 @@
       const buf = await r.arrayBuffer();
       let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
       if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      const form = doc.querySelector('form[name="form1"]');
-      if (!form) { rotLog('반품확인: form1 없음'); return false; }
       const params = new URLSearchParams();
-      for (const el of form.elements) {
-        if (!el.name) continue;
-        const t = (el.type || '').toLowerCase();
-        if (['submit', 'button', 'reset', 'image', 'file'].includes(t)) continue;
-        if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
-        params.append(el.name, el.value == null ? '' : el.value);
+      const seen = new Set();
+      const re = /<input\b[^>]*type=["']hidden["'][^>]*>/gi;
+      let m;
+      while ((m = re.exec(html))) {
+        const tag = m[0];
+        const nm = (tag.match(/name=["']([^"']+)["']/i) || [])[1];
+        if (!nm || !OPDELIV_FIELDS.includes(nm) || seen.has(nm)) continue;
+        seen.add(nm);
+        params.append(nm, (tag.match(/value=["']([^"']*)["']/i) || [, ''])[1]);
       }
-      params.set('barcode', barcode);   // 수집된 빈 barcode 를 실제 값으로 교체
-      const doc2 = await postDoc('/opdeliv/item/opdelivedItemWrite.do?tcode=opdeliv_item', params);
-      if (hasFailureAlert(doc2)) { rotLog('반품확인 실패 alert 감지'); return false; }
-      return true;
-    } catch (e) { rotLog('반품확인 실패', e); return false; }
+      if (!seen.has('sKey')) { rotLog('반품확인: sKey 추출 실패 — 폼페이지 구조 변경 의심'); return { ok: false, msg: '폼페이지 구조 변경(관리자 문의)' }; }
+      params.set('barcode', barcode);
+      const resp = await fetch('/opdeliv/item/opdelivedItemWrite.do?tcode=opdeliv_item', {
+        method: 'POST', credentials: 'include', cache: 'no-cache',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: params.toString()
+      });
+      let msg = '';
+      try { msg = new URL(resp.url).searchParams.get('msg') || ''; } catch (_) {}
+      if (msg) { rotLog('반품확인 실패 msg:', msg); return { ok: false, msg }; }
+      return { ok: true };
+    } catch (e) { rotLog('반품확인 실패', e); return { ok: false, msg: (e && e.message) || String(e) }; }
   }
   let rotBusy = false;
   async function rotateRun(barcode, shop, setStatus) {
@@ -620,8 +623,8 @@
     if (rotBusy) return; rotBusy = true;
     try {
       setStatus('본사반품확인 처리 중…', 'go');
-      const ok = await confirmOpdelivedReturn(barcode);
-      if (!ok) { setStatus('본사반품확인 실패 — 반품 신청된 건인지 확인', 'err'); return; }
+      const res = await confirmOpdelivedReturn(barcode);
+      if (!res.ok) { setStatus('본사반품확인 실패: ' + (res.msg || '반품 신청된 건인지 확인'), 'err'); return; }
       setStatus('회전입고 실행 중…', 'go');
       const f = document.forms['form1'];
       if (!f || !f.barcode) { setStatus('회전입고 폼(form1)을 찾지 못함', 'err'); return; }
