@@ -31,10 +31,28 @@ ubishop-barcode-ext/
 
 프로그램이 꺼져 있으면 "인쇄 프로그램에 연결할 수 없습니다" 안내(트레이 확인).
 
-## 자동 업데이트
+## 자동 업데이트 (이원 배포 — 재설치 불필요)
 
-로직(config/overlay/collector/content)은 매 페이지 로드 시 GitHub raw 에서 받아 실행
-(`app-files.json`). **push 하면 매장 PC가 새로고침 시 자동 반영**. manifest/loader 변경 시에만 재설치.
+확장 파일은 두 경로로 배포되며 **둘 다 `git push` 로 반영**된다(매장 PC 방문 불필요).
+
+**① 로직 파일**(config/overlay/collector/content/cache-intercept/statis) — `loader.js` 가
+매 페이지 로드 시 GitHub raw 에서 받아 실행(`app-files.json`). **push → 다음 페이지에서 즉시**.
+
+**② 껍데기 파일**(manifest/skin.js/background/loader/localbridge/popup/icons) — 폴더에 박혀
+loader 로 못 받던 파일. **D102 인쇄 프로그램(ExtSync)** 이 `shell-files.json` 을 raw 에서 폴링해
+바뀐 파일만 안정 경로(`%LocalAppData%\D102LabelExtension`)에 교체 → **다음 브라우저 재시작 시
+자동 반영**. Chrome·Edge·Whale 등 모든 Chromium 브라우저가 이 폴더를 공유 로드.
+
+### 배포 절차
+
+- **로직만 수정**: `app-files.json` version 올림 → `git push`.
+- **껍데기 수정**(skin.js 등): manifest `version` 올림(규칙: patch>9→minor) →
+  `pwsh build-shell-index.ps1`(shell-files.json 갱신) → `git push`. 프로그램이 감지·동기화 →
+  다음 재시작 시 반영. **재설치 불필요.**
+
+> manifest `key` 로 확장 ID(`kejfp…`)가 고정돼 폴더를 교체해도 계정·설정이 유지된다.
+> force-install crx 는 비도메인 Windows 에서 원천 불가라 폐기(레거시 update.xml/crx).
+> 상세 설계: `d102-label-printer/설계-확장-자동배포시스템.md`
 
 ## 설치
 

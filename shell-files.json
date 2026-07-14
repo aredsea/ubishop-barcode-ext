@@ -1,0 +1,49 @@
+{
+  "version": "3.6.1",
+  "files": [
+    {
+      "path": "manifest.json",
+      "sha256": "a5cad314aa0d5212ab76342a6663c9cc31876bcd73f8cc060d5f60873093fe5b"
+    },
+    {
+      "path": "src/loader.js",
+      "sha256": "cc41ad1c4dc7b3ea38d4c29c14d2eec7700f50649292d55920eac82a26be6ddd"
+    },
+    {
+      "path": "src/localbridge.js",
+      "sha256": "93eff254a9fb3ecc52ee26cf5c6f5b028b283053e20553cb82fe1d065b836736"
+    },
+    {
+      "path": "src/background.js",
+      "sha256": "5f4dadd29c95337a539a3f48b1354e4b9226273928c8f345169e6c525aa71d18"
+    },
+    {
+      "path": "src/skin.js",
+      "sha256": "0a54358b7d32c50fb59f3f12280fbe02f33bea168d3d722d0716aa62649eda08"
+    },
+    {
+      "path": "popup/popup.html",
+      "sha256": "2116189fbad858a7c799ae48c39eec04fb707a349611ea32774bf5e44e3f4885"
+    },
+    {
+      "path": "popup/popup.js",
+      "sha256": "47ecb3c35f5218876f56278dcc797ccbc6f21f58360c3181c7e4276b344c050d"
+    },
+    {
+      "path": "rules/cache.json",
+      "sha256": "bc0688cbcd2cba11ed4a902dcaf551eb91e59e1624d8b13d544c088bdf3bb3cc"
+    },
+    {
+      "path": "icons/icon128.png",
+      "sha256": "1b8d2d09abf621e8ff49d4c9bcf1bedd1c13bcbb7bb031b6ed08a2dca3b81c30"
+    },
+    {
+      "path": "icons/icon16.png",
+      "sha256": "e609f046b9ec670a442e42206c37d659ca4c1944bb0c0ea90d20e94faa4ae3b5"
+    },
+    {
+      "path": "icons/icon48.png",
+      "sha256": "998f73b910ad24f41a3f3cfd7ad50f9a14802379e3894189bc67dfa924161fb3"
+    }
+  ]
+}
