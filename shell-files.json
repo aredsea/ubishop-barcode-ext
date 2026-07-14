@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "a5cad314aa0d5212ab76342a6663c9cc31876bcd73f8cc060d5f60873093fe5b"
+      "sha256": "c886e4a4321ad11b788a95417c79b62dd7342448a3162bc554119db01203b5f4"
     },
     {
       "path": "src/loader.js",
@@ -11,23 +11,23 @@
     },
     {
       "path": "src/localbridge.js",
-      "sha256": "93eff254a9fb3ecc52ee26cf5c6f5b028b283053e20553cb82fe1d065b836736"
+      "sha256": "5ce2c4bb2a9933fe645a36e78dfe24f13e35ca0b2e54eee60e096cc70d3a864a"
     },
     {
       "path": "src/background.js",
-      "sha256": "5f4dadd29c95337a539a3f48b1354e4b9226273928c8f345169e6c525aa71d18"
+      "sha256": "7493221e0dc823e85180c9bdaa746a479783307943db643bb4982020a87d1804"
     },
     {
       "path": "src/skin.js",
-      "sha256": "0a54358b7d32c50fb59f3f12280fbe02f33bea168d3d722d0716aa62649eda08"
+      "sha256": "c947c313c45748ab73dcc7badeb997e9efaccb16db010c073a508e471f1a9725"
     },
     {
       "path": "popup/popup.html",
-      "sha256": "2116189fbad858a7c799ae48c39eec04fb707a349611ea32774bf5e44e3f4885"
+      "sha256": "d9a27f6577b17f676d091222bd7ec18ff9246609f630a0c9217e280a2e99917e"
     },
     {
       "path": "popup/popup.js",
-      "sha256": "47ecb3c35f5218876f56278dcc797ccbc6f21f58360c3181c7e4276b344c050d"
+      "sha256": "64b59f59c6e9144ec5ef0b63ec5964fc1483eb9ac74f1b226e4d7ad25cac68fb"
     },
     {
       "path": "rules/cache.json",
