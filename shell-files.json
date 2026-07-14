@@ -1,9 +1,9 @@
 {
-  "version": "3.6.1",
+  "version": "3.6.2",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "c886e4a4321ad11b788a95417c79b62dd7342448a3162bc554119db01203b5f4"
+      "sha256": "4fd70caa82ea556831988907836c656af00d94737fc2826520c9b85b427a6287"
     },
     {
       "path": "src/loader.js",
