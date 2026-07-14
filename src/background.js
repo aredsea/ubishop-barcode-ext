@@ -17,7 +17,7 @@ const PING_URL = 'http://127.0.0.1:17600/ping';
 const CACHE_GET = 'http://127.0.0.1:17600/cache/get';
 const CACHE_PUT = 'http://127.0.0.1:17600/cache/put';
 const TELE_URL  = 'http://127.0.0.1:17600/telemetry/event';
-const REMOTE_MANIFEST = 'https://raw.githubusercontent.com/aredsea/ubishop-barcode-ext/main/manifest.json';
+const REMOTE_SHELL = 'https://raw.githubusercontent.com/aredsea/ubishop-barcode-ext/main/shell-files.json';
 const UPDATE_ALARM = 'ubUpdateCheck';
 
 /* ---- 메시지 라우터 -------------------------------------------------------- */
@@ -235,17 +235,19 @@ async function runCacheSearch(msg, sender) {
  * ----------------------------------------------------------------------- */
 async function checkUpdate() {
   try {
-    const r = await fetch(REMOTE_MANIFEST + '?_=' + Date.now(), { cache: 'no-cache' });
+    const r = await fetch(REMOTE_SHELL + '?_=' + Date.now(), { cache: 'no-cache' });
     if (!r.ok) return;
     const remote = await r.json();
     const local = chrome.runtime.getManifest().version;
     if (remote.version && remote.version !== local) {
-      console.log('[UB][bg] new version', remote.version, 'local', local, '(restart chrome to apply)');
+      console.log('[UB][bg] new shell version', remote.version, 'local', local, '(program sync → restart to apply)');
+      // 프로그램(ExtSync)에 즉시 동기화 트리거 — 20분 타이머를 기다리지 않고 폴더를 갱신.
+      // SW 는 웹페이지가 아니라 PNA/CORS 면제. 실패해도 무해(프로그램 타이머가 결국 처리).
+      try { fetch('http://127.0.0.1:17600/ext/sync').catch(() => {}); } catch (_) {}
       try { chrome.action.setBadgeText({ text: 'NEW' }); } catch (_) {}
       try { chrome.action.setBadgeBackgroundColor({ color: '#35C5F0' }); } catch (_) {}
 
-      // v3.1.4: 데스크톱 알림 — 이미 같은 버전으로 알린 적 있으면 skip(스팸 방지).
-      // ubUpdateNotifiedVer 에 마지막 알림 버전 저장 → 새 버전 나올 때마다 1회.
+      // 데스크톱 알림 — 같은 버전으로 이미 알렸으면 skip(스팸 방지).
       chrome.storage.local.get({ ubUpdateNotifiedVer: '' }, (s) => {
         try {
           chrome.storage.local.set({ ubUpdateAvailable: remote.version });
@@ -256,7 +258,7 @@ async function checkUpdate() {
               type: 'basic',
               iconUrl: 'icons/icon128.png',
               title: '유비샵 확장 새 버전 v' + remote.version,
-              message: '확장 아이콘 클릭 → [지금 확장 프로그램 다시 로드] 로 적용하세요.',
+              message: '자동 동기화됨. 브라우저를 완전히 껐다 켜면 적용됩니다.',
               priority: 2,
               requireInteraction: true
             }, () => { void chrome.runtime.lastError; });

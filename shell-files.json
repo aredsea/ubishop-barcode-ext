@@ -15,7 +15,7 @@
     },
     {
       "path": "src/background.js",
-      "sha256": "7493221e0dc823e85180c9bdaa746a479783307943db643bb4982020a87d1804"
+      "sha256": "82c291da9357cc96e2e055635f09a4fee47ced406cb89cc8c52100334e345e3d"
     },
     {
       "path": "src/skin.js",
