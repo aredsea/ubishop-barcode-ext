@@ -28,6 +28,19 @@
   const log = (...a) => { try { console.log(TAG, ...a); } catch (_) {} };
   const PRICE_MIN = 50000;
   const FETCH_PS = 500;
+  const PAGE = IS_ORDER ? {
+    lookup: buildLookup,
+    joinKeyOf: (dRaw, prod, ss) => joinKey(dRaw, prod.barcode, ss.store, ss.staff),
+    supLabel: '예상총공급가', priceLabel: '주문가',
+    title: '주문 통계', subT: '예상총공급가=상품집계 · 직원·주문가=주문전표',
+    staffColLabel: '주문직원', dateCol: /주문일/, xlsxName: orderXlsxName
+  } : {
+    lookup: buildSaleLookup,
+    joinKeyOf: (dRaw, _prod, ss) => joinKey(dRaw, '', ss.store, ss.staff),
+    supLabel: '총공급가', priceLabel: '실판매가',
+    title: '판매 통계', subT: '공급가·실판매가=상품집계 · 판매직원=매출전표',
+    staffColLabel: '판매직원', dateCol: /판매일/, xlsxName: saleXlsxName
+  };
 
   /* ---------- 숫자/문자 유틸 ---------- */
   // 셀에 두 줄로 숫자가 겹쳐 들어오는 경우가 있어 "첫 번째 숫자"만 취한다.
@@ -320,7 +333,7 @@
         const ss = splitStoreStaff(g.cStore >= 0 && r.cells[g.cStore] ? r.cells[g.cStore].textContent : '');
         const dRaw = g.cDate >= 0 && r.cells[g.cDate] ? r.cells[g.cDate].textContent.replace(/\s+/g, '') : '';
         const price = g.cPrice >= 0 ? firstNum(r.cells[g.cPrice] && r.cells[g.cPrice].textContent) : 0;
-        const k = joinKey(dRaw.slice(0, 8), prod.barcode, ss.store, prod.customer);
+        const k = PAGE.joinKeyOf(dRaw.slice(0, 8), prod, { store: ss.store, staff: prod.customer });
         if (!map.has(k)) map.set(k, { staff: ss.staff, price });
       }
     }
@@ -330,7 +343,7 @@
   }
   // 상품집계(primary) 전체 로드 → 주문전표 lookup 으로 직원·주문가 조인.
   async function orderLoadAll(setStatus) {
-    const { map: lookup, total: orderTotal } = await buildLookup(setStatus);
+    const { map: lookup, total: orderTotal } = await PAGE.lookup(setStatus);
     const fp = formParams();
     if (!fp) throw new Error('검색폼(form1)을 찾지 못했습니다');
     const total = readTotal();
@@ -351,7 +364,7 @@
         const ss = splitStoreStaff(g.cStore >= 0 && r.cells[g.cStore] ? r.cells[g.cStore].textContent : '');
         const store = ss.store, customer = ss.staff;   // 상품집계: 괄호 안 = 고객
         const dRaw = g.cDate >= 0 && r.cells[g.cDate] ? r.cells[g.cDate].textContent.replace(/\s+/g, '') : '';
-        const hit = lookup.get(joinKey(dRaw, prod.barcode, store, customer));
+        const hit = lookup.get(PAGE.joinKeyOf(dRaw, prod, ss));
         if (hit) matched++;
         items.push({
           date: dRaw, code: prod.barcode, name: prod.name, store, customer,
@@ -365,6 +378,144 @@
     }
     log('조인', matched + '/' + items.length);
     return { items, total, orderTotal, matched };
+  }
+
+  /* ---------- 매장매출전표 lookup(판매직원) ---------- */
+  function saleParams() {
+    const f = document.querySelector('form[name="form1"]');
+    if (!f) return null;
+    const g = n => { const el = f.elements[n]; return el ? (el.value == null ? '' : el.value) : ''; };
+    const p = new URLSearchParams();
+    ['syear', 'smonth', 'sday', 'eyear', 'emonth', 'eday'].forEach(n => p.set(n, g(n)));
+    p.set('tcode', 'client_pay_jun');
+    return p;
+  }
+  function parseSaleJunDoc(doc) {
+    for (const t of doc.querySelectorAll('table.t_list')) {
+      let hi = -1, cells = null;
+      for (const r of t.rows) {
+        const cs = [...r.cells].map(c => c.textContent.replace(/\s+/g, ' ').trim());
+        if (cs.some(c => /매출장번호|거래구분/.test(c))) { hi = r.rowIndex; cells = cs; break; }
+      }
+      if (hi < 0) continue;
+      const rows = [];
+      for (let i = hi + 1; i < t.rows.length; i++) {
+        const r = t.rows[i];
+        if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
+        rows.push(r);
+      }
+      return {
+        rows,
+        cStore: findCol(cells, [/매장명/]),
+        cCustomer: findCol(cells, [/고객명/]),
+        cKind: findCol(cells, [/거래구분/]),
+        cStaff: findCol(cells, [/담당자/])
+      };
+    }
+    return null;
+  }
+  async function buildSaleLookup(setStatus) {
+    const ckey = 'sale|' + orderDateKey();
+    if (_lookupCache.has(ckey)) return _lookupCache.get(ckey);
+    const p0 = saleParams();
+    if (!p0) return { map: new Map(), total: 0 };
+    const action = location.origin + '/jun/clientpay/clientPayJunList.do?tcode=client_pay_jun';
+    const map = new Map();
+    let total = 0, pages = 1;
+    for (let p = 1; p <= pages; p++) {
+      if (setStatus) setStatus(p === 1 ? '매장매출전표 불러오는 중…' : `매장매출전표 ${total}건… (${p}/${pages})`);
+      const params = new URLSearchParams(p0);
+      params.set('pageSize', String(FETCH_PS));
+      params.set('reqPage', String(p));
+      const html = await fetchHtml(action, params);
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      if (p === 1) { total = readTotalDoc(doc); pages = total > 0 ? Math.ceil(total / FETCH_PS) : 1; }
+      const g = parseSaleJunDoc(doc);
+      if (!g) break;
+      for (const r of g.rows) {
+        const kind = g.cKind >= 0 && r.cells[g.cKind] ? r.cells[g.cKind].textContent : '';
+        if (!/상품판매/.test(kind)) continue;
+        const storeRaw = g.cStore >= 0 && r.cells[g.cStore] ? r.cells[g.cStore].textContent.replace(/\s+/g, ' ').trim() : '';
+        const sd = storeRaw.match(/^(.+?)(\d{2}-\d{2}-\d{2})/);
+        if (!sd) continue;
+        const customerRaw = g.cCustomer >= 0 && r.cells[g.cCustomer] ? r.cells[g.cCustomer].textContent : '';
+        const customer = customerRaw.split('(')[0].trim();
+        const staffCell = g.cStaff >= 0 ? r.cells[g.cStaff] : r.cells[r.cells.length - 1];
+        const staff = staffCell ? staffCell.textContent.trim() : '';
+        const k = PAGE.joinKeyOf(sd[2], { barcode: '' }, { store: sd[1].trim(), staff: customer });
+        if (staff && !map.has(k)) map.set(k, { staff });
+      }
+    }
+    const res = { map, total };
+    _lookupCache.set(ckey, res);
+    return res;
+  }
+
+  /* ---------- 판매 상품집계 + 매장매출전표 직원 조인 ---------- */
+  function parseSheetSaleDoc(doc) {
+    for (const t of doc.querySelectorAll('table.t_list')) {
+      let hi = -1, cells = null;
+      for (const r of t.rows) {
+        const cs = [...r.cells].map(c => c.textContent.replace(/\s+/g, ' ').trim());
+        if (cs.some(c => /수량/.test(c))) { hi = r.rowIndex; cells = cs; break; }
+      }
+      if (hi < 0) continue;
+      const rows = [];
+      for (let i = hi + 1; i < t.rows.length; i++) {
+        const r = t.rows[i];
+        if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
+        rows.push(r);
+      }
+      return {
+        rows,
+        cDate: findCol(cells, [/판매일/]),
+        cProd: findCol(cells, [/바코드/, /상품번호/]),
+        cStore: findCol(cells, [/매장명/]),
+        cQty: findCol(cells, [/수량/]),
+        cSup: findCol(cells, [/^총공급가$/]),
+        cSale: findCol(cells, [/^판매가$/]),
+        cPrice: findCol(cells, [/실판매가/])
+      };
+    }
+    return null;
+  }
+  async function saleLoadAll(setStatus) {
+    const { map: lookup, total: saleTotal } = await PAGE.lookup(setStatus);
+    const fp = formParams();
+    if (!fp) throw new Error('검색폼(form1)을 찾지 못했습니다');
+    const total = readTotal();
+    const pages = total > 0 ? Math.ceil(total / FETCH_PS) : 1;
+    const action = location.origin + '/statis/sheet/saleitem/sheetStatisList.do?tcode=statis_sheet_barcode';
+    const items = [];
+    let matched = 0;
+    for (let p = 1; p <= pages; p++) {
+      setStatus(`상품집계 ${total}건 불러오는 중… (${p}/${pages})`);
+      const params = new URLSearchParams(fp.params);
+      params.set('tcode', 'statis_sheet_barcode');
+      params.set('pageSize', String(FETCH_PS));
+      params.set('reqPage', String(p));
+      const html = await fetchHtml(action, params);
+      const g = parseSheetSaleDoc(new DOMParser().parseFromString(html, 'text/html'));
+      if (!g) throw new Error('상품집계 표(t_list)를 파싱하지 못했습니다 (로그인 만료?)');
+      for (const r of g.rows) {
+        const prod = splitSheetProd(g.cProd >= 0 && r.cells[g.cProd] ? r.cells[g.cProd].textContent : '');
+        const ss = splitStoreStaff(g.cStore >= 0 && r.cells[g.cStore] ? r.cells[g.cStore].textContent : '');
+        const store = ss.store, customer = ss.staff;
+        const dRaw = g.cDate >= 0 && r.cells[g.cDate] ? r.cells[g.cDate].textContent.replace(/\s+/g, '') : '';
+        const hit = lookup.get(PAGE.joinKeyOf(dRaw, prod, ss));
+        if (hit) matched++;
+        items.push({
+          date: dRaw, code: prod.barcode, name: prod.name, store, customer,
+          qty: firstNum(r.cells[g.cQty] && r.cells[g.cQty].textContent),
+          supExp: g.cSup >= 0 ? firstNum(r.cells[g.cSup] && r.cells[g.cSup].textContent) : 0,
+          saleExp: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0,
+          price: g.cPrice >= 0 ? firstNum(r.cells[g.cPrice] && r.cells[g.cPrice].textContent) : 0,
+          staff: hit ? hit.staff : '(미지정)'
+        });
+      }
+    }
+    log('조인', matched + '/' + items.length);
+    return { items, total, saleTotal, matched };
   }
 
   /* ---------- 수기 보정 매핑 ----------
@@ -439,7 +590,7 @@
     if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
     return { name, type };
   }
-  // 라인단위 예상총공급가 단가(예상총공급가/수량) 범위 필터: min 이하·max 이상 제외(0=무제한).
+  // 라인단위 공급가 단가(공급가/수량) 범위 필터: min 이하·max 이상 제외(0=무제한).
   function thresholdFilter(items, min, max) {
     const lo = min > 0 ? min : 0, hi = max > 0 ? max : 0;
     if (!lo && !hi) return items;
@@ -450,7 +601,7 @@
       return true;
     });
   }
-  /* ---------- 그룹핑(제품별): 사은품만 제외, 수량/예상총공급가/예상판매가/주문가 합산 ---------- */
+  /* ---------- 그룹핑(제품별): 수량/공급가/판매가 합산 ---------- */
   function buildOrderGroups(items) {
     const map = new Map();
     let gift = 0;
@@ -570,6 +721,13 @@
     const e = `${g('eyear')}${g('emonth')}${g('eday')}`;
     return (s && e) ? `주문통계_${s}-${e}.xlsx` : '주문통계.xlsx';
   }
+  function saleXlsxName() {
+    const f = document.querySelector('form[name="form1"]');
+    const g = n => { const el = f && f.elements[n]; return el ? el.value : ''; };
+    const s = `${g('syear')}${g('smonth')}${g('sday')}`;
+    const e = `${g('eyear')}${g('emonth')}${g('eday')}`;
+    return (s && e) ? `판매통계_${s}-${e}.xlsx` : '판매통계.xlsx';
+  }
 
   /* ---------- 통계 오버레이 ---------- */
   function ensureStyle() {
@@ -617,13 +775,13 @@
     ].join('');
     (document.head || document.documentElement).appendChild(s);
   }
-  // 주문 오버레이 전용 스타일(판매탭에서 쓰지 않는 클래스만 추가 → 판매 경로 영향 없음)
+  // 직원별/제품별 오버레이 전용 스타일(orderitem·saleitem 공용).
   function ensureOrderStyle() {
     if (document.getElementById('ub-ostat-style')) return;
     const s = document.createElement('style');
     s.id = 'ub-ostat-style';
     s.textContent = [
-      // 주문 모달은 더 크게(판매탭 공유 #ub-stat 은 미변경, 클래스로만 오버라이드)
+      // 직원별/제품별 모달은 더 크게(기본 #ub-stat 은 미변경, 클래스로만 오버라이드)
       '#ub-stat.ub-o-wide{inset:2%;}',
       '#ub-stat .hd .sub-t{font-size:11.5px;color:#8a97a3;font-weight:600;margin-left:-6px;}',
       // 뷰 토글(직원별/제품별) 세그먼트
@@ -749,9 +907,9 @@
     log('통계 렌더', { groups: allGroups.length, excluded: result.excluded, kept: result.kept });
   }
 
-  /* ---------- 주문 통계 오버레이(renderOrder) ---------- */
+  /* ---------- 직원별/제품별 통계 오버레이(renderOrder) ---------- */
   //  기본 뷰 = 직원별(직원 → 그 직원 계약 제품). 제품별 토글 제공.
-  //  예상총공급가(원가)=상품집계, 직원·주문가=주문전표 조인. 임계값(예상총공급가/수량) 이하 라인 숨김.
+  //  공급가·판매가는 상품집계/PAGE 설정에 따르고 직원은 전표 조인. 임계값(공급가/수량) 이하 라인 숨김.
   function renderOrder(items, meta) {
     ensureStyle();
     ensureOrderStyle();
@@ -768,15 +926,15 @@
     let view = 'staff';               // 'staff'(직원별, 기본) | 'product'(제품별)
     let typeFilter = 'all';
     let nameQuery = '';
-    let thrMin = 0, thrMax = 0;       // 예상총공급가 단가(원가/수량) 범위. 이하·이상 숨김(0=무제한)
+    let thrMin = 0, thrMax = 0;       // 공급가 단가(공급가/수량) 범위. 이하·이상 숨김(0=무제한)
     let prodGroups = [];              // 매장∩직원∩임계값 라인 → 제품별 그룹
     let staffGroups = [];             // 동일 라인 → 직원별 그룹
     let lastGift = 0;
 
     box.innerHTML =
       '<div class="hd">' +
-        '<span class="t">주문 통계</span>' +
-        '<span class="sub-t">예상총공급가=상품집계 · 직원·주문가=주문전표</span>' +
+        '<span class="t">' + esc(PAGE.title) + '</span>' +
+        '<span class="sub-t">' + esc(PAGE.subT) + '</span>' +
         '<span class="vbtns">' +
           '<button class="vbtn on" data-v="staff">직원별</button>' +
           '<button class="vbtn" data-v="product">제품별</button>' +
@@ -797,7 +955,7 @@
           '<span class="ofl-chips" id="ub-o-staffs"></span></div>' +
         '<div class="ofl-row2">' +
           '<input type="text" id="ub-o-search" class="ofl-search" placeholder="상품명으로 검색…">' +
-          '<span class="ofl-thr">예상총공급가 <input type="number" id="ub-o-thr-min" min="0" step="1000" value="0"> <span class="u">원 이하 ·</span> <input type="number" id="ub-o-thr-max" min="0" step="1000" value="0"> <span class="u">원 이상 숨김</span></span>' +
+          '<span class="ofl-thr">' + esc(PAGE.supLabel) + ' <input type="number" id="ub-o-thr-min" min="0" step="1000" value="0"> <span class="u">원 이하 ·</span> <input type="number" id="ub-o-thr-max" min="0" step="1000" value="0"> <span class="u">원 이상 숨김</span></span>' +
         '</div>' +
         '<div class="ofl-row"><span class="sum" id="ub-stat-sum"></span></div>' +
       '</div>' +
@@ -859,11 +1017,11 @@
           '</tr>').join('');
         rows += '<tr class="det" style="display:none"><td></td><td colspan="5">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">제품명</th><th>수량</th><th>예상총공급가</th><th>주문가</th><th class="l">매장</th>' +
+          '<th class="l">제품명</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th><th class="l">매장</th>' +
           `</tr></thead><tbody>${pr}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총예상총공급가</th><th>총주문가</th><th>제품수</th>' +
+        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th><th>제품수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       bindExpanders();
     }
@@ -897,11 +1055,11 @@
           '</tr>').join('');
         rows += '<tr class="det" style="display:none"><td></td><td colspan="7">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>예상총공급가</th><th>주문가</th><th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
+          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th><th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
           `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총예상총공급가</th><th>총주문가</th><th>코드수</th>' +
+        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th><th>코드수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       // 개별 ON/OFF 체크박스 배선(합계·XLSX 제외) — 제품별 뷰 전용, 현행 유지
       const allCb = bd.querySelector('#ub-o-all');
@@ -947,13 +1105,13 @@
         const q = list.reduce((a, s) => a + s.qty, 0);
         const sup = list.reduce((a, s) => a + s.supExp, 0);
         const pr = list.reduce((a, s) => a + s.price, 0);
-        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 기간 ${meta}`;
+        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원 · 기간 ${meta}`;
       } else {
         const c = countedProducts();
         const q = c.reduce((a, g) => a + g.qty, 0);
         const sup = c.reduce((a, g) => a + g.supExp, 0);
         const pr = c.reduce((a, g) => a + g.price, 0);
-        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총예상총공급가 ${nf(sup)}원 · 총주문가 ${nf(pr)}원 · 기간 ${meta}`;
+        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원 · 기간 ${meta}`;
       }
     }
 
@@ -1015,18 +1173,18 @@
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
       let aoa;
       if (view === 'staff') {
-        aoa = [['순위', '직원', '총수량', '총예상총공급가', '총주문가', '제품수']];
+        aoa = [['순위', '직원', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '제품수']];
         staffDisplay().forEach((s, i) => aoa.push([i + 1, s.staff, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length]));
       } else {
-        aoa = [['순위', '제품명', '구분', '총수량', '총예상총공급가', '총주문가', '코드수']];
+        aoa = [['순위', '제품명', '구분', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '코드수']];
         countedProducts().forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.supExp), Math.round(g.price), g.members.length]));
       }
-      downloadXlsx(aoa, orderXlsxName());
-      log('주문 xlsx 저장', orderXlsxName(), aoa.length - 1, '행', 'view=' + view);
+      downloadXlsx(aoa, PAGE.xlsxName());
+      log(PAGE.title.replace(' 통계', '') + ' xlsx 저장', PAGE.xlsxName(), aoa.length - 1, '행', 'view=' + view);
     });
 
     recompute();
-    log('주문 통계 렌더', { items: items.length, stores: stores.length, staffs: staffs.length, products: prodGroups.length, staff: staffGroups.length });
+    log(PAGE.title + ' 렌더', { items: items.length, stores: stores.length, staffs: staffs.length, products: prodGroups.length, staff: staffGroups.length });
   }
 
   /* ---------- 버튼 ---------- */
@@ -1044,10 +1202,9 @@
         const meta = `${g('syear')}-${g('smonth')}-${g('sday')} ~ ${g('eyear')}-${g('emonth')}-${g('eday')} (집계 ${total}건 · 전표조인 ${matched}/${items.length}, 전표 ${orderTotal}건)`;
         renderOrder(items, meta);
       } else {
-        const { items, total } = await loadAll(setStatus);
-        const result = buildGroups(items);
-        const meta = `${g('syear')}-${g('smonth')}-${g('sday')} ~ ${g('eyear')}-${g('emonth')}-${g('eday')} (원본 ${total}건)`;
-        render(result, meta);
+        const { items, total, saleTotal, matched } = await saleLoadAll(setStatus);
+        const meta = `${g('syear')}-${g('smonth')}-${g('sday')} ~ ${g('eyear')}-${g('emonth')}-${g('eday')} (집계 ${total}건 · 매출전표조인 ${matched}/${items.length}, 전표 ${saleTotal}건)`;
+        renderOrder(items, meta);
       }
     } catch (e) {
       log('실패', e);
@@ -1064,7 +1221,7 @@
     b.id = 'ub-stat-btn';
     b.type = 'button';
     b.textContent = '제품별 통계화';
-    b.title = IS_ORDER ? '직원별/제품별 주문 통계(상품집계+주문전표 조인)' : '단가 5만원 초과 제품을 제품별로 묶어 판매 통계 + 엑셀 다운로드';
+    b.title = IS_ORDER ? '직원별/제품별 주문 통계(상품집계+주문전표 조인)' : '직원별/제품별 판매 통계(상품집계+매장매출전표 조인)';
     b.style.cssText = 'margin-left:6px;padding:3px 12px;background:#35C5F0;color:#fff;border:0;border-radius:6px;' +
       'font:700 12px/1.5 Pretendard,sans-serif;cursor:pointer;vertical-align:middle;';
     b.addEventListener('click', () => runStats(b));
@@ -1073,9 +1230,8 @@
     log('통계화 버튼 추가');
   }
 
-  /* ---------- #4 페이지 결과표에 '직원' 열 자동 주입(IS_ORDER 전용) ---------- */
-  //  상품집계 주문탭 결과표 리디자인(2026) + 직원열(전표 조인) + 직원별 보기 그룹핑.
-  //  전부 statis.js(loader)라 push 로 반영. IS_ORDER 에서만. 로컬 목업으로 디자인 검증 완료.
+  /* ---------- #4 페이지 결과표에 '직원' 열 자동 주입 ---------- */
+  //  상품집계 결과표 리디자인(2026) + 직원열(전표 조인) + 직원별 보기 그룹핑.
   let _injecting = false, _injTimer = 0, _mo = null, _groupOn = false;
   function ensureOrderTableStyle() {
     if (document.getElementById('ub-otbl-style')) return;
@@ -1133,7 +1289,7 @@
       const g = document.createElement('tr');
       g.className = 'ubm-grp';
       g.innerHTML = '<td colspan="' + colspan + '">● ' + esc(s) + ' <span class="cnt">' + list.length + '건</span>' +
-        (cSup >= 0 ? '<span class="sub">예상총공급가 ' + Math.round(sup).toLocaleString('ko-KR') + '원</span>' : '') + '</td>';
+        (cSup >= 0 ? '<span class="sub">' + esc(PAGE.supLabel) + ' ' + Math.round(sup).toLocaleString('ko-KR') + '원</span>' : '') + '</td>';
       tb.appendChild(g);
       list.forEach(r => tb.appendChild(r));
     });
@@ -1163,10 +1319,10 @@
     }
     if (!table || !headRow) return;
     table.classList.add('ubm');
-    const cDate = findCol(cells, [/주문일/]);
+    const cDate = findCol(cells, [PAGE.dateCol]);
     const cProd = findCol(cells, [/바코드/, /상품번호/]);
     const cStore = findCol(cells, [/매장명/]);
-    const cSup = findCol(cells, [/예상총공급가/, /총공급가/]);
+    const cSup = findCol(cells, [new RegExp(PAGE.supLabel), /총공급가/]);
     // 데이터행: ubm-row 부여 + 인라인 hover 제거(CSS hover 적용) + 원본순서 기록
     let ord = 0;
     for (const r of table.rows) {
@@ -1179,12 +1335,12 @@
     // 직원열(전표 조인) — lookup 있으면
     if (cProd >= 0 && cStore >= 0) {
       let lookup = null;
-      try { lookup = (await buildLookup(null)).map; } catch (_) {}
+      try { lookup = (await PAGE.lookup(null)).map; } catch (_) {}
       if (lookup && lookup.size) {
         if (!headRow.querySelector('th.ub-staff-h')) {
           const th = document.createElement('th');
           th.className = 'ub-staff-h';
-          th.textContent = '주문직원';
+          th.textContent = PAGE.staffColLabel;
           headRow.appendChild(th);
         }
         for (const r of table.querySelectorAll('tr.ubm-row')) {
@@ -1192,7 +1348,7 @@
           const prod = splitSheetProd(r.cells[cProd] ? r.cells[cProd].textContent : '');
           const ss = splitStoreStaff(r.cells[cStore] ? r.cells[cStore].textContent : '');
           const dRaw = cDate >= 0 && r.cells[cDate] ? r.cells[cDate].textContent.replace(/\s+/g, '') : '';
-          const hit = lookup.get(joinKey(dRaw, prod.barcode, ss.store, ss.staff));   // 괄호 안 = 고객
+          const hit = lookup.get(PAGE.joinKeyOf(dRaw, prod, ss));   // 괄호 안 = 고객
           const td = document.createElement('td');
           td.className = 'ub-staff-c';
           const sp = document.createElement('span');
@@ -1226,7 +1382,7 @@
 
   function init() {
     addButton();
-    if (IS_ORDER) initStaffColumn();
+    initStaffColumn();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
