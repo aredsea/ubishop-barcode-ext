@@ -119,6 +119,37 @@
   const listEl = $('acct-list'), formEl = $('acct-form');
   if (!listEl) return;
 
+  const failureText = {
+    login_reappeared: '로그인 실패 — 비밀번호 확인',
+    captcha: '캡차 — 직접 입력',
+    nav_timeout: '시간 초과 — 다시 시도',
+    probe_timeout: '시간 초과 — 다시 시도',
+    ambiguous_page: '페이지 상태 불명',
+    wrong_account: '다른 계정으로 로그인됨',
+    max_attempts: '전환 반복 초과',
+    decrypt_fail: '계정 정보 복호화 실패'
+  };
+  const terminalText = {
+    unrelated_host: '다른 페이지로 이동되어 전환 중단',
+    flow_deadline: '시간 초과 — 다시 시도',
+    account_missing: '계정 정보를 찾을 수 없음'
+  };
+  const statusEl = document.createElement('div');
+  statusEl.setAttribute('role', 'status');
+  statusEl.style.cssText = 'display:none;margin:0 0 8px;padding:8px 10px;background:#fff3f3;color:#b42318;border:1px solid #f0b4b4;border-radius:8px;font-size:11px;font-weight:700;line-height:1.4;';
+  listEl.parentNode.insertBefore(statusEl, listEl);
+
+  async function renderFlowStatus() {
+    try {
+      const { ubLoginFlow } = await chrome.storage.local.get('ubLoginFlow');
+      const text = ubLoginFlow && !ubLoginFlow.active &&
+        (failureText[ubLoginFlow.lastFailureCode] || terminalText[ubLoginFlow.terminalReason]);
+      if (!text) return;
+      statusEl.textContent = text;
+      statusEl.style.display = 'block';
+    } catch (_) {}
+  }
+
   // autologin.js 와 동일한 키 파생(AES-GCM). 소금은 최초 1회 생성해 저장.
   async function vaultKey() {
     let g = await chrome.storage.local.get('ubLoginSalt');
@@ -209,5 +240,6 @@
   });
   $('acct-save').addEventListener('click', add);
   $('acct-cancel').addEventListener('click', () => { formEl.style.display = 'none'; });
+  renderFlowStatus();
   renderList();
 })();

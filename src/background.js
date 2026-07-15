@@ -1,3 +1,5 @@
+importScripts('fsm.js');
+
 /* =============================================================================
  *  background.js — MV3 서비스워커.
  *  ① 로컬 인쇄 프로그램 fetch 전담 (PNA 우회).
@@ -304,7 +306,7 @@ try {
  *  탭 로딩 완료(onUpdated complete)를 신호로 단계 전진. 상태는 storage(ubLoginFlow).
  * ========================================================================== */
 const UB_LOGIN_URL = 'https://www.honsu114.com/mall/login.ubs';
-const UB_HOME_URL = 'https://www.honsu114.com/';
+const UB_WATCHDOG = 'ubWatchdog';
 const ubLog = (...a) => { try { console.log('[UB][login]', ...a); } catch (_) {} };
 
 /* ---- MAIN world 주입 함수(직렬화되어 페이지에서 실행, 외부변수 사용불가) ---- */
@@ -317,13 +319,14 @@ function UB_PROBE() {
     return /로그아웃|logout/i.test(t) || /logout|logoff|signout/i.test(h);
   });
   const pms = q('a.pms') || q('a[href*="pamasLogin.do" i]');
+  const onPms = /(^|\.)ubshop\.biz$/i.test(location.hostname);
   const captcha = vis(q('iframe[src*="recaptcha"]')) || vis(q('.g-recaptcha')) || vis(q('input[name="sysUser.fcaptcha"]'));
   // 로그인된 홈의 현재 계정 표시(li.user "쇼핑몰 님" 등) → "님" 접미사·중복공백 제거.
   // PMS 관리자 화면 등 표시 요소가 없으면 '' (비교 불가로 안전하게 일반 진행).
   const u = q('li.user') || q('.user');
   const loginName = u ? (u.textContent || '').replace(/\s*님\s*$/, '').replace(/\s+/g, ' ').trim() : '';
   return { url: location.href, host: location.hostname, path: location.pathname,
-    hasForm: !!(pw && pw.form), hasLogout: !!logout, hasPms: !!pms, pmsHref: pms ? pms.href : null, captcha: !!captcha, loginName };
+    hasForm: !!(pw && pw.form), hasLogout: !!logout, hasPms: onPms, pmsHref: pms ? pms.href : null, captcha: !!captcha, loginName, ambiguous: false };
 }
 function UB_DO_LOGOUT() {
   try { if (typeof link === 'function') { link('logout'); return { via: 'link' }; } } catch (e) {}
@@ -355,11 +358,10 @@ async function ubExec(tabId, func, args) {
   try {
     const res = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args: args || [] });
     return res && res[0] ? res[0].result : null;
-  } catch (e) { ubLog('exec 실패', e && e.message); return null; }
+  } catch (_) { ubLog('exec 실패'); return null; }
 }
 const ubGetFlow = async () => (await chrome.storage.local.get('ubLoginFlow')).ubLoginFlow;
 const ubSetFlow = (f) => chrome.storage.local.set({ ubLoginFlow: f });
-const ubEndFlow = () => chrome.storage.local.remove('ubLoginFlow');
 // 표시명 비교용 정규화(공백 접기·소문자화). loginName 저장/비교에 공통 사용.
 const ubNormName = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
 // 대상 계정의 loginName 필드를 갱신해 저장(실패해도 흐름은 계속).
@@ -367,7 +369,7 @@ async function ubSaveLoginName(accountId, loginName) {
   try {
     const { ubAccounts } = await chrome.storage.local.get('ubAccounts');
     const list = ubAccounts || [];
-    const acc = list.find(a => a.id === accountId);
+    const acc = list.find(a => a.id === accountId || ubNormName(a.loginName || a.userid) === ubNormName(accountId));
     if (!acc || acc.loginName === loginName) return;
     acc.loginName = loginName;
     await chrome.storage.local.set({ ubAccounts: list });
@@ -382,90 +384,223 @@ async function ubVaultKey() {
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
     base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
 }
-async function ubAccount(id) { const { ubAccounts } = await chrome.storage.local.get('ubAccounts'); return (ubAccounts || []).find(a => a.id === id); }
+async function ubAccount(id) {
+  const { ubAccounts } = await chrome.storage.local.get('ubAccounts');
+  return (ubAccounts || []).find(a => a.id === id || ubNormName(a.loginName || a.userid) === ubNormName(id));
+}
 async function ubDecrypt(acc) {
   const key = await ubVaultKey(); if (!key) throw new Error('no key');
   const o = acc.pwEnc; const iv = Uint8Array.from(atob(o.iv), c => c.charCodeAt(0)); const ct = Uint8Array.from(atob(o.ct), c => c.charCodeAt(0));
   return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct));
 }
 
-/* ---- 단계 진행 ---- */
-async function ubStep(tabId) {
-  const flow = await ubGetFlow();
-  if (!flow || !flow.active || flow.tabId !== tabId) return;
-  flow.tries = (flow.tries || 0) + 1;
-  if (flow.tries > 12) { ubLog('반복 초과 — 중단'); await ubEndFlow(); return; }
+/* ---- 관측 기반 단계 진행 ---- */
+const _ubLastStep = {};
+const _ubStepInFlight = {};
+let _ubActiveFlowId = null;
+
+function ubArmWatchdog() {
+  try { chrome.alarms.create(UB_WATCHDOG, { delayInMinutes: 0.5 }); } catch (_) {}
+}
+
+function ubClearWatchdog() {
+  try { chrome.alarms.clear(UB_WATCHDOG); } catch (_) {}
+}
+
+function ubFlowId(now) {
+  return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : now + '-' + Math.random().toString(36).slice(2);
+}
+
+function ubObservedPage(probe) {
+  let url = '';
+  try { const u = new URL(probe.url); url = u.origin + u.pathname; } catch (_) {}
+  return {
+    url,
+    host: probe.host,
+    signals: {
+      hasForm: probe.hasForm,
+      hasLogout: probe.hasLogout,
+      hasPms: probe.hasPms,
+      captcha: probe.captcha,
+      ambiguous: probe.ambiguous
+    }
+  };
+}
+
+function ubTransition(flow, decision, now) {
+  const from = flow.phase;
+  if (['logout', 'navigateLogin', 'fillLogin', 'navigatePms'].includes(decision.action)) {
+    flow.attempts[from] = (flow.attempts[from] || 0) + 1;
+  }
+  if (decision.setSubmittedFor) flow.submittedFor = decision.setSubmittedFor;
+  if (decision.nextPhase && decision.nextPhase !== from) {
+    flow.phase = decision.nextPhase;
+    flow.enteredAt = now;
+  }
+  flow.lastTransition = { from, to: flow.phase, at: now, reason: decision.action };
+}
+
+async function ubTerminal(flow, phase, failureCode, terminalReason, now) {
+  if (_ubActiveFlowId && _ubActiveFlowId !== flow.flowId) return;
+  const from = flow.phase;
+  flow.active = false;
+  flow.phase = phase;
+  flow.enteredAt = now;
+  flow.lastFailureCode = failureCode || null;
+  flow.terminalReason = terminalReason || failureCode || 'completed';
+  flow.lastTransition = { from, to: phase, at: now, reason: flow.terminalReason };
   await ubSetFlow(flow);
+  ubClearWatchdog();
+}
 
-  const p = await ubExec(tabId, UB_PROBE);
-  if (!p) return;   // 페이지 준비 전 — 다음 complete 에 재시도
-  ubLog('감지', p.host, JSON.stringify({ form: p.hasForm, logout: p.hasLogout, pms: p.hasPms, cap: p.captcha }), 'phase=' + flow.phase);
+async function ubForeignProbe(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const u = new URL(tab && tab.url || '');
+    if (/(^|\.)(ubshop\.biz|honsu114\.com)$/i.test(u.hostname)) return null;
+    return normalizeProbe({
+      host: u.hostname, url: u.href, path: u.pathname,
+      hasForm: false, hasLogout: false, hasPms: false, pmsHref: null,
+      captcha: false, loginName: '', ambiguous: false
+    });
+  } catch (_) { return null; }
+}
 
-  // A) 로그인 폼
-  if (p.hasForm) {
-    if (p.captcha) { ubLog('캡차 표시 → 중단(비번 확인/캡차 직접 입력)'); await ubExec(tabId, UB_FOCUS_CAPTCHA); await ubEndFlow(); return; }
-    if (flow.phase === 'submitted') { ubLog('로그인 폼 재표시 → 실패로 판단, 중단'); await ubEndFlow(); return; }
+async function ubUpgradeFlow(flow) {
+  if (flow.flowId && flow.attempts && Number.isFinite(flow.enteredAt) && Number.isFinite(flow.startedAt)) return flow;
+  const now = Date.now();
+  const legacyPhase = { loggingout: 'loggingOut', tologin: 'toLogin' };
+  flow.phase = legacyPhase[flow.phase] || flow.phase;
+  flow.flowId = flow.flowId || ubFlowId(now);
+  flow.enteredAt = Number.isFinite(flow.enteredAt) ? flow.enteredAt : now;
+  flow.startedAt = Number.isFinite(flow.startedAt) ? flow.startedAt : flow.enteredAt;
+  flow.attempts = flow.attempts || {};
+  const acc = await ubAccount(flow.accountId);
+  if (_ubActiveFlowId && _ubActiveFlowId !== flow.flowId) return null;
+  if (acc) {
+    flow.accountId = acc.userid;
+    flow.targetLoginName = acc.loginName || null;
+  }
+  if (flow.submittedFor == null) flow.submittedFor = flow.phase === 'submitted' ? flow.accountId : null;
+  if (!Object.prototype.hasOwnProperty.call(flow, 'lastObservedPage')) flow.lastObservedPage = null;
+  if (!Object.prototype.hasOwnProperty.call(flow, 'lastTransition')) flow.lastTransition = null;
+  if (!Object.prototype.hasOwnProperty.call(flow, 'lastFailureCode')) flow.lastFailureCode = null;
+  if (!Object.prototype.hasOwnProperty.call(flow, 'terminalReason')) flow.terminalReason = null;
+  await ubSetFlow(flow);
+  return flow;
+}
+
+async function ubApplyDecision(flow, probe, decision, now) {
+  if (_ubActiveFlowId !== flow.flowId) return;
+  flow.lastObservedPage = ubObservedPage(probe);
+
+  if (['navigatePms', 'succeed', 'skip'].includes(decision.action) && probe.loginName) {
+    await ubSaveLoginName(flow.accountId, probe.loginName);
+    if (_ubActiveFlowId !== flow.flowId) return;
+  }
+
+  if (decision.action === 'wait') {
+    await ubSetFlow(flow);
+    ubArmWatchdog();
+    return;
+  }
+  if (decision.action === 'fail') {
+    if (decision.failureCode === 'captcha') await ubExec(flow.tabId, UB_FOCUS_CAPTCHA);
+    if (_ubActiveFlowId !== flow.flowId) return;
+    await ubTerminal(flow, 'failed', decision.failureCode, decision.terminalReason, now);
+    return;
+  }
+  if (decision.action === 'succeed' || decision.action === 'skip') {
+    await ubTerminal(flow, 'done', null, decision.terminalReason, now);
+    return;
+  }
+
+  if (decision.action === 'fillLogin') {
     const acc = await ubAccount(flow.accountId);
-    if (!acc) { await ubEndFlow(); return; }
-    let pw = ''; try { pw = await ubDecrypt(acc); } catch (e) { ubLog('복호화 실패'); await ubEndFlow(); return; }
-    flow.phase = 'submitted'; await ubSetFlow(flow);
-    const r = await ubExec(tabId, UB_FILL_LOGIN, [acc.userid, pw]);
-    pw = '';
-    ubLog('로그인 입력/제출 →', acc.alias || acc.userid, JSON.stringify(r));
+    if (!acc) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'account_missing', now); return; }
+    let pw = '';
+    try {
+      try { pw = await ubDecrypt(acc); }
+      catch (_) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'decrypt_fail', now); return; }
+      if (_ubActiveFlowId !== flow.flowId) return;
+      ubTransition(flow, decision, now);
+      await ubSetFlow(flow);
+      if (_ubActiveFlowId !== flow.flowId) return;
+      ubArmWatchdog();
+      await ubExec(flow.tabId, UB_FILL_LOGIN, [acc.userid, pw]);
+    } finally { pw = ''; }
     return;
   }
 
-  // B) 로그인 상태(로그아웃 링크 존재)
-  if (p.hasLogout) {
-    if (flow.phase === 'submitted') {
-      // 로그인 성공(새 계정) → 표시명 실시간 갱신 후 PMS 진입.
-      if (p.loginName) await ubSaveLoginName(flow.accountId, p.loginName);
-      if (p.pmsHref) { ubLog('로그인 완료 → PMS 진입'); await ubEndFlow(); chrome.tabs.update(tabId, { url: p.pmsHref }); return; }
-      ubLog('로그인 완료(홈) — PMS 링크 없음, 종료'); await ubEndFlow(); return;
-    }
-    // 최초 진입(start)에 이미 로그인된 상태 → 대상 계정과 표시명 비교.
-    // 일치하면 로그아웃/로그인 반복(꼬임)을 피하고 바로 PMS 진입 또는 종료.
-    if (flow.phase === 'start' && p.loginName) {
-      const acc = await ubAccount(flow.accountId);
-      const saved = acc && acc.loginName;
-      if (saved && ubNormName(saved) === ubNormName(p.loginName)) {
-        ubLog('이미 해당 계정으로 로그인됨 — 전환 생략');
-        if (p.pmsHref) { await ubEndFlow(); chrome.tabs.update(tabId, { url: p.pmsHref }); return; }
-        await ubEndFlow(); return;
-      }
-    }
-    ubLog('로그아웃 실행');
-    await ubExec(tabId, UB_DO_LOGOUT);
-    flow.phase = 'loggingout'; await ubSetFlow(flow);
-    return;
-  }
+  if (_ubActiveFlowId !== flow.flowId) return;
+  ubTransition(flow, decision, now);
+  await ubSetFlow(flow);
+  if (_ubActiveFlowId !== flow.flowId) return;
+  ubArmWatchdog();
+  if (decision.action === 'logout') await ubExec(flow.tabId, UB_DO_LOGOUT);
+  else if (decision.action === 'navigateLogin') await chrome.tabs.update(flow.tabId, { url: UB_LOGIN_URL });
+  else if (decision.action === 'navigatePms' && probe.pmsHref) await chrome.tabs.update(flow.tabId, { url: probe.pmsHref });
+}
 
-  // C) 로그아웃 상태 + 폼 없음 → 로그인 페이지로
-  if (!/\/mall\/login\.ubs/i.test(p.path || '')) {
-    ubLog('로그인 페이지로 이동');
-    flow.phase = 'tologin'; await ubSetFlow(flow);
-    chrome.tabs.update(tabId, { url: UB_LOGIN_URL });
-    return;
+async function ubStep(tabId, expectedFlowId) {
+  const stepKey = expectedFlowId || 'tab-' + tabId;
+  if (_ubStepInFlight[stepKey]) return;
+  _ubStepInFlight[stepKey] = true;
+  try {
+    let flow = await ubGetFlow();
+    if (!flow || !flow.active || flow.tabId !== tabId) return;
+    if (expectedFlowId && flow.flowId !== expectedFlowId) return;
+    if (!flow.flowId) flow.flowId = ubFlowId(Date.now());
+    if (_ubActiveFlowId && _ubActiveFlowId !== flow.flowId) return;
+    _ubActiveFlowId = flow.flowId;
+    flow = await ubUpgradeFlow(flow);
+    if (!flow || _ubActiveFlowId !== flow.flowId) return;
+    if (!expectedFlowId) expectedFlowId = flow.flowId;
+    ubArmWatchdog();
+
+    let probe = await ubForeignProbe(tabId);
+    if (!probe) probe = normalizeProbe(await ubExec(tabId, UB_PROBE));
+
+    flow = await ubGetFlow();
+    if (!flow || !flow.active || flow.tabId !== tabId || flow.flowId !== expectedFlowId) return;
+    const now = Date.now();
+    const decision = decide(flow, probe, now);
+    await ubApplyDecision(flow, probe, decision, now);
+  } finally {
+    delete _ubStepInFlight[stepKey];
   }
-  ubLog('로그인 폼 못 찾음 — 중단'); await ubEndFlow();
 }
 
 async function startSwitch(msg) {
   const tabId = msg.tabId;
   if (tabId == null) return { ok: false, error: 'no tab' };
-  await ubSetFlow({ active: true, accountId: msg.accountId, tabId, phase: 'start', tries: 0 });
-  let host = ''; try { host = new URL(msg.tabUrl).hostname; } catch (_) {}
-  ubLog('전환 시작', host || '(unknown)');
-  if (!/ubshop\.biz$|honsu114\.com$/i.test(host)) {
-    chrome.tabs.update(tabId, { url: UB_HOME_URL });   // 유비샵/GNSHOP 아닌 곳 → 홈으로
-    return { ok: true, nav: 'home' };
-  }
-  ubStep(tabId);
-  return { ok: true };
+  const acc = await ubAccount(msg.accountId);
+  if (!acc) return { ok: false, error: 'account not found' };
+  const now = Date.now();
+  const flow = {
+    active: true,
+    flowId: ubFlowId(now),
+    accountId: acc.userid,
+    targetLoginName: acc.loginName || null,
+    tabId,
+    phase: 'start',
+    enteredAt: now,
+    startedAt: now,
+    attempts: {},
+    submittedFor: null,
+    lastObservedPage: null,
+    lastTransition: null,
+    lastFailureCode: null,
+    terminalReason: null
+  };
+  _ubActiveFlowId = flow.flowId;
+  await ubSetFlow(flow);
+  ubArmWatchdog();
+  ubStep(tabId, flow.flowId);
+  return { ok: true, flowId: flow.flowId };
 }
 
 /* ---- 탭 로딩 완료마다 다음 단계 ---- */
-const _ubLastStep = {};
 try {
   chrome.tabs.onUpdated.addListener((tabId, info) => {
     if (info.status !== 'complete') return;
@@ -474,7 +609,18 @@ try {
       const now = Date.now();
       if (_ubLastStep[tabId] && now - _ubLastStep[tabId] < 400) return;  // 중복 complete 디바운스
       _ubLastStep[tabId] = now;
-      ubStep(tabId);
+      ubStep(tabId, ubLoginFlow.flowId);
+    });
+  });
+  chrome.alarms.onAlarm.addListener(alarm => {
+    if (!alarm || alarm.name !== UB_WATCHDOG) return;
+    ubGetFlow().then(flow => {
+      if (flow && flow.active) ubStep(flow.tabId, flow.flowId);
     });
   });
 } catch (e) {}
+
+// SW 재시작 시 저장 phase가 아니라 live probe로 재조정한다.
+ubGetFlow().then(flow => {
+  if (flow && flow.active) { ubArmWatchdog(); ubStep(flow.tabId, flow.flowId); }
+});

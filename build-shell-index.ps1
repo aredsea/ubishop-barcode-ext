@@ -17,6 +17,7 @@ $patterns = @(
   'manifest.json',
   'src/loader.js',
   'src/localbridge.js',
+  'src/fsm.js',
   'src/background.js',
   'src/skin.js',
   'popup/popup.html',
