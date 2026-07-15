@@ -54,6 +54,8 @@
     return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
   function nf(n) { try { return Math.round(n).toLocaleString('ko-KR'); } catch (_) { return String(n); } }
+  function discountRate(sale, price) { return sale > 0 ? Math.round((sale - price) / sale * 1000) / 10 : null; }
+  function discountText(sale, price) { const rate = discountRate(sale, price); return rate == null ? '—' : rate.toFixed(1) + '%'; }
 
   /* ---------- 상품코드 셀 → {code, name} ---------- */
   function splitCodeName(cellText) {
@@ -622,16 +624,33 @@
     for (const it of items) {
       const staff = it.staff || '(미지정)';
       let sg = map.get(staff);
-      if (!sg) { sg = { staff, qty: 0, supExp: 0, price: 0, products: new Map() }; map.set(staff, sg); }
-      sg.qty += it.qty; sg.supExp += it.supExp; sg.price += it.price;
+      if (!sg) { sg = { staff, qty: 0, supExp: 0, saleExp: 0, price: 0, products: new Map() }; map.set(staff, sg); }
+      sg.qty += it.qty; sg.supExp += it.supExp; sg.saleExp += it.saleExp; sg.price += it.price;
       const np = normProduct(it.name);
       let pg = sg.products.get(np.name);
-      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, price: 0, members: [] }; sg.products.set(np.name, pg); }
-      pg.qty += it.qty; pg.supExp += it.supExp; pg.price += it.price; pg.members.push(it);
+      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; sg.products.set(np.name, pg); }
+      pg.qty += it.qty; pg.supExp += it.supExp; pg.saleExp += it.saleExp; pg.price += it.price; pg.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
     groups.forEach(sg => { sg.productList = [...sg.products.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp); });
     return { groups, gift };
+  }
+  /* ---------- 그룹핑(매장별): 매장 → 해당 매장의 제품 목록 ---------- */
+  function buildStoreGroups(items) {
+    const map = new Map();
+    for (const it of items) {
+      const store = it.store || '(미지정)';
+      let sg = map.get(store);
+      if (!sg) { sg = { store, qty: 0, supExp: 0, saleExp: 0, price: 0, products: new Map() }; map.set(store, sg); }
+      sg.qty += it.qty; sg.supExp += it.supExp; sg.saleExp += it.saleExp; sg.price += it.price;
+      const np = normProduct(it.name);
+      let pg = sg.products.get(np.name);
+      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; sg.products.set(np.name, pg); }
+      pg.qty += it.qty; pg.supExp += it.supExp; pg.saleExp += it.saleExp; pg.price += it.price; pg.members.push(it);
+    }
+    const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
+    groups.forEach(sg => { sg.productList = [...sg.products.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp); });
+    return groups;
   }
 
   /* ---------- XLSX (라이브러리 없이 최소 구현: stored ZIP) ---------- */
@@ -907,8 +926,8 @@
     log('통계 렌더', { groups: allGroups.length, excluded: result.excluded, kept: result.kept });
   }
 
-  /* ---------- 직원별/제품별 통계 오버레이(renderOrder) ---------- */
-  //  기본 뷰 = 직원별(직원 → 그 직원 계약 제품). 제품별 토글 제공.
+  /* ---------- 직원별/제품별/매장별 통계 오버레이(renderOrder) ---------- */
+  //  기본 뷰 = 직원별(직원 → 그 직원 계약 제품). 제품별·매장별 토글 제공.
   //  공급가·판매가는 상품집계/PAGE 설정에 따르고 직원은 전표 조인. 임계값(공급가/수량) 이하 라인 숨김.
   function renderOrder(items, meta) {
     ensureStyle();
@@ -923,12 +942,13 @@
     const selStores = new Set(stores);
     const selStaff = new Set(staffs);
     const excluded = new Set();       // 해제(제외)된 제품명(제품별 뷰) — 합계·XLSX에서 제외
-    let view = 'staff';               // 'staff'(직원별, 기본) | 'product'(제품별)
+    let view = 'staff';               // 'staff'(직원별, 기본) | 'product'(제품별) | 'store'(매장별)
     let typeFilter = 'all';
     let nameQuery = '';
     let thrMin = 0, thrMax = 0;       // 공급가 단가(공급가/수량) 범위. 이하·이상 숨김(0=무제한)
     let prodGroups = [];              // 매장∩직원∩임계값 라인 → 제품별 그룹
     let staffGroups = [];             // 동일 라인 → 직원별 그룹
+    let storeGroups = [];             // 동일 라인 → 매장별 그룹
     let lastGift = 0;
 
     box.innerHTML =
@@ -938,6 +958,7 @@
         '<span class="vbtns">' +
           '<button class="vbtn on" data-v="staff">직원별</button>' +
           '<button class="vbtn" data-v="product">제품별</button>' +
+          '<button class="vbtn" data-v="store">매장별</button>' +
         '</span>' +
         '<span class="fbtns">' +
           '<button class="fbtn on" data-f="all">전체</button>' +
@@ -966,6 +987,9 @@
 
     const bd = box.querySelector('#ub-o-bd');
     const sumEl = box.querySelector('#ub-stat-sum');
+    const discountHead = IS_ORDER ? '' : '<th>할인율</th>';
+    const discountCell = (sale, price) => IS_ORDER ? '' : `<td class="disc">${discountText(sale, price)}</td>`;
+    const discountSummary = (sale, price) => IS_ORDER ? '' : ` · 할인율 ${discountText(sale, price)}`;
 
     /* ----- 표시 필터(구분/검색) : 재그룹 없이 표시만 ----- */
     function productDisplay() {
@@ -987,6 +1011,26 @@
           staff: sg.staff, products: prods,
           qty: prods.reduce((a, p) => a + p.qty, 0),
           supExp: prods.reduce((a, p) => a + p.supExp, 0),
+          saleExp: prods.reduce((a, p) => a + p.saleExp, 0),
+          price: prods.reduce((a, p) => a + p.price, 0)
+        });
+      });
+      out.sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
+      return out;
+    }
+    function storeDisplay() {
+      const q = nameQuery.toLowerCase();
+      const out = [];
+      storeGroups.forEach(sg => {
+        let prods = sg.productList;
+        if (typeFilter !== 'all') prods = prods.filter(p => p.type === typeFilter);
+        if (q) prods = prods.filter(p => p.name.toLowerCase().indexOf(q) >= 0);
+        if (!prods.length) return;
+        out.push({
+          store: sg.store, products: prods,
+          qty: prods.reduce((a, p) => a + p.qty, 0),
+          supExp: prods.reduce((a, p) => a + p.supExp, 0),
+          saleExp: prods.reduce((a, p) => a + p.saleExp, 0),
           price: prods.reduce((a, p) => a + p.price, 0)
         });
       });
@@ -1006,6 +1050,7 @@
           `<td class="qty">${nf(sg.qty)}</td>` +
           `<td class="sup">${nf(sg.supExp)}</td>` +
           `<td class="prc">${nf(sg.price)}</td>` +
+          discountCell(sg.saleExp, sg.price) +
           `<td>${sg.products.length}</td></tr>`;
         const pr = sg.products.map(p =>
           '<tr>' +
@@ -1013,15 +1058,16 @@
           `<td>${nf(p.qty)}</td>` +
           `<td class="sup">${nf(p.supExp)}</td>` +
           `<td class="prc">${nf(p.price)}</td>` +
+          discountCell(p.saleExp, p.price) +
           `<td class="l">${esc(memStores(p.members))}</td>` +
           '</tr>').join('');
-        rows += '<tr class="det" style="display:none"><td></td><td colspan="5">' +
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 5 : 6) + '">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">제품명</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th><th class="l">매장</th>' +
+          '<th class="l">제품명</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th class="l">매장</th>' +
           `</tr></thead><tbody>${pr}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th><th>제품수</th>' +
+        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th>제품수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       bindExpanders();
     }
@@ -1041,6 +1087,7 @@
           `<td class="qty">${nf(g.qty)}</td>` +
           `<td class="sup">${nf(g.supExp)}</td>` +
           `<td class="prc">${nf(g.price)}</td>` +
+          discountCell(g.saleExp, g.price) +
           `<td>${g.members.length}</td></tr>`;
         const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
           '<tr>' +
@@ -1049,17 +1096,18 @@
           `<td>${nf(m.qty)}</td>` +
           `<td class="sup">${nf(m.supExp)}</td>` +
           `<td class="prc">${nf(m.price)}</td>` +
+          discountCell(m.saleExp, m.price) +
           `<td class="l">${esc(m.store)}</td>` +
           `<td class="l${m.staff === '(미지정)' ? ' miss' : ''}">${esc(m.staff)}</td>` +
           `<td class="l">${esc(m.customer)}</td>` +
           '</tr>').join('');
-        rows += '<tr class="det" style="display:none"><td></td><td colspan="7">' +
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 7 : 8) + '">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th><th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
+          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
           `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th><th>코드수</th>' +
+        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th>코드수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       // 개별 ON/OFF 체크박스 배선(합계·XLSX 제외) — 제품별 뷰 전용, 현행 유지
       const allCb = bd.querySelector('#ub-o-all');
@@ -1087,6 +1135,41 @@
       bindExpanders(); syncAll();
     }
 
+    /* ----- 매장별 뷰 ----- */
+    function renderStoreView() {
+      const list = storeDisplay();
+      let rows = '';
+      list.forEach((sg, i) => {
+        rows += '<tr class="g">' +
+          `<td class="rk">${i + 1}</td>` +
+          `<td class="l stf">${esc(sg.store)} <span class="exp">▸</span></td>` +
+          `<td class="qty">${nf(sg.qty)}</td>` +
+          `<td class="sup">${nf(sg.supExp)}</td>` +
+          `<td class="prc">${nf(sg.price)}</td>` +
+          discountCell(sg.saleExp, sg.price) +
+          `<td>${sg.products.length}</td></tr>`;
+        const pr = sg.products.map(p => {
+          const tag = p.type === '자사' ? '<span class="tag tj">자사</span>' : '<span class="tag ts">사입</span>';
+          return '<tr>' +
+            `<td class="l">${esc(p.name)}</td>` +
+            `<td class="l">${tag}</td>` +
+            `<td>${nf(p.qty)}</td>` +
+            `<td class="sup">${nf(p.supExp)}</td>` +
+            `<td class="prc">${nf(p.price)}</td>` +
+            discountCell(p.saleExp, p.price) +
+            '</tr>';
+        }).join('');
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 5 : 6) + '">' +
+          '<table class="sub"><thead><tr>' +
+          '<th class="l">제품명</th><th class="l">구분</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead +
+          `</tr></thead><tbody>${pr}</tbody></table></td></tr>`;
+      });
+      bd.innerHTML = '<table><thead><tr>' +
+        '<th>#</th><th class="l">매장</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th>제품수</th>' +
+        `</tr></thead><tbody>${rows}</tbody></table>`;
+      bindExpanders();
+    }
+
     function bindExpanders() {
       bd.querySelectorAll('tr.g').forEach(tr => tr.addEventListener('click', () => {
         const det = tr.nextElementSibling;
@@ -1104,19 +1187,30 @@
         const list = staffDisplay();
         const q = list.reduce((a, s) => a + s.qty, 0);
         const sup = list.reduce((a, s) => a + s.supExp, 0);
+        const sale = list.reduce((a, s) => a + s.saleExp, 0);
         const pr = list.reduce((a, s) => a + s.price, 0);
-        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원 · 기간 ${meta}`;
-      } else {
+        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)} · 기간 ${meta}`;
+      } else if (view === 'product') {
         const c = countedProducts();
         const q = c.reduce((a, g) => a + g.qty, 0);
         const sup = c.reduce((a, g) => a + g.supExp, 0);
+        const sale = c.reduce((a, g) => a + g.saleExp, 0);
         const pr = c.reduce((a, g) => a + g.price, 0);
-        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원 · 기간 ${meta}`;
+        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)} · 기간 ${meta}`;
+      } else {
+        const list = storeDisplay();
+        const q = list.reduce((a, s) => a + s.qty, 0);
+        const sup = list.reduce((a, s) => a + s.supExp, 0);
+        const sale = list.reduce((a, s) => a + s.saleExp, 0);
+        const pr = list.reduce((a, s) => a + s.price, 0);
+        sumEl.textContent = `매장 ${list.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)} · 기간 ${meta}`;
       }
     }
 
     function render() {
-      if (view === 'staff') renderStaffView(); else renderProductView();
+      if (view === 'staff') renderStaffView();
+      else if (view === 'product') renderProductView();
+      else renderStoreView();
       box.querySelectorAll('.vbtn').forEach(b => b.classList.toggle('on', b.dataset.v === view));
       renderSummary();
     }
@@ -1124,6 +1218,7 @@
       const base = thresholdFilter(items.filter(it => selStores.has(it.store) && selStaff.has(it.staff)), thrMin, thrMax);
       const rp = buildOrderGroups(base); prodGroups = rp.groups; lastGift = rp.gift;
       const rs = buildStaffGroups(base); staffGroups = rs.groups;
+      storeGroups = buildStoreGroups(base);
       render();
     }
 
@@ -1174,17 +1269,35 @@
       let aoa;
       if (view === 'staff') {
         aoa = [['순위', '직원', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '제품수']];
-        staffDisplay().forEach((s, i) => aoa.push([i + 1, s.staff, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length]));
-      } else {
+        if (!IS_ORDER) aoa[0].splice(5, 0, '할인율');
+        staffDisplay().forEach((s, i) => {
+          const row = [i + 1, s.staff, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length];
+          if (!IS_ORDER) row.splice(5, 0, discountText(s.saleExp, s.price));
+          aoa.push(row);
+        });
+      } else if (view === 'product') {
         aoa = [['순위', '제품명', '구분', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '코드수']];
-        countedProducts().forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.supExp), Math.round(g.price), g.members.length]));
+        if (!IS_ORDER) aoa[0].splice(6, 0, '할인율');
+        countedProducts().forEach((g, i) => {
+          const row = [i + 1, g.name, g.type, g.qty, Math.round(g.supExp), Math.round(g.price), g.members.length];
+          if (!IS_ORDER) row.splice(6, 0, discountText(g.saleExp, g.price));
+          aoa.push(row);
+        });
+      } else {
+        aoa = [['순위', '매장', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '제품수']];
+        if (!IS_ORDER) aoa[0].splice(5, 0, '할인율');
+        storeDisplay().forEach((s, i) => {
+          const row = [i + 1, s.store, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length];
+          if (!IS_ORDER) row.splice(5, 0, discountText(s.saleExp, s.price));
+          aoa.push(row);
+        });
       }
       downloadXlsx(aoa, PAGE.xlsxName());
       log(PAGE.title.replace(' 통계', '') + ' xlsx 저장', PAGE.xlsxName(), aoa.length - 1, '행', 'view=' + view);
     });
 
     recompute();
-    log(PAGE.title + ' 렌더', { items: items.length, stores: stores.length, staffs: staffs.length, products: prodGroups.length, staff: staffGroups.length });
+    log(PAGE.title + ' 렌더', { items: items.length, stores: stores.length, staffs: staffs.length, products: prodGroups.length, staff: staffGroups.length, store: storeGroups.length });
   }
 
   /* ---------- 버튼 ---------- */
@@ -1221,7 +1334,7 @@
     b.id = 'ub-stat-btn';
     b.type = 'button';
     b.textContent = '제품별 통계화';
-    b.title = IS_ORDER ? '직원별/제품별 주문 통계(상품집계+주문전표 조인)' : '직원별/제품별 판매 통계(상품집계+매장매출전표 조인)';
+    b.title = IS_ORDER ? '직원별/제품별/매장별 주문 통계(상품집계+주문전표 조인)' : '직원별/제품별/매장별 판매 통계(상품집계+매장매출전표 조인)';
     b.style.cssText = 'margin-left:6px;padding:3px 12px;background:#35C5F0;color:#fff;border:0;border-radius:6px;' +
       'font:700 12px/1.5 Pretendard,sans-serif;cursor:pointer;vertical-align:middle;';
     b.addEventListener('click', () => runStats(b));
@@ -1247,10 +1360,12 @@
       'table.t_list.ubm tr.sum1 .f_gray{display:none;}',
       'table.t_list.ubm tr.title_line td,table.t_list.ubm tr.title_line th{background:linear-gradient(180deg,#123542,#0e2a37);color:#c6e8f4;font-weight:600;font-size:11.5px;padding:12px 8px;text-align:center;white-space:nowrap;border-bottom:2px solid #2fbfe8;line-height:1.3;letter-spacing:.01em;}',
       'table.t_list.ubm tr.title_line th.ub-staff-h{color:#86e8ff;}',
-      'table.t_list.ubm tr.ubm-row td{padding:10px 9px;color:#3d4b57;border-bottom:1px solid #edf1f4;line-height:1.4;font-weight:450;font-size:12px;}',
+      'table.t_list.ubm tr.ubm-row td{padding:10px 9px;color:#3d4b57;border-bottom:1px solid #edf1f4;line-height:1.4;font-weight:450;font-size:12px;text-align:center;}',
       'table.t_list.ubm tr.ubm-row:nth-child(even) td{background:#fafcfd;}',
       'table.t_list.ubm tr.ubm-row:hover td{background:#eef8fc;}',
-      'table.t_list.ubm tr.ubm-row td[align=right]{font-variant-numeric:tabular-nums;font-weight:500;color:#2a3742;}',
+      'table.t_list.ubm tr.ubm-row td[align=right]{text-align:center;font-variant-numeric:tabular-nums;font-weight:500;color:#2a3742;}',
+      'table.t_list.ubm tr.ubm-row td[align=right] .f_gray{display:none;}',
+      'table.t_list.ubm tr.ubm-row td.ub-date-c{white-space:nowrap;}',
       'table.t_list.ubm .f_bold{font-weight:600;color:#1e2a33;}',
       'table.t_list.ubm .f_gray{color:#aeb9c3;font-size:10px;font-weight:400;}',
       'table.t_list.ubm .f_blue_note{color:#2b8db6;font-weight:500;}',
@@ -1323,6 +1438,10 @@
     const cProd = findCol(cells, [/바코드/, /상품번호/]);
     const cStore = findCol(cells, [/매장명/]);
     const cSup = findCol(cells, [new RegExp(PAGE.supLabel), /총공급가/]);
+    const cSale = findCol(cells, [/^판매가$/]);
+    const cPrice = findCol(cells, [/실판매가/]);
+    const cDc = findCol(cells, [/^DC금액$/]);
+    const cConvert = findCol(cells, [/전환\s*P|전환포인트/, /^할인율$/]);
     // 데이터행: ubm-row 부여 + 인라인 hover 제거(CSS hover 적용) + 원본순서 기록
     let ord = 0;
     for (const r of table.rows) {
@@ -1330,7 +1449,18 @@
       if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
       if (!r.classList.contains('ubm-row')) { r.classList.add('ubm-row'); r.onmouseover = null; r.onmouseout = null; }
       if (!r.dataset.ubOrd) r.dataset.ubOrd = String(ord);
+      if (cDate >= 0 && r.cells[cDate]) r.cells[cDate].classList.add('ub-date-c');
       ord++;
+    }
+    // 판매탭의 전환P 슬롯을 할인율로 재사용(열 추가/삭제 없음).
+    if (!IS_ORDER && cConvert >= 0) {
+      headRow.cells[cConvert].textContent = '할인율';
+      for (const r of table.querySelectorAll('tr.ubm-row')) {
+        const sale = cSale >= 0 && r.cells[cSale] ? firstNum(r.cells[cSale].textContent) : 0;
+        const price = cPrice >= 0 && r.cells[cPrice] ? firstNum(r.cells[cPrice].textContent) : 0;
+        const dc = cDc >= 0 && r.cells[cDc] ? firstNum(r.cells[cDc].textContent) : sale - price;
+        r.cells[cConvert].textContent = sale > 0 ? (Math.round(dc / sale * 1000) / 10).toFixed(1) + '%' : '—';
+      }
     }
     // 직원열(전표 조인) — lookup 있으면
     if (cProd >= 0 && cStore >= 0) {
