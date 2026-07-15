@@ -37,7 +37,7 @@
   } : {
     lookup: buildSaleLookup,
     joinKeyOf: (dRaw, _prod, ss) => joinKey(dRaw, '', ss.store, ss.staff),
-    supLabel: '총공급가', priceLabel: '실판매가',
+    supLabel: '공급가', priceLabel: '실판매가',
     title: '판매 통계', subT: '공급가·실판매가=상품집계 · 판매직원=매출전표',
     staffColLabel: '판매직원', dateCol: /판매일/, xlsxName: saleXlsxName
   };
