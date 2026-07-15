@@ -66,3 +66,17 @@ const fs = require('node:fs'), path = require('node:path');
     'ubSha256Hex가 shell-files.json 규약과 불일치');
 })();
 console.log('Task2 shell-files 규약 교차검증 OK');
+
+// Task4: build-app-index.ps1 출력(app-files.json.sha256)이 loader 규약(ubSha256Hex)과 전 파일 일치
+(function(){
+  const app = JSON.parse(fs.readFileSync(path.join(__dirname,'..','app-files.json'),'utf8'));
+  assert.ok(app.sha256, 'app-files.json sha256 맵 없음');
+  assert.ok(Array.isArray(app.files) && app.files.length === 6, 'files 6개 아님');
+  for (const rel of app.files){
+    assert.ok(/^[0-9a-f]{64}$/.test(app.sha256[rel]||''), 'sha256 누락/형식: '+rel);
+    const raw = fs.readFileSync(path.join(__dirname,'..',rel));
+    const lf = Buffer.from(raw.toString('binary').replace(/\r\n/g,'\n'),'binary');
+    assert.strictEqual(ubSha256Hex(new Uint8Array(lf)), app.sha256[rel], 'build-app-index 해시가 loader 규약과 불일치: '+rel);
+  }
+})();
+console.log('Task4 app-files sha256 규약 일치(전 파일) OK');

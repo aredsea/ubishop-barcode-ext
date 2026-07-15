@@ -8,5 +8,13 @@
     "src/content.js",
     "src/cache-intercept.js",
     "src/statis.js"
-  ]
+  ],
+  "sha256": {
+    "src/config.js": "aee036f793cf8dce7c7f8a84801bb56135ed3f3e3531a663c076a4e522af42c8",
+    "src/overlay.js": "69a1e8e899480ff4b3c8e2542642cd89efddecb36cd2d8e840e62a08129e8e9c",
+    "src/collector.js": "e93e8645bdaf00221b15000908e88c53fb3c13e996fcf2e9bf2f8ce25fefb8ba",
+    "src/content.js": "c6fdc9c72d9fd4f8b12021017207d62dfc4162948a31d69a870303d3e1822c6f",
+    "src/cache-intercept.js": "e83b6b49b9beab5728658739af2801caa7030437dfa82e91676b3b314b8f31af",
+    "src/statis.js": "cc7d01ac30f35e7d92f8a39235718b79c73cc91ce34ede64b9ac55d206819d13"
+  }
 }
