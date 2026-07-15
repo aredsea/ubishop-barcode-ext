@@ -1,13 +1,13 @@
 {
-  "version": "3.6.2",
+  "version": "3.6.3",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "4fd70caa82ea556831988907836c656af00d94737fc2826520c9b85b427a6287"
+      "sha256": "a3d11e12fa5646d36af9142e2006f3df1daf9fdaad2c4e6393eae25c371d0181"
     },
     {
       "path": "src/loader.js",
-      "sha256": "cc41ad1c4dc7b3ea38d4c29c14d2eec7700f50649292d55920eac82a26be6ddd"
+      "sha256": "25f457b4e5f3c284244907928245788da3059cb2b0d28137b40f9b9a760c42e0"
     },
     {
       "path": "src/localbridge.js",
