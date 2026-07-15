@@ -1371,6 +1371,10 @@
       'table.t_list.ubm .f_blue_note{color:#2b8db6;font-weight:500;}',
       'table.t_list.ubm .f_green{display:inline-block;padding:3px 10px;border-radius:999px;background:#e6f7ee;color:#12995a;font-weight:600;font-size:10.5px;letter-spacing:0;}',
       'table.t_list.ubm .f_red{display:inline-block;padding:3px 10px;border-radius:999px;background:#fdecec;color:#e0483f;font-weight:600;font-size:10.5px;letter-spacing:0;}',
+      /* ★셀(td) 자체에 f_red/f_green 클래스가 붙는 경우(DC금액 등) inline-block pill 이 되면 셀이 행에서 이탈 → 일반 셀 + 색 텍스트로 복원(pill 은 셀 안 span 에만) */
+      'table.t_list.ubm td.f_red,table.t_list.ubm td.f_green{display:table-cell;background:transparent;padding:10px 9px;border-radius:0;vertical-align:middle;font-size:12px;font-variant-numeric:tabular-nums;}',
+      'table.t_list.ubm td.f_red{color:#d64b43;font-weight:600;}',
+      'table.t_list.ubm td.f_green{color:#12995a;font-weight:600;}',
       'table.t_list.ubm img{border-radius:9px;box-shadow:0 1px 3px rgba(16,40,60,.16);}',
       'table.t_list.ubm td.ub-staff-c{text-align:center;}',
       'table.t_list.ubm td.ub-staff-c .stf{display:inline-block;padding:4px 11px;border-radius:999px;background:#e4f4fb;color:#0d7ba0;font-weight:700;font-size:11px;letter-spacing:-.01em;white-space:nowrap;}',
