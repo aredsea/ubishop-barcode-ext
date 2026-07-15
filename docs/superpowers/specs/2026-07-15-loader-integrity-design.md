@@ -70,6 +70,10 @@
 - **캐시 저장은 5단계(검증 통과)에서만.** 오염 차단(현 line 54 위치 이동).
 - 실패 사유는 `console.warn('[UB][loader]', reason)`으로 남김. **PII/자격증명/키 미포함.** popup 노출은 작업 B 범위.
 
+**구현 리뷰 반영(Codex 공동검수 2건, 2026-07-15):**
+- **빈/영 `files` 방어**: `files.length===0`이면 `INTEGRITY_INCOMPLETE` 거부. (공허한 루프가 빈 번들을 "검증 성공"으로 캐시하는 것 차단.)
+- **캐시 세대 표식**: 검증 통과분 저장 시 `{version,code,ts,verified:true}`. boot 폴백에서 `c.verified`로 로그 구분(`src='cache'` vs `'cache-legacy'`). ⚠ **legacy(플래그 없는 구 loader 캐시)도 계속 last-known-good로 실행** — refuse 시 오프라인 최초 로드 매장이 깨져 "무손상" 하드제약 위반. 위협모델(탈취 제외)상 legacy 캐시는 매장의 마지막 정상 버전이라 benign이며, 첫 검증 성공 로드 후 verified 캐시로 대체됨(노출 창≈1 로드).
+
 ### 3.3 순수 JS SHA-256
 
 - `crypto.subtle`은 http(비-secure context)에서 `undefined` — **실측 확정**(isSecureContext=false, crypto.subtle=undefined @ ubdstore http). 따라서 **순수 JS SHA-256**(FIPS 180-4, 작은 함수) 내장.
