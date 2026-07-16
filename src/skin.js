@@ -548,6 +548,107 @@
   }
 
   /* ==========================================================================
+   *  5.5b) 메인석 입고 자동화 — inputStoneWriteForm.do 사이드바 섹션.
+   *   바코드1개로 ①inputStoneList.do(searchBarcode,태초~오늘)→입고장번호
+   *   ②inputStoneJunList.do(searchJunNum)→seq(선택셀 setSeting(form2,'seq'))
+   *   ③form2.jun=seq+submit→전표 로드. 재고화(input_item)와 구조 동일,
+   *     차이: 엔드포인트 /jun/inputstone·/input/stone, seq=setSeting 인자(따옴표).
+   *   ⭐신규: 전표 로드 후 그 바코드 행을 강조+스크롤(로드 전 sessionStorage 저장).
+   *   ⚠ 등록(쓰기)은 절대 자동 안 함 — 전표 로드+강조까지만. postDoc/firstDataRow/colIdx 공용.
+   * ========================================================================== */
+  const MS_TAG = '[UB][mstone]';
+  const msLog = (...a) => { try { console.log(MS_TAG, ...a); } catch (_) {} };
+  const MS_HL_KEY = 'UB_MAINSTONE_HL';
+  function isMainStoneWrite() { return /\/input\/stone\/inputStoneWriteForm\.do/.test(location.pathname); }
+  async function msBarcodeToJun(barcode) {
+    const p = new URLSearchParams({ ...dateParams(), searchBarcode: barcode, pageSize: '100' });
+    const doc = await postDoc('/jun/inputstone/inputStoneList.do?tcode=input_stone', p);
+    const g = firstDataRow(doc);
+    if (!g) return null;
+    const ci = colIdx(g.headers, /입고장번호/);
+    if (ci < 0) return null;
+    const jn = (g.row.cells[ci] ? g.row.cells[ci].textContent : '').replace(/\s+/g, '').trim();
+    return jn || null;
+  }
+  async function msJunToSeq(junNum) {
+    const p = new URLSearchParams({ ...dateParams(), searchJunNum: junNum, pageSize: '100' });
+    const doc = await postDoc('/jun/inputstone/inputStoneJunList.do?tcode=input_stone', p);
+    // 선택 셀 <a href="javascript:setSeting(form2,'90024')"> — seq 는 따옴표로 감싸짐.
+    const html = doc.body ? doc.body.innerHTML : '';
+    const m = html.match(/setSeting\s*\(\s*[^,]*,\s*'?(\d+)'?\s*\)/);
+    return m ? m[1] : null;
+  }
+  function msLoadVoucher(seq, barcode) {
+    const f2 = document.forms['form2'];
+    if (!f2 || !f2.jun) { msLog('form2/jun 없음'); return false; }
+    // 폼 제출 = 페이지 이동. 로드 후 강조할 바코드를 먼저 저장(타임스탬프로 만료 관리).
+    try { sessionStorage.setItem(MS_HL_KEY, JSON.stringify({ bc: barcode, ts: Date.now() })); } catch (_) {}
+    f2.jun.value = seq;
+    msLog('form2.jun =', seq, '→ submit');
+    f2.submit();
+    return true;
+  }
+  let msBusy = false;
+  async function msRun(barcode, setStatus) {
+    barcode = (barcode || '').trim();
+    if (!barcode) { setStatus('바코드를 입력하세요', 'warn'); return; }
+    if (msBusy) return; msBusy = true;
+    try {
+      setStatus('입고 전표 조회 중…', 'go');
+      const junNum = await msBarcodeToJun(barcode);
+      if (!junNum) { setStatus('입고장번호를 못 찾음 — 바코드 확인', 'err'); return; }
+      setStatus('입고장 ' + junNum + ' 확인 중…', 'go');
+      const seq = await msJunToSeq(junNum);
+      if (!seq) { setStatus('입고장 seq를 못 찾음 (' + junNum + ')', 'err'); return; }
+      try { localStorage.setItem('UB_MAINSTONE_LAST', JSON.stringify({ barcode: barcode, junNum: junNum, seq: seq })); } catch (_) {}
+      msLog('barcode', barcode, '→ junNum', junNum, '→ seq', seq);
+      setStatus('입고장 ' + junNum + ' 불러오는 중…', 'go');
+      msLoadVoucher(seq, barcode);   // 페이지 리로드 → 전표 로드 → msHighlightPending 이 강조
+    } catch (e) {
+      msLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
+    } finally { msBusy = false; }
+  }
+  // 전표 로드 후: 저장된 바코드 행을 강조+스크롤. msHlActive 로 동시 재시도루프 1개만 유지.
+  // 성공하면 flag 소비(removeItem). ~3.6s 안에 못 찾으면 루프만 해제하고 flag 는 유지 →
+  // 시트가 늦게(동적) 렌더되면 옵저버가 재호출해 다시 시도한다. 유지된 flag 는 60초 만료 +
+  // 다음 msRun 이 덮어쓰고, 바코드가 전표당 유일하므로 다른 전표를 오강조하지 않는다.
+  let msHlActive = false;
+  function msHighlightPending() {
+    if (msHlActive || !isMainStoneWrite()) return;
+    let raw = null;
+    try { raw = sessionStorage.getItem(MS_HL_KEY); } catch (_) {}
+    if (!raw) return;
+    let bc = raw, ts = 0;
+    try { const o = JSON.parse(raw); if (o && o.bc) { bc = o.bc; ts = o.ts || 0; } } catch (_) {}
+    if (ts && (Date.now() - ts > 60000)) { try { sessionStorage.removeItem(MS_HL_KEY); } catch (_) {} return; }
+    msHlActive = true;
+    let tries = 0;
+    const tick = () => {
+      tries++;
+      // idx 체크박스 value = "seq,바코드,orderSeq" — 토큰에 바코드 포함된 행.
+      const boxes = [...document.querySelectorAll('input[name=idx]')];
+      const hit = boxes.find(b => (b.value || '').split(',').map(s => s.trim()).includes(bc));
+      if (hit) {
+        try { sessionStorage.removeItem(MS_HL_KEY); } catch (_) {}
+        const row = hit.closest('tr');
+        if (row) {
+          row.classList.add('ub-ms-hl');
+          try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+          catch (_) { try { row.scrollIntoView(); } catch (_) {} }
+          msLog('강조+스크롤', bc);
+        }
+        msHlActive = false;
+        return;
+      }
+      if (tries < 12) { setTimeout(tick, 300); return; }   // ~3.6s 재시도(시트 렌더 지연 대비)
+      // 미발견: 루프만 해제(flag 유지) → 시트가 늦게 렌더되면 옵저버가 재시도. flag 는 60초 만료.
+      msHlActive = false;
+      msLog('강조 대상 아직 없음 — flag 유지(옵저버 재시도 대기)', bc);
+    };
+    tick();
+  }
+
+  /* ==========================================================================
    *  5.6) 회전입고 자동화 — rotateItemWriteForm.do 사이드바 섹션.
    *   본사반품확인(opdelivedItemWrite) → 회전입고(rotateItemWrite) 2단 자동화.
    *   사용자 수동 3단계(반품확인·새매장선택·회전입고)를 그대로 1건씩 재현.
@@ -842,6 +943,19 @@
     }
     #ub-sb-handle:hover { background: #2bb5e0; width: 28px; }
     #ub-sb-handle svg { width: 16px; height: 16px; stroke-width: 2.4; }
+
+    /* 메인석 입고 — 로드된 전표에서 찾은 바코드 행 강조(언스코프: 페이지 표 대상, D102 틸) */
+    tr.ub-ms-hl > td {
+      background: rgba(74,188,199,.16) !important;
+      border-top: 1px solid #4abcc7 !important;
+      border-bottom: 1px solid #4abcc7 !important;
+    }
+    tr.ub-ms-hl > td:first-child { box-shadow: inset 4px 0 0 0 #4abcc7; }
+    tr.ub-ms-hl { animation: ubMsHl .85s ease-in-out 3; }
+    @keyframes ubMsHl {
+      0%, 100% { outline: 2px solid rgba(74,188,199,.15); outline-offset: -2px; }
+      50%      { outline: 3px solid rgba(74,188,199,.95); outline-offset: -3px; }
+    }
   `;
   function ensureSidebarStyle() {
     if (document.getElementById(SIDEBAR_STYLE_ID)) return;
@@ -1190,6 +1304,17 @@
         </div>
       ` : ''}
 
+      ${isMainStoneWrite() ? `
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.barcode}<span>메인석 입고</span></div>
+          <div class="ub-stk-row">
+            <input id="ub-ms-in" class="ub-stk-in" placeholder="바코드 입력 후 Enter" autocomplete="off" spellcheck="false">
+            <button class="ub-sb-btn ub-stk-go" id="ub-ms-go">입고장 로드</button>
+          </div>
+          <div class="ub-stk-st" id="ub-ms-st"></div>
+        </div>
+      ` : ''}
+
       ${renderCacheSection()}
 
       <div class="ub-sb-rz-x" title="너비 조절 (드래그)"></div>
@@ -1312,6 +1437,22 @@
       setTimeout(() => { try { rotIn.focus(); } catch (_) {} }, 400);
     }
 
+    // 메인석 입고 배선 (inputStoneWriteForm.do) — 재렌더마다 재바인딩되니 정상.
+    const msIn = bar.querySelector('#ub-ms-in');
+    const msStEl = bar.querySelector('#ub-ms-st');
+    if (msIn && msStEl) {
+      const setMsStatus = (t, k) => { msStEl.textContent = t || ''; msStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
+      const goMs = () => msRun(msIn.value, setMsStatus);
+      const msGoBtn = bar.querySelector('#ub-ms-go');
+      if (msGoBtn) msGoBtn.addEventListener('click', goMs);
+      msIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goMs(); } });
+      try {
+        const last = JSON.parse(localStorage.getItem('UB_MAINSTONE_LAST') || 'null');
+        if (last && last.junNum) setMsStatus('직전: ' + last.barcode + ' → 입고장 ' + last.junNum + ' 불러옴 ✓', 'ok');
+      } catch (_) {}
+      setTimeout(() => { try { msIn.focus(); } catch (_) {} }, 400);
+    }
+
     // (cache-run/cancel 핸들러는 Phase 2 본격 구현 시 form submit 가로채기로 대체됨)
   }
 
@@ -1326,6 +1467,7 @@
       img.style.cursor = on('ubThumbEdit') ? 'pointer' : '';
       img.title = on('ubThumbEdit') ? '상품 수정 (새 창)' : '';
     });
+    msHighlightPending();   // 메인석 입고: 전표 로드 후 찾은 바코드 행 강조+스크롤(1회)
   }
   let mo = null;
   function startObserver() {
@@ -1341,7 +1483,7 @@
           if (n.querySelector && n.querySelector('select[name=pageSize]')) needPaging = true;
         }
       }
-      if (needThumb) bindThumbEdit(document);
+      if (needThumb) { bindThumbEdit(document); msHighlightPending(); }   // idx 행 동적렌더 시 메인석 강조도 재시도
       if (needPaging) injectPageSizeOptions();
       if (!document.getElementById(SIDEBAR_ID) && !document.getElementById(HANDLE_ID) && on('ubSidebar')) needSidebar = true;
       if (needSidebar) renderSidebar();
