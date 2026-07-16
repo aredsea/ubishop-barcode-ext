@@ -608,6 +608,26 @@
       msLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
     } finally { msBusy = false; }
   }
+  // 로드된 전표에서 바코드 행 찾기. ①idx 체크박스 value 토큰(seq,바코드,orderSeq) 대소문자 무시,
+  // ②폴백: 표 셀의 공백 구분 첫 토큰이 바코드와 정확히 일치(부분일치 아님 → 오매칭 방지).
+  // ⚠ 유비샵은 바코드를 대문자로 저장하는데 사용자는 소문자로 입력할 수 있다(검색은 서버가 대소문자
+  //   무시하지만 강조는 클라이언트 매칭이라 여기서 정규화 필수). 예: 입력 2607dl → 목록 2607DL.
+  function msFindRow(bc) {
+    const want = String(bc == null ? '' : bc).trim().toUpperCase();
+    if (!want) return null;
+    const boxes = [...document.querySelectorAll('input[name=idx]')];
+    const hit = boxes.find(b => (b.value || '').split(',').some(s => s.trim().toUpperCase() === want));
+    if (hit) return hit.closest('tr');
+    for (const t of document.querySelectorAll('table.t_list')) {   // 폴백: idx 구조가 다를 때 대비
+      for (const r of t.rows) {
+        for (const c of r.cells) {
+          const first = (c.textContent || '').trim().split(/\s+/)[0] || '';
+          if (first.toUpperCase() === want) return r;
+        }
+      }
+    }
+    return null;
+  }
   // 전표 로드 후: 저장된 바코드 행을 강조+스크롤. msHlActive 로 동시 재시도루프 1개만 유지.
   // 성공하면 flag 소비(removeItem). ~3.6s 안에 못 찾으면 루프만 해제하고 flag 는 유지 →
   // 시트가 늦게(동적) 렌더되면 옵저버가 재호출해 다시 시도한다. 유지된 flag 는 60초 만료 +
@@ -625,18 +645,13 @@
     let tries = 0;
     const tick = () => {
       tries++;
-      // idx 체크박스 value = "seq,바코드,orderSeq" — 토큰에 바코드 포함된 행.
-      const boxes = [...document.querySelectorAll('input[name=idx]')];
-      const hit = boxes.find(b => (b.value || '').split(',').map(s => s.trim()).includes(bc));
-      if (hit) {
+      const row = msFindRow(bc);
+      if (row) {
         try { sessionStorage.removeItem(MS_HL_KEY); } catch (_) {}
-        const row = hit.closest('tr');
-        if (row) {
-          row.classList.add('ub-ms-hl');
-          try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-          catch (_) { try { row.scrollIntoView(); } catch (_) {} }
-          msLog('강조+스크롤', bc);
-        }
+        row.classList.add('ub-ms-hl');
+        try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        catch (_) { try { row.scrollIntoView(); } catch (_) {} }
+        msLog('강조+스크롤', bc);
         msHlActive = false;
         return;
       }
