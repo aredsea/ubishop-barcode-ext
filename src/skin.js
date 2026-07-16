@@ -541,6 +541,7 @@
       try { localStorage.setItem('UB_STOCK_LAST', JSON.stringify({ barcode: barcode, junNum: junNum, seq: seq })); } catch (_) {}
       stkLog('barcode', barcode, '→ junNum', junNum, '→ seq', seq);
       setStatus('입고장 ' + junNum + ' 불러오는 중…', 'go');
+      ubHlStore(barcode);        // 검색 바코드 저장 → 로드된 새 문서 init 이 강조+스크롤
       loadVoucher(seq);   // 페이지 리로드 → 입고장 로드(사람이 확인 후 재고화 등록)
     } catch (e) {
       stkLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
@@ -581,8 +582,7 @@
   function msLoadVoucher(seq, barcode) {
     const f2 = document.forms['form2'];
     if (!f2 || !f2.jun) { msLog('form2/jun 없음'); return false; }
-    // 폼 제출 = 페이지 이동. 로드 후 강조할 바코드를 먼저 저장(타임스탬프로 만료 관리).
-    try { sessionStorage.setItem(MS_HL_KEY, JSON.stringify({ bc: barcode, ts: Date.now() })); } catch (_) {}
+    ubHlStore(barcode);        // 로드 전 강조 대상 저장 → 새 문서 init 이 읽어 강조
     f2.jun.value = seq;
     msLog('form2.jun =', seq, '→ submit');
     f2.submit();
@@ -603,16 +603,28 @@
       try { localStorage.setItem('UB_MAINSTONE_LAST', JSON.stringify({ barcode: barcode, junNum: junNum, seq: seq })); } catch (_) {}
       msLog('barcode', barcode, '→ junNum', junNum, '→ seq', seq);
       setStatus('입고장 ' + junNum + ' 불러오는 중…', 'go');
-      msLoadVoucher(seq, barcode);   // 페이지 리로드 → 전표 로드 → msHighlightPending 이 강조
+      msLoadVoucher(seq, barcode);   // 전표 로드 → ubHighlightPending 이 검색 바코드 행 강조
     } catch (e) {
       msLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
     } finally { msBusy = false; }
   }
-  // 로드된 전표에서 바코드 행 찾기. ①idx 체크박스 value 토큰(seq,바코드,orderSeq) 대소문자 무시,
-  // ②폴백: 표 셀의 공백 구분 첫 토큰이 바코드와 정확히 일치(부분일치 아님 → 오매칭 방지).
-  // ⚠ 유비샵은 바코드를 대문자로 저장하는데 사용자는 소문자로 입력할 수 있다(검색은 서버가 대소문자
-  //   무시하지만 강조는 클라이언트 매칭이라 여기서 정규화 필수). 예: 입력 2607dl → 목록 2607DL.
-  function msFindRow(bc) {
+  // ── 공용 강조/스크롤 (상품입고 재고화·회전입고·메인석입고 공용) ───────────────────────
+  //  로드 전 ubHlStore(바코드) 로 sessionStorage(MS_HL_KEY)에 저장 → submit 이 전표 쓰기폼을 새로
+  //  로드(full-nav)하면 새 문서의 init 이 그 flag 를 읽어 해당 행을 강조+스크롤한다.
+  //  ⚠ "1번만 되고 그 다음 안 됨"의 진짜 원인 = 나가는(outgoing) 페이지가 자기 flag 를 조기 소비.
+  //   → ubHlSetHere: flag 를 '세팅한' 문서는 절대 소비하지 않는다. full-nav 후 새 문서(fresh module,
+  //     ubHlSetHere=false)만 소비 → outgoing/new 를 시간(지연) 아닌 '문서 정체성'으로 확정 구분.
+  function ubHlPage() { return isInboundWrite() || isRotateWrite() || isMainStoneWrite(); }
+  let ubHlSetHere = false;
+  function ubHlStore(barcode) {
+    try { sessionStorage.setItem(MS_HL_KEY, JSON.stringify({ bc: barcode, ts: Date.now() })); } catch (_) {}
+    ubHlSetHere = true;   // 이 문서는 세팅자 → 자기 flag 소비 금지(P1 확정 차단)
+  }
+  // 행 찾기: ①idx 체크박스 value 토큰(seq,바코드,orderSeq) 대소문자 무시, ②폴백: 표 셀 공백구분
+  //  첫 토큰이 바코드와 정확히 일치(부분일치 아님 → 오매칭 방지).
+  //  ⚠ 유비샵은 바코드를 대문자로 저장, 사용자는 소문자 입력 가능(검색은 서버가 대소문자 무시하나
+  //   강조는 클라 매칭이라 정규화 필수). 예: 입력 2607dl → 목록 2607DL.
+  function ubFindRow(bc) {
     const want = String(bc == null ? '' : bc).trim().toUpperCase();
     if (!want) return null;
     const boxes = [...document.querySelectorAll('input[name=idx]')];
@@ -628,39 +640,44 @@
     }
     return null;
   }
-  // 전표 로드 후: 저장된 바코드 행을 강조+스크롤. msHlActive 로 동시 재시도루프 1개만 유지.
-  // 성공하면 flag 소비(removeItem). ~3.6s 안에 못 찾으면 루프만 해제하고 flag 는 유지 →
-  // 시트가 늦게(동적) 렌더되면 옵저버가 재호출해 다시 시도한다. 유지된 flag 는 60초 만료 +
-  // 다음 msRun 이 덮어쓰고, 바코드가 전표당 유일하므로 다른 전표를 오강조하지 않는다.
-  let msHlActive = false;
-  function msHighlightPending() {
-    if (msHlActive || !isMainStoneWrite()) return;
+  let ubHlPolling = false;
+  function ubHighlightPending() {
+    // ubHlSetHere 가드: flag 를 세팅한(=submit 하고 나가는) 문서는 소비하지 않는다 → P1 확정 차단.
+    if (!ubHlPage() || ubHlPolling || ubHlSetHere) return;
     let raw = null;
     try { raw = sessionStorage.getItem(MS_HL_KEY); } catch (_) {}
-    if (!raw) return;
-    let bc = raw, ts = 0;
-    try { const o = JSON.parse(raw); if (o && o.bc) { bc = o.bc; ts = o.ts || 0; } } catch (_) {}
-    if (ts && (Date.now() - ts > 60000)) { try { sessionStorage.removeItem(MS_HL_KEY); } catch (_) {} return; }
-    msHlActive = true;
-    let tries = 0;
+    if (!raw) return;               // 대상 없으면 폴 시작 안 함
+    ubHlPolling = true;
+    let tries = 0, lastKey = '';
     const tick = () => {
-      tries++;
-      const row = msFindRow(bc);
+      // ⚠ 실행 중 폴도 매 틱 ubHlSetHere 재확인 — 폴 도중 사용자가 새 검색을 하면 이 문서가 '세팅자'가
+      //  되어 곧 나간다. 그 순간부터 소비 금지(outgoing DOM 에서 새 flag 를 조기 소비하는 P1 결합 차단).
+      //  JS 단일스레드라 ubHlStore 는 tick 사이에만 실행되므로 이 검사로 확정 안전.
+      if (ubHlSetHere) { ubHlPolling = false; return; }
+      // 매 틱 flag 를 새로 읽는다 — 새 검색이 덮어써도 최신 바코드를 쫓고(P2), identity 가 바뀌면
+      //  재시도 예산(tries)도 리셋. 사라졌으면(소비됨) 종료.
+      let cur = null;
+      try { cur = sessionStorage.getItem(MS_HL_KEY); } catch (_) {}
+      if (!cur) { ubHlPolling = false; return; }
+      let bc = cur, ts = 0;
+      try { const o = JSON.parse(cur); if (o && o.bc) { bc = o.bc; ts = o.ts || 0; } } catch (_) {}
+      const key = bc + '|' + ts;
+      if (key !== lastKey) { lastKey = key; tries = 0; }   // flag 교체 → 예산 리셋(P2)
+      if (ts && (Date.now() - ts > 60000)) { try { sessionStorage.removeItem(MS_HL_KEY); } catch (_) {} ubHlPolling = false; return; }   // 만료
+      const row = ubFindRow(bc);
       if (row) {
         try { sessionStorage.removeItem(MS_HL_KEY); } catch (_) {}
         row.classList.add('ub-ms-hl');
         try { row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
         catch (_) { try { row.scrollIntoView(); } catch (_) {} }
         msLog('강조+스크롤', bc);
-        msHlActive = false;
+        ubHlPolling = false;
         return;
       }
-      if (tries < 12) { setTimeout(tick, 300); return; }   // ~3.6s 재시도(시트 렌더 지연 대비)
-      // 미발견: 루프만 해제(flag 유지) → 시트가 늦게 렌더되면 옵저버가 재시도. flag 는 60초 만료.
-      msHlActive = false;
-      msLog('강조 대상 아직 없음 — flag 유지(옵저버 재시도 대기)', bc);
+      if (++tries < 25) { setTimeout(tick, 300); return; }   // ~7.5s 폴링(렌더 지연 대비)
+      ubHlPolling = false;   // 소진: flag 유지(60초 만료) → 옵저버/다음 로드가 재시도
     };
-    tick();
+    tick();   // 첫 틱 동기 OK — ubHlSetHere 가드로 outgoing 소비가 원천 차단(시간 의존 없음)
   }
 
   /* ==========================================================================
@@ -747,6 +764,7 @@
       if (f.tmpShop) f.tmpShop.value = shop;
       f.barcode.value = barcode;
       try { localStorage.setItem('UB_ROTATE_LAST', JSON.stringify({ barcode: barcode, shop: shop })); } catch (_) {}
+      ubHlStore(barcode);        // 검색 바코드 저장 → 결과 페이지 init 이 강조+스크롤
       rotLog('barcode', barcode, '→ shop', shop, '→ form1.submit');
       f.submit();   // 전체제출 → 결과 페이지로 이동
     } catch (e) {
@@ -1482,7 +1500,7 @@
       img.style.cursor = on('ubThumbEdit') ? 'pointer' : '';
       img.title = on('ubThumbEdit') ? '상품 수정 (새 창)' : '';
     });
-    msHighlightPending();   // 메인석 입고: 전표 로드 후 찾은 바코드 행 강조+스크롤(1회)
+    ubHighlightPending();   // 재고화·회전입고·메인석: 로드 후 검색 바코드 행 강조+스크롤
   }
   let mo = null;
   function startObserver() {
@@ -1498,7 +1516,7 @@
           if (n.querySelector && n.querySelector('select[name=pageSize]')) needPaging = true;
         }
       }
-      if (needThumb) { bindThumbEdit(document); msHighlightPending(); }   // idx 행 동적렌더 시 메인석 강조도 재시도
+      if (needThumb) { bindThumbEdit(document); ubHighlightPending(); }   // idx 행 동적렌더 시 강조 재시도
       if (needPaging) injectPageSizeOptions();
       if (!document.getElementById(SIDEBAR_ID) && !document.getElementById(HANDLE_ID) && on('ubSidebar')) needSidebar = true;
       if (needSidebar) renderSidebar();
