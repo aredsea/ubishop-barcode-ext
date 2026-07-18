@@ -38,7 +38,13 @@ function Get-ShellHash([string]$path) {
     }
     $bytes = $out.ToArray()
   }
-  return ([BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData($bytes))).Replace('-', '').ToLower()
+  # ⚠ SHA256::HashData 는 .NET 5+ 전용이라 Windows PowerShell 5.1 에서 없다. 5.1 로 돌리면
+  #   메서드 예외가 파일마다 나는데도 스크립트는 계속 진행해 sha256 이 전부 빈 값인
+  #   shell-files.json 을 쓰고 "N files" 성공 메시지까지 낸다(2026-07-18 실제로 당함).
+  #   → 5.1/7 양쪽에서 되는 Create().ComputeHash 로 고정.
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { $digest = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+  return ([BitConverter]::ToString($digest)).Replace('-', '').ToLower()
 }
 
 $files = @()

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "유비샵 바코드 라벨 (D102 인쇄 연동)",
-  "version": "3.6.7",
+  "version": "3.6.8",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArkO+50AYkYZwYE557M6XFas1K3CUpnA1V8oLMjUQSS+fTQhYfNpLbGxdxYQN0DbzYDmTDxnSgtgPaQjYFEE4JdWl/BPILSa07DuPxCeXMDn6MthHMjqr/XKGYe3qTCARnJlVv1LwFMa21hXaJjtyjlB0bwn+RqAcmnS/nfxsk3ibOECWOUMEXeW39EKyGkVoBG1Jox29jhHMRin8mjwZJqYkIx1VKkYeL3CBc66qnFonl5RepOgvQxvmuuLdNfXlowRgiONnirlGjlAjAeHgxKlfNbgC0/+5wM0ncny5qss0TdV/NpmrvyYRG7BC32qKoz6ZZ9QjRLZ+gvTAN/oKiwIDAQAB",
   "description": "유비샵 바코드인쇄를 가로채 D102 인쇄 프로그램으로 보내 Zebra에 직접 인쇄(크롬 인쇄창 없음). 전표 자동 분할조회+캐시. 로직은 GitHub 자동업데이트.",
   "permissions": ["storage", "alarms", "declarativeNetRequest", "notifications", "tabs", "scripting"],

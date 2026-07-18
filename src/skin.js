@@ -773,6 +773,402 @@
   }
 
   /* ==========================================================================
+   *  5.7) 상품주문전표 재고배정 — 부모 새로고침 제거 (v3.6.8)
+   *   /jun/orderitem/orderItemList.do 에서 상태 '본사확인' 행의 링크를 누르면 재고상품
+   *   검색 팝업이 뜨고, 거기서 재고를 고르면 서버가 배정(본사확인→입고완료)한 뒤
+   *   opener(부모)를 목록으로 새로고침한다. 이때 30여개 파라미터 중 searchItemStatus 만
+   *   빈 값으로 와서 상태 필터가 풀린다(실측 확정 — searchShop·pageSize·정렬·날짜는 보존).
+   *
+   *   ★방침: 쓰기를 재현하지 않는다. 배정은 네이티브가 그대로 수행하고, 확장은
+   *     ①부모가 이동하지 못하게 막고 ②바뀐 행만 제자리 갱신한다.
+   *   - 팝업을 우리가 열고 핸들로 opener 를 끊는다 → 응답의 부모 새로고침 코드가 그 줄에서
+   *     죽는다(부모 무손상). noopener 옵션은 쓰지 않는다 — 차단 감지가 불가능해지기 때문(아래).
+   *   - location 가로채기는 스펙상 불가([LegacyUnforgeable]), ISOLATED world 에선
+   *     window.opener 가 보이지 않아 팝업→부모 DOM 직접 접근도 불가.
+   *     → 창간 신호는 chrome.storage.local + onChanged (이 파일이 이미 쓰는 검증된 경로).
+   *   - 신호는 '의도'(팝업에서 재고 클릭 시점)로 먼저 남기고, 실제 성패는 부모가
+   *     서버 재조회로 확인한다. 응답 문구 스캔은 이 앱에서 항상 오탐(폼페이지에 검증
+   *     alert 이 상시 박혀 있음) — 상태를 다시 읽는 게 유일하게 믿을 수 있는 판정.
+   * ========================================================================== */
+  const ASG_TAG = '[UB][assign]';
+  const asgLog = (...a) => { try { console.log(ASG_TAG, ...a); } catch (_) {} };
+  // ★신호 채널 = chrome.storage.local (localStorage + storage 이벤트가 아님).
+  //  ISOLATED world content script 가 window 의 storage 이벤트를 받는지는 검증된 바가 없고,
+  //  안 오면 이 기능 전체가 예외 하나 없이 조용히 아무 일도 안 한다. 반면 chrome.storage
+  //  .onChanged 는 이 파일이 이미 ISOLATED 에서 쓰고 있는(파일 하단 구독) 검증된 경로다.
+  //  ⚠ storage 이벤트와 달리 '쓴 컨텍스트에도' 발화하므로, 지우기(newValue 없음)를 걸러야 한다.
+  const ASG_KEY = 'ubOrderAssign';
+  const ASG_OURS_KEY = 'UB_ORDER_ASSIGN_OURS';   // 팝업 sessionStorage 마커(= 발급받은 nonce)
+  // ★nonce: '우리가 연 팝업'과 '이 신호를 소비할 부모'를 동시에 증명한다.
+  //  없으면 ①네이티브로 열린 팝업까지 우리 것으로 오인하고(배정취소 흐름 오염)
+  //        ②chrome.storage 는 모든 탭에 방송되므로 같은 주문이 보이는 다른 목록 탭들도
+  //          제각각 재조회·갱신·토스트를 한다. 발급한 탭만 소비하게 막는다.
+  const ASG_NONCE_PARAM = 'ubasg';
+  const asgIssued = new Set();   // 이 문서가 발급한 nonce
+  const ASG_TTL = 60000;          // 신호 만료
+  const ASG_VERIFY_MS = 12000;    // 서버 반영 확인 최대 대기
+  const ASG_FETCH_MS = 8000;      // 재조회 1회 타임아웃(무한 대기 방지)
+  const ASG_DONE_TTL = 30000;     // 갱신 완료 기억 시간(취소 후 재배정을 막지 않도록 만료시킨다)
+  function isOrderJunList() { return /\/jun\/orderitem\/orderItemList\.do/.test(location.pathname); }
+  function isAssignPopupForm() { return /\/jun\/orderitem\/orderItemPopCurrentSettingModifyForm\.do/.test(location.pathname); }
+  function isAssignModify() { return /\/jun\/orderitem\/orderItemPopCurrentSettingModify\.do/.test(location.pathname); }
+  // 팝업 URL 에 실어 보내는 검색 파라미터(네이티브 CONST_URL 과 동일 구성).
+  //  CONST_URL 은 페이지(MAIN world) 전역이라 ISOLATED 에서 못 읽는다 → form1 현재값으로 재구성.
+  const ASG_SEARCH_FIELDS = [
+    'pageSize', 'searchSortType', 'searchOrderType', 'searchBaljuType', 'searchItemType',
+    'searchItemStatus', 'searchBranch', 'searchShop', 'searchK', 'searchColor',
+    'searchWordType1', 'searchWordType2', 'searchWord1', 'searchWord2', 'searchRegId',
+    'searchJunNum', 'searchItemSize', 'searchClientName', 'searchDateType',
+    'syear', 'smonth', 'sday', 'eyear', 'emonth', 'eday'
+  ];
+  // ── 순수 헬퍼(DOM 비의존, 단위테스트 대상) ────────────────────────────────
+  //  currentSetting('master','orderSeq','barcode','shop','client','orderDate')
+  function parseCurrentSettingArgs(href) {
+    const m = String(href == null ? '' : href).match(/currentSetting\s*\(([^)]*)\)/);
+    if (!m) return null;
+    const p = m[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
+    // 정확히 6개가 아니면 버린다. 인자 안에 콤마가 섞이면 자리가 밀려 엉뚱한 orderDate 가
+    //  팝업 URL·검증 쿼리로 흘러가므로, 부분 파싱으로 넘기지 않는다(네이티브로 fail-open).
+    if (p.length !== 6) return null;
+    return { master: p[0], orderSeq: p[1], barcode: p[2], shop: p[3], client: p[4], orderDate: p[5] };
+  }
+  // 미배정(=상태 '본사확인') 판정: 3번째 인자 barcode 가 빈 값. 이미 배정된 행은 건드리지 않는다.
+  function isUnassigned(a) { return !!a && !!a.orderSeq && String(a.barcode == null ? '' : a.barcode).trim() === ''; }
+  function parseSetCurrentBarcode(href) {
+    const m = String(href == null ? '' : href).match(/setCurrent\s*\(\s*['"]([^'"]+)['"]\s*\)/);
+    return m ? m[1] : '';
+  }
+  // yyyymmdd → 검색폼 날짜 파라미터(그 하루로 좁혀 대상 행이 반드시 응답에 들어오게 한다)
+  function oneDayParams(yyyymmdd) {
+    const d = String(yyyymmdd == null ? '' : yyyymmdd).trim();
+    if (!/^\d{8}$/.test(d)) return null;
+    return { syear: d.slice(0, 4), smonth: d.slice(4, 6), sday: d.slice(6, 8),
+             eyear: d.slice(0, 4), emonth: d.slice(4, 6), eday: d.slice(6, 8) };
+  }
+  // 배정 성공 판정: 상태가 입고완료 + 응답 행의 링크가 실은 바코드가 기대값과 '정확히' 일치.
+  //  ⚠ 텍스트 부분일치(indexOf) 금지 — '2604O' 를 기대할 때 '2604O1' 을 성공으로 오인한다.
+  //  ⚠ 바코드 없이 '입고완료'만으로 판정하면 같은 Modify.do 를 타는 배정취소(cancelForm)
+  //    흐름을 오인해 방금 취소한 행을 '입고완료'로 되칠하고 고착시킨다.
+  function assignConfirmed(statusText, observedBarcode, wantBarcode) {
+    const t = String(statusText == null ? '' : statusText).replace(/\s+/g, '');
+    if (!/입고완료/.test(t)) return false;
+    const want = String(wantBarcode == null ? '' : wantBarcode).trim().toUpperCase();
+    const got = String(observedBarcode == null ? '' : observedBarcode).trim().toUpperCase();
+    if (!want || !got) return false;
+    return got === want;
+  }
+  const asgDoneKey = (orderSeq, barcode) => String(orderSeq) + '|' + String(barcode || '').toUpperCase();
+  function asgSignalFresh(sig, now) {
+    return !!sig && !!sig.orderSeq && typeof sig.ts === 'number' && (now - sig.ts) <= ASG_TTL;
+  }
+  // ── 부모: 클릭 가로채기 ───────────────────────────────────────────────────
+  function buildAssignPopupUrl(a, nonce) {
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set(ASG_NONCE_PARAM, nonce);
+    p.set('master', a.master); p.set('orderSeq', a.orderSeq); p.set('barcode', a.barcode);
+    p.set('shop', a.shop); p.set('client', a.client); p.set('orderDate', a.orderDate);
+    p.set('reqPage', '1');
+    const f = document.forms['form1'];
+    if (f) ASG_SEARCH_FIELDS.forEach(n => {
+      const el = f.elements[n];   // f[n] 은 동명 필드가 있으면 value 가 undefined 라 조용히 누락된다
+      if (el && typeof el.value === 'string') p.set(n, el.value);
+    });
+    return '/jun/orderitem/orderItemPopCurrentSettingModifyForm.do?' + p.toString();
+  }
+  function bindAssignIntercept() {
+    document.addEventListener('click', (e) => {
+      let args = null;
+      try {
+        const a = e.target && e.target.closest ? e.target.closest('a[href*="currentSetting"]') : null;
+        if (!a) return;
+        args = parseCurrentSettingArgs(a.getAttribute('href'));
+        if (!isUnassigned(args)) return;            // 이미 배정된 행 → 네이티브 그대로
+        // ⚠ 사전조건은 가로채기 '전에' 전부 검사한다. 가로챈 뒤 실패하면 사용자가
+        //   아무것도 못 하게 되므로, 조금이라도 미심쩍으면 네이티브로 흘려보낸다.
+        if (!document.forms['form1']) return;
+        if (!(window.chrome && chrome.storage && chrome.storage.local)) return;
+        var nonce = 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+        var url = buildAssignPopupUrl(args, nonce);
+      } catch (err) { asgLog('사전검사 실패 → 네이티브 진행', err); return; }
+      try {
+        // ★noopener 를 쓰지 않는다. noopener 면 차단돼도 성공해도 반환값이 항상 null 이라
+        //  차단을 감지할 수 없고, 이미 preventDefault 한 뒤라 클릭이 조용히 먹통이 된다
+        //  (= 설계 불변식 '차단되면 네이티브로 흘려보낸다'를 구현 자체가 못 지킴).
+        //  대신 핸들을 받아 부모가 직접 opener 를 끊는다. 실측 확인: 자식이 보는 opener 는
+        //  null 이 되고 다음 페이지로 이동한 뒤에도 유지되어 새로고침 차단 효과는 동일하며,
+        //  창 이름(orderitem_win) 재사용도 살아나 클릭마다 창이 쌓이지 않는다.
+        const w = window.open(url, 'orderitem_win', 'width=400,height=300,scrollbars=yes,resizable=yes');
+        if (!w) { asgLog('팝업 차단됨 → 가로채지 않고 네이티브로 진행'); return; }
+        // opener 를 못 끊으면 부모가 그대로 새로고침되어 이 기능의 존재 이유가 사라진다.
+        //  '실패해도 일단 가로채기'는 최악 — 사용자는 고쳐진 줄 알고 쓰는데 필터가 계속 풀린다.
+        //  끊기 확인에 실패하면 우리가 연 창을 닫고 네이티브에 그대로 넘긴다(창 이름이 같아
+        //  네이티브 currentSetting 이 같은 창을 다시 쓴다).
+        //  ⚠ 확인은 엄격하게: setter 가 조용히 무시되거나 getter 를 못 읽으면 '못 끊었다'로 본다.
+        //   느슨하게 통과시키면 사용자는 고쳐진 줄 알고 쓰는데 필터가 계속 풀린다 — 그게 최악이다.
+        //   반대로 과하게 엄격해서 폴백하면 손해는 '기능이 안 걸리는 것'뿐이라 안전한 방향이다.
+        let cut = false;
+        try { w.opener = null; cut = (w.opener === null); } catch (err) { asgLog('opener 차단/확인 예외', err); }
+        if (!cut) {
+          asgLog('opener 차단 확인 실패 → 가로채기 취소, 네이티브로 진행');
+          try { w.close(); } catch (_) {}
+          return;
+        }
+        asgIssued.add(nonce);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        asgLog('가로챔 — orderSeq', args.orderSeq, '/ opener 끊고 팝업 오픈, nonce', nonce);
+      } catch (err) { asgLog('팝업 오픈 실패 → 네이티브 진행', err); }
+    }, true);
+  }
+  // ── 팝업: 배정 의도/완료 신호 기록 ────────────────────────────────────────
+  function writeAssignSignal(orderSeq, barcode, orderDate, phase, diag, nonce) {
+    try {
+      if (!orderSeq || !nonce) return;
+      const sig = { orderSeq: String(orderSeq), barcode: String(barcode || ''),
+                    orderDate: String(orderDate || ''), phase: phase, ts: Date.now(),
+                    nonce: String(nonce), diag: diag ? String(diag) : '' };
+      // set 실패는 비동기라 바깥 try/catch 에 안 잡힌다 → 콜백에서 lastError 를 봐야
+      //  '기록됐다고 로그만 남기고 실제로는 유실'되는 경우를 안 놓친다.
+      chrome.storage.local.set({ [ASG_KEY]: sig }, () => {
+        const e = chrome.runtime && chrome.runtime.lastError;
+        if (e) asgLog('신호 기록 실패(비동기)', e.message || e);
+        else asgLog('신호', phase, orderSeq, barcode);
+      });
+    } catch (e) { asgLog('신호 기록 실패', e); }
+  }
+  function bindAssignPopupForm() {
+    // ★nonce 는 '팝업이 처음 열린 순간' 잡아 sessionStorage 에 박아둔다.
+    //  클릭 시점의 location.search 에서 읽으면, 사용자가 팝업 안에서 검색하거나 다음 페이지로
+    //  넘어간 뒤 고르는 순간 URL 에 ubasg 가 없어 신호가 통째로 끊긴다. 그러면 서버 배정은
+    //  됐는데 부모는 opener 도 끊겨 있어 그 행이 영영 '본사확인'으로 남는다(후보가 100건 넘어
+    //  페이징이 흔하므로 실사용에서 자주 터진다). sessionStorage 는 창 안 이동에 살아남는다.
+    try {
+      const urlNonce = new URLSearchParams(location.search).get(ASG_NONCE_PARAM);
+      if (urlNonce) sessionStorage.setItem(ASG_OURS_KEY, urlNonce);
+    } catch (_) {}
+    const hidden = (n) => {
+      const el = document.querySelector('input[name="' + n + '"]');
+      return el ? el.value : '';
+    };
+    document.addEventListener('click', (e) => {
+      try {
+        const a = e.target && e.target.closest ? e.target.closest('a[href*="setCurrent"]') : null;
+        if (!a) return;
+        const bc = parseSetCurrentBarcode(a.getAttribute('href'));
+        if (!bc) return;
+        // 부모가 발급한 nonce 가 있을 때만 '우리가 연 팝업'이다(없으면 네이티브로 열린 창).
+        //  검색·페이징으로 URL 에서 ubasg 가 빠졌을 수 있으니 보존해 둔 sessionStorage 가 1순위.
+        let nonce = '';
+        try { nonce = sessionStorage.getItem(ASG_OURS_KEY) || ''; } catch (_) {}
+        if (!nonce) { try { nonce = new URLSearchParams(location.search).get(ASG_NONCE_PARAM) || ''; } catch (_) {} }
+        if (!nonce) { asgLog('nonce 없는 팝업(네이티브) → 관여 안 함'); return; }
+        // preventDefault 하지 않는다 — 배정은 네이티브가 그대로 수행한다.
+        writeAssignSignal(hidden('orderSeq'), bc, hidden('orderDate'), 'intent', '', nonce);
+      } catch (err) { asgLog('팝업 신호 실패', err); }
+    }, true);
+  }
+  function bindAssignModifyPage() {
+    // ★우리가 연 배정 팝업일 때만 관여한다. 이 판정이 없으면 같은 Modify.do 를 타는
+    //  배정취소(cancelForm) 흐름까지 삼켜서, 방금 취소한 행을 '입고완료'로 되칠할 수 있다.
+    let nonce = '';
+    try { nonce = sessionStorage.getItem(ASG_OURS_KEY) || ''; } catch (_) {}
+    if (!nonce) { asgLog('우리 팝업이 아님(nonce 없음) → 관여 안 함'); return; }
+    try { sessionStorage.removeItem(ASG_OURS_KEY); } catch (_) {}
+    const finish = () => {
+      try {
+        const sp = new URLSearchParams(location.search);
+        const bc = sp.get('barcode');
+        // ★진단: 이 응답이 부모를 '어떻게' 새로고침하려 했는지 아직 아무도 실물을 본 적이 없다.
+        //  설계 전체가 'opener 접근이 첫 줄에서 죽는다'에 걸려 있으므로, opener 를 건드리는
+        //  스크립트 원문을 신호에 실어 부모 콘솔([UB][assign])에 남긴다. 창은 곧 닫혀서
+        //  여기서 console.log 해봐야 사라진다. 읽기만 하며 동작에는 영향 없음.
+        let diag = '';
+        try {
+          diag = [...document.querySelectorAll('script')].map(s => s.textContent || '')
+            .filter(t => /opener/.test(t)).join(' || ').replace(/\s+/g, ' ').slice(0, 600);
+        } catch (_) {}
+        if (bc) writeAssignSignal(sp.get('orderSeq'), bc, sp.get('orderDate'), 'done', diag, nonce);
+        else asgLog('barcode 없는 Modify → 배정이 아님, 신호 생략');
+      } catch (e) { asgLog('Modify 신호 실패', e); }
+      // opener 를 끊었으므로 네이티브 self.close() 는 앞선 TypeError 로 실행되지 않는다 → 우리가 닫는다.
+      setTimeout(() => { try { window.close(); } catch (_) {} }, 400);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', finish);
+    else finish();
+  }
+  // ── 부모: 서버 재조회로 확인 + 그 행만 제자리 갱신 ────────────────────────
+  function asgFindRow(orderSeq) {
+    const box = [...document.querySelectorAll('input[name=idx]')]
+      .find(b => String(b.value || '').split(',')[0].trim() === String(orderSeq));
+    return box ? box.closest('tr') : null;
+  }
+  function asgStatusTd(tr) {
+    const link = tr ? tr.querySelector('a[href*="currentSetting"]') : null;
+    return link ? link.closest('td') : null;
+  }
+  function pickStatusCell(doc, orderSeq) {
+    const box = [...doc.querySelectorAll('input[name=idx]')]
+      .find(b => String(b.value || '').split(',')[0].trim() === String(orderSeq));
+    const tr = box ? box.closest('tr') : null;
+    const link = tr ? tr.querySelector('a[href*="currentSetting"]') : null;
+    const td = link ? link.closest('td') : null;
+    if (!td) return null;
+    // 관측 바코드는 텍스트가 아니라 링크 인자에서 뽑는다(표시 문구가 바뀌어도 견디고, 정확일치 가능).
+    const a = parseCurrentSettingArgs(link.getAttribute('href'));
+    return { html: td.innerHTML, text: (td.textContent || '').replace(/\s+/g, ''),
+             barcode: a ? a.barcode : '' };
+  }
+  async function fetchStatusCell(orderSeq, orderDate) {
+    const f = document.forms['form1'];
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('reqPage', '1');
+    if (f) ASG_SEARCH_FIELDS.forEach(n => {
+      const el = f.elements[n];
+      if (el && typeof el.value === 'string') p.set(n, el.value);
+    });
+    p.set('searchItemStatus', '');   // ★ 상태가 바뀌므로 비워야 대상 행이 응답에 들어온다
+    // 상태필터를 풀면 결과가 늘어나는데 reqPage=1 고정이라, 대상 행이 2페이지로 밀리면
+    //  영원히 못 찾고 12초를 헛돈다. 날짜를 하루로 좁히는 것과 별개로 페이지도 넉넉히.
+    p.set('pageSize', '500');
+    const d = oneDayParams(orderDate);
+    if (d) { p.set('searchDateType', 'a.orderDate'); Object.keys(d).forEach(k => p.set(k, d[k])); }
+    const doc = await Promise.race([
+      postDoc('/jun/orderitem/orderItemList.do?tcode=order_item', p),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('재조회 타임아웃')), ASG_FETCH_MS))
+    ]);
+    return pickStatusCell(doc, orderSeq);
+  }
+  function asgToast(msg) {
+    const bar = document.getElementById(SIDEBAR_ID);
+    if (bar) { try { showToast(bar, msg); return; } catch (_) {} }
+    asgLog(msg);
+  }
+  const asgBusy = new Set();
+  const asgDone = new Map();   // orderSeq → 완료시각. 'intent'/'done' 중복 갱신을 막되 영구는 아니다.
+  // 완료 기억은 orderSeq 가 아니라 orderSeq+barcode 로. orderSeq 만 쓰면 배정→취소→다른
+  //  바코드로 재배정을 30초간 막아버린다(정상 작업인데 화면이 안 바뀜).
+  function asgRecentlyDone(seq, barcode) {
+    const k = asgDoneKey(seq, barcode), ts = asgDone.get(k);
+    if (!ts) return false;
+    if (Date.now() - ts > ASG_DONE_TTL) { asgDone.delete(k); return false; }
+    return true;
+  }
+  // 신호가 지워질 때, 그 사이 도착한 '더 새로운' 신호까지 날리지 않도록 ts 를 대조해 지운다.
+  function asgClearSignalIfSame(sig) {
+    try {
+      chrome.storage.local.get(ASG_KEY, (d) => {
+        const cur = d && d[ASG_KEY];
+        if (cur && cur.ts === sig.ts) chrome.storage.local.remove(ASG_KEY, () => {
+          const e = chrome.runtime && chrome.runtime.lastError; if (e) asgLog('신호 삭제 실패', e.message || e);
+        });
+      });
+    } catch (_) {}
+  }
+  const asgPending = new Map();   // 검증 중 도착한 최신 신호(같은 orderSeq) — 끝나고 이어받는다
+  async function verifyAndPatchRow(sig) {
+    const key = String(sig.orderSeq);
+    // 이미 반영한 배정이면 신호를 남겨두지 않는다(남기면 다음 로드에서 또 소비한다).
+    if (asgRecentlyDone(sig.orderSeq, sig.barcode)) { asgClearSignalIfSame(sig); return; }
+    // 검증 중 같은 주문이 다른 바코드로 재배정되면 그 신호를 버리지 않고 대기시켰다가 이어서 처리.
+    //  ⚠ 콜백 도착 순서 ≠ 신호 생성 순서라, 더 새로운 것만 남긴다.
+    if (asgBusy.has(key)) {
+      const prev = asgPending.get(key);
+      if (!prev || (sig.ts || 0) > (prev.ts || 0)) asgPending.set(key, sig);
+      return;
+    }
+    // ★busy 는 첫 await 앞에서 잡는다. 행 대기(await) 뒤에 잡으면 intent/done 이 둘 다
+    //  통과해 같은 주문에 폴링이 두 개 돌고, 오래된 응답이 최신 상태를 덮어쓸 수 있다.
+    asgBusy.add(key);
+    const deadline = Date.now() + ASG_VERIFY_MS;
+    try {
+      // 부모가 막 로드된 참이면 표가 아직 안 그려졌을 수 있다 → 바로 포기하지 말고 잠깐 기다린다.
+      for (let i = 0; i < 6 && !asgFindRow(sig.orderSeq); i++) await new Promise(r => setTimeout(r, 500));
+      if (!asgFindRow(sig.orderSeq)) return;   // 이 문서엔 해당 행이 없음(다른 검색화면) → 종료
+      while (Date.now() < deadline) {
+        let cell = null;
+        try { cell = await fetchStatusCell(sig.orderSeq, sig.orderDate); } catch (err) { asgLog('재조회 실패', err); }
+        if (cell && assignConfirmed(cell.text, cell.barcode, sig.barcode)) {
+          // ⚠ 행 참조를 루프 밖에서 잡아두면 안 된다 — 폴링 수초 사이에 표가 다시 그려지면
+          //   분리된(detached) 노드를 고치고도 성공으로 처리해 화면은 그대로인 사고가 난다.
+          //   성공 직전에 다시 찾고 isConnected 까지 확인한 뒤, 실제로 바꾼 경우에만 완료 처리.
+          const tr = asgFindRow(sig.orderSeq);
+          const td = tr && tr.isConnected ? asgStatusTd(tr) : null;
+          if (!td) { asgLog('갱신 대상 행이 사라짐 — 재시도', sig.orderSeq); await new Promise(r => setTimeout(r, 700)); continue; }
+          // 서버가 렌더한 셀을 그대로 이식 → 손으로 만든 마크업이 아니라서
+          // 이후 그 행에서 다시 링크를 눌러도 네이티브 동작이 그대로 이어진다.
+          td.innerHTML = cell.html;
+          tr.classList.add('ub-ms-hl');
+          asgDone.set(asgDoneKey(sig.orderSeq, sig.barcode), Date.now());
+          asgClearSignalIfSame(sig);
+          asgLog('제자리 갱신 완료', sig.orderSeq, cell.text);
+          asgToast('재고배정 반영: ' + cell.text);
+          return;
+        }
+        await new Promise(r => setTimeout(r, 700));
+      }
+      asgLog('확인 시간초과 — 서버 반영을 확인하지 못함', sig.orderSeq);
+      // 배정 자체는 네이티브가 수행했으므로 '실패'가 아니라 '확인 못 함'이다.
+      //  이 기능이 없애려는 행동(새로고침)을 지시하지 않는다.
+      asgToast('배정은 됐을 수 있습니다 — 상태만 확인하지 못했습니다');
+    } finally {
+      asgBusy.delete(key);
+      // 검증 중 밀려온 최신 신호가 있으면 이어서 처리한다. 그냥 버리면 그 배정은
+      //  화면에 영영 반영되지 않는다(취소 후 다른 바코드로 재배정한 경우).
+      const next = asgPending.get(key);
+      asgPending.delete(key);
+      // 같은 배정의 intent/done 은 하나로 본다. 이미 12초를 폴링했으므로 같은 건을 또 돌리면
+      //  검증 시간이 두 배가 되고 실패 토스트가 두 번 뜬다. 다른 바코드일 때만 이어서 처리.
+      if (next && asgDoneKey(next.orderSeq, next.barcode) !== asgDoneKey(sig.orderSeq, sig.barcode)) {
+        handleAssignSignal(next);
+      }
+    }
+  }
+  function handleAssignSignal(sig) {
+    try {
+      if (!asgSignalFresh(sig, Date.now())) return;
+      // 이 문서가 발급한 nonce 만 소비한다. chrome.storage 는 모든 탭에 방송되므로,
+      //  이게 없으면 같은 주문이 보이는 다른 목록 탭들도 제각각 재조회·갱신·토스트를 한다.
+      if (!sig.nonce || !asgIssued.has(sig.nonce)) return;
+      if (sig.diag) asgLog('Modify 응답의 opener 스크립트 원문 →', sig.diag);
+      // await 하지 않으므로 rejection 을 반드시 삼킨다(unhandled rejection 방지).
+      verifyAndPatchRow(sig).catch(err => asgLog('검증 중 예외', err));
+    } catch (err) { asgLog('신호 처리 실패', err); }
+  }
+  function bindAssignStorage() {
+    try {
+      chrome.storage.onChanged.addListener((ch, area) => {
+        if (area !== 'local' || !ch[ASG_KEY]) return;
+        const sig = ch[ASG_KEY].newValue;
+        if (!sig) return;   // 우리가 지운 경우(newValue 없음) — 쓴 컨텍스트에도 발화하므로 필수
+        handleAssignSignal(sig);
+      });
+      // 부모 목록이 아직 로드 중일 때 팝업이 신호를 쓰면 받을 리스너가 없어 유실된다
+      //  (값은 남는데 아무도 안 읽음) → 시작 시 남은 신호를 1회 소비한다.
+      chrome.storage.local.get(ASG_KEY, (d) => {
+        try {
+          const sig = d && d[ASG_KEY];
+          if (!sig) return;
+          // 만료분은 청소한다 — 안 지우면 진단 문자열(응답 스크립트 원문)이 계속 남는다.
+          if (!asgSignalFresh(sig, Date.now())) { chrome.storage.local.remove(ASG_KEY); return; }
+          handleAssignSignal(sig);
+        } catch (_) {}
+      });
+    } catch (e) { asgLog('storage 구독 실패', e); }
+  }
+  function initAssign() {
+    // 페이지 동작을 바꾸는 다른 기능들과 같은 게이트. 이 기능은 그 중 유일하게 쓰기 흐름을
+    //  가로채므로, 현장에서 오작동해도 팝업 토글로 끌 수 있어야 한다(확장은 다운그레이드 불가).
+    if (!state.ubSkin) return;
+    try {
+      if (isOrderJunList()) { bindAssignIntercept(); bindAssignStorage(); }
+      else if (isAssignModify()) bindAssignModifyPage();
+      else if (isAssignPopupForm()) bindAssignPopupForm();
+    } catch (e) { asgLog('초기화 실패', e); }
+  }
+
+  /* ==========================================================================
    *  6) 좌측/플로팅 사이드바 + 드래그 + 접힌 핸들
    * ========================================================================== */
   const SIDEBAR_ID = 'ub-sidebar';
@@ -1879,6 +2275,7 @@
     captureSearchBarcode();   // v3.3.3: 바코드 검색칸 입력값 → 클립보드 자동 등록
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
+    initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)

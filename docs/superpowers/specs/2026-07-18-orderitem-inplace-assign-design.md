@@ -68,26 +68,26 @@
 확장은 **부모가 이동하지 못하게 만드는 것**과 **행을 제자리에서 갱신하는 것**만 한다.
 
 ```
-부모 목록                              팝업(우리가 noopener 로 염)
+부모 목록                              팝업(우리가 열고 opener 를 끊음)
   │                                      │
   ├─ 본사확인 링크 클릭                    │
   │   capture 단계에서 가로채              │
-  │   preventDefault + stopImmediate      │
-  │   window.open(url,'_blank','noopener…')──▶ 재고상품 검색 (네이티브 그대로)
-  │                                      │   검색·페이징 전부 네이티브
-  │                                      ├─ 재고 선택 = 네이티브 setCurrent
+  │   nonce 발급 + window.open(…&ubasg=n) ──▶ 재고상품 검색 (네이티브 그대로)
+  │   핸들 없으면(차단) 폴백 ↺            │   검색·페이징 전부 네이티브
+  │   w.opener = null 확인되면            ├─ 로드 시 nonce 를 sessionStorage 에 보존
+  │   preventDefault + stopImmediate      ├─ 재고 선택 = 네이티브 setCurrent
   │                                      │   → Modify.do 로 이동, 서버가 실제 배정 수행
   │                                      │
   │                                      ├─ Modify.do 응답이 opener 새로고침 시도
   │                                      │   → opener 가 null 이라 그 줄에서 죽음
   │                                      │   → 부모는 손도 안 탐  ★
   │                                      │
-  │                                      └─ skin.js(Modify 페이지)가 URL 에서
-  │                                          orderSeq·barcode 를 읽어
-  │                                          localStorage 에 신호 기록 후 self.close()
+  │                                      └─ skin.js(Modify 페이지)가 URL 의
+  │                                          orderSeq·barcode + 보존한 nonce 로
+  │                                          chrome.storage 에 신호 기록 후 self.close()
   │                                              │
-  ◀── storage 이벤트 ───────────────────────────┘
-  │
+  ◀── chrome.storage.onChanged ─────────────────┘
+  │   (자기가 발급한 nonce 만 소비)
   └─ 그 행만 서버에서 다시 읽어 상태셀 교체(검증 + 바이트 동일 갱신)
 ```
 
@@ -102,18 +102,34 @@
   - `CONST_URL` 은 MAIN world 전역이라 ISOLATED 에서 못 읽는다 → **form1 의 현재 값으로 재구성**.
   - 사실 이 파라미터들은 팝업이 `setCurrent`/`cancelForm` URL 에 굽는 용도라 우리 흐름엔
     불필요하지만, 네이티브와 동일 요청을 유지해 서버 측 분기 차이를 없앤다.
-- `window.open(url, '_blank', 'noopener,width=400,height=300,scrollbars=yes,resizable=yes')`
-  - 반환값은 스펙상 **null** (핸들 확보 불가) → 팝업 상태 폴링은 설계에서 배제.
+- `window.open(url, 'orderitem_win', 'width=400,height=300,scrollbars=yes,resizable=yes')` 후
+  부모가 직접 `w.opener = null`.
+  - **`noopener` 옵션은 쓰지 않는다**(초안에서 폐기). `noopener` 면 차단되든 성공하든 반환값이
+    항상 null 이라 **팝업 차단을 감지할 수 없고**, 이미 `preventDefault` 한 뒤라 클릭이 조용히
+    먹통이 된다 — §3.4 의 폴백 불변식을 구현 자체가 못 지킨다. 창 이름 재사용도 죽어 팝업이 쌓인다.
+  - 실측(Chrome 150): 핸들 방식에서도 자식이 보는 `opener` 는 null 이고 **다음 페이지로 이동한
+    뒤에도 유지**되어 새로고침 차단 효과는 동일. 크기·self-close 도 그대로 동작.
+  - `w.opener === null` 로 **확인될 때만** 가로챈다. getter 예외·확인 실패는 전부 '못 끊음'으로
+    보고 우리가 연 창을 닫은 뒤 네이티브에 넘긴다. 느슨하게 통과시키면 사용자는 고쳐진 줄 알고
+    쓰는데 필터가 계속 풀리는 최악이 된다(폴백은 손해가 '기능 미적용'뿐이라 안전한 방향).
+- **nonce**: 부모가 팝업 URL 에 `ubasg=<nonce>` 를 실어 발급하고 자신이 발급한 것만 소비한다.
+  없으면 ①네이티브로 열린 팝업까지 우리 것으로 오인(배정취소 흐름 오염) ②`chrome.storage` 는
+  모든 탭에 방송되므로 같은 주문이 보이는 **다른 목록 탭들이 제각각 재조회·갱신·토스트**를 한다.
 
 ### 3.2 팝업 Modify 페이지: 신호 기록
 
-- 게이트: `location.pathname` 이 `/jun/orderitem/orderItemPopCurrentSettingModify.do`.
-- `location.search` 에서 `orderSeq`, `barcode` 추출.
-- `localStorage.setItem('UB_ORDER_ASSIGN_v1', JSON.stringify({ orderSeq, barcode, ts }))`
-  - **localStorage 를 쓰는 이유**: 동일 origin 의 다른 창에 `storage` 이벤트가 발생하며,
-    `opener` 없이도 부모에 닿는 유일한 무권한 채널. (`sessionStorage` 는 탭 단위라 안 됨.)
+- **팝업 폼 페이지**: 로드 시 URL 의 `ubasg` 를 **즉시 `sessionStorage` 에 보존**한다.
+  클릭 시점에 URL 에서 읽으면, 사용자가 팝업 안에서 검색하거나 페이지를 넘긴 뒤 고르는 순간
+  URL 에 `ubasg` 가 없어 신호가 통째로 끊긴다 → 서버 배정은 됐는데 opener 도 끊겨 있어
+  그 행이 **영영 `본사확인` 으로 남는다**. 후보가 100건을 넘어 페이징이 흔하므로 실사용 빈발.
+- **Modify 페이지**: `location.search` 의 `orderSeq`·`barcode` + 보존한 nonce 로 신호 기록.
+- **신호 채널 = `chrome.storage.local` + `onChanged`** (localStorage/`storage` 이벤트 아님).
+  - ISOLATED world content script 가 window 의 `storage` 이벤트를 받는지는 **검증된 바가 없고**,
+    안 오면 이 기능 전체가 예외 하나 없이 조용히 아무 일도 안 한다.
+    `chrome.storage.onChanged` 는 이 파일이 이미 ISOLATED 에서 쓰는 검증된 경로다.
+  - ⚠ `storage` 이벤트와 달리 **쓴 컨텍스트에도 발화**하므로 삭제(newValue 없음)를 걸러야 한다.
 - 그 후 `window.close()`.
-  - opener 가 null 이라 네이티브 `self.close()` 가 앞선 TypeError 로 실행 안 될 수 있으므로
+  - opener 를 끊었으므로 네이티브 `self.close()` 가 앞선 TypeError 로 실행 안 될 수 있어
     **우리가 닫는다**. 실패해도 기능상 문제 없음(사용자가 닫으면 됨).
 
 ### 3.3 부모: 행 제자리 갱신
@@ -132,24 +148,44 @@
 ### 3.4 불변식 / 실패 시 동작
 
 - **미배정 행만 가로챈다.** 판정은 `currentSetting` 3번째 인자의 공백 여부 하나로.
-- **어떤 예외든 네이티브로 폴백.** `window.open` 이 팝업 차단으로 null-and-blocked 이거나,
-  form1 이 없거나, localStorage 가 막혔거나, 조립 실패 시 → 가로채지 않고 원래 링크가 돌게 둔다.
-  (가로챈 뒤 실패하면 사용자가 아무것도 못 하게 되므로, **가로채기 전에** 사전조건을 전부 검사한다.)
-- **상태 신호는 1회 소비.** 처리 후 즉시 `removeItem`. 60초 만료.
-- **`storage` 이벤트는 다른 창에서만 발생**하므로 자기 자신이 쓴 신호를 되먹는 문제는 없다.
-  단 부모가 여러 탭 열려 있으면 모두 수신 → 각자 자기 DOM 에 해당 행이 있을 때만 갱신(무해).
+  인자가 정확히 6개가 아니면 파싱을 버린다(콤마가 섞이면 자리가 밀려 엉뚱한 orderDate 가 흐른다).
+- **어떤 예외든 네이티브로 폴백.** 팝업 차단(핸들 null)·`w.opener` 차단 확인 실패·form1 없음·
+  `chrome.storage` 없음·조립 실패 → 가로채지 않고 원래 링크가 돌게 둔다. 사전조건은
+  **`preventDefault` 앞에서** 전부 검사하고, 창을 이미 열었으면 닫고 넘긴다.
+- **`state.ubSkin` 게이트(킬스위치).** 페이지 동작을 바꾸는 다른 기능과 동일한 게이트를 둔다.
+  이 기능은 그중 유일하게 쓰기 흐름을 가로채므로 현장에서 오작동해도 팝업 토글로 끌 수 있어야
+  한다(확장은 다운그레이드가 불가능하다).
+- **성공 판정은 바코드 정확일치.** `입고완료` 텍스트만으로 판정하면 같은 `Modify.do` 를 타는
+  배정취소 흐름을 오인해 방금 취소한 행을 되칠하고 고착시킨다. 부분일치(indexOf)도 금지
+  (`2604O` 기대 시 `2604O1` 오인).
+- **행 참조는 성공 직전에 다시 찾는다.** 폴링 수초 사이 표가 다시 그려지면 분리된 노드를 고치고도
+  성공 처리하는 사고가 난다 → `isConnected` 확인 후 실제 교체에 성공해야 완료로 본다.
+- **신호는 발급한 문서만 소비**(nonce). 완료 기억 키는 `orderSeq+barcode`(취소 후 재배정 허용),
+  60초 만료. 삭제는 `ts` 대조 후에만(더 새로운 신호를 지우지 않게).
 
 ## 4. 검증
 
-- **순수 함수 단위테스트**(`tests/orderitem-assign.test.js`, node 직접 실행):
-  - `parseCurrentSettingArgs(href)` — 인자 6개 파싱, 따옴표/공백 변형
-  - `isUnassigned(args)` — barcode 공백 판정
-  - `pickStatusCell(html, orderSeq)` — 응답에서 대상 행 상태셀 추출
-  - `assignSignal` 만료/형식 판정
-- **라이브**: 사용자가 실제 1건 처리 →
-  1. 부모가 이동하지 않는다(스크롤·필터 그대로) 2. 해당 행이 `입고완료(바코드)`로 바뀐다
+- **순수 함수 단위테스트**(`tests/orderitem-assign.test.js`, node 직접 실행, **21 pass**):
+  `parseCurrentSettingArgs` / `isUnassigned` / `parseSetCurrentBarcode` / `oneDayParams` /
+  `assignConfirmed`(정확일치·접두사 오인·바코드 없음) / `asgSignalFresh`.
+  skin.js 는 IIFE 라 require 가 안 되므로 소스에서 함수 선언을 이름으로 추출해 평가한다
+  (리네임되면 테스트가 즉시 죽어 조용한 드리프트가 안 생긴다).
+- **라이브**(사용자가 실제 1건 처리):
+  1. 부모가 이동하지 않는다(필터·스크롤 그대로)  2. 해당 행이 `입고완료(바코드)` 로 바뀐다
   3. ERP 상 상태가 실제로 변경돼 있다(다른 조회로 교차확인)
+  4. **팝업에서 검색·페이징을 거친 뒤 고르는 경로도 확인**(nonce 보존 검증)
 - 콘솔 태그 `[UB][assign]` 로 각 단계 로그.
+
+### ⚠ 배포 시점까지 남는 미검증 전제
+
+**`orderItemPopCurrentSettingModify.do` 의 응답 스크립트를 아직 아무도 읽어본 적이 없다.**
+설계 전체가 "그 응답의 첫 `opener.` 접근이 TypeError 로 죽는다"에 걸려 있는데, 실측된 것은
+팝업 *폼* 페이지에 opener 참조가 없다는 사실뿐이다. 죽어서 안 도는 것이 `self.close()` 하나면
+무해하지만, 그 블록에 2차 요청이 섞여 있다면 조용히 유실된다.
+
+→ 그래서 Modify 페이지에서 **opener 를 건드리는 스크립트 원문을 신호에 실어 부모 콘솔에
+남기는 진단**을 넣었다(읽기 전용, 동작 무영향). 라이브 1건이면 답이 나오므로 **첫 검증 때
+반드시 이 로그를 확인**하고, 2차 요청이 있으면 설계를 재검토한다.
 
 ## 5. 배포
 

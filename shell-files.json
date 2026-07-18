@@ -1,9 +1,9 @@
 {
-  "version": "3.6.7",
+  "version": "3.6.8",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "27bfede5276a2f4a2feefe68bce058de2d8866c4f0d7be4513c95836f04bba6d"
+      "sha256": "b4d9d99c578b9e3dac1c85849dcbd97979c252ac74980e81dc71b7b0badaa2af"
     },
     {
       "path": "src/loader.js",
@@ -23,7 +23,7 @@
     },
     {
       "path": "src/skin.js",
-      "sha256": "0bbcacf6ed1b8dc119980b629934b95bcce40cf24ce4d215bcda30005e197d9d"
+      "sha256": "1838cdba438dbbfaecffd0420022d65df5bf6c7537f6c353a0dbabf06b57158e"
     },
     {
       "path": "popup/popup.html",
