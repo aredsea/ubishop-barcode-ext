@@ -31,12 +31,12 @@ function extractFn(src, name) {
 }
 
 const NAMES = ['parseCurrentSettingArgs', 'isUnassigned', 'parseSetCurrentBarcode',
-               'oneDayParams', 'changeConfirmed', 'statusMatchesLabel', 'asgSignalFresh'];
+               'oneDayParams', 'statusMatchesLabel', 'asgSignalFresh'];
 const ASG_TTL_SRC = SRC.match(/const\s+ASG_TTL\s*=\s*(\d+)/);
 assert.ok(ASG_TTL_SRC, 'skin.js 에서 ASG_TTL 상수를 찾지 못했습니다');
 const ASG_TTL = Number(ASG_TTL_SRC[1]);
 
-// changeConfirmed 는 파일 상단의 asgNorm 헬퍼를 쓴다 → 같이 실어준다.
+// 공용 헬퍼 asgNorm(바코드 정규화)도 같이 싣는다 — 사라지면 재동기화 비교가 깨지므로 존재를 확인한다.
 const ASG_NORM_SRC = SRC.match(/const\s+asgNorm\s*=\s*[^;]+;/);
 assert.ok(ASG_NORM_SRC, 'skin.js 에서 asgNorm 을 찾지 못했습니다');
 
@@ -49,7 +49,7 @@ new Function('exports', 'ASG_TTL',
 )(sandbox, ASG_TTL);
 
 const { parseCurrentSettingArgs, isUnassigned, parseSetCurrentBarcode,
-        oneDayParams, changeConfirmed, statusMatchesLabel, asgSignalFresh } = sandbox;
+        oneDayParams, statusMatchesLabel, asgSignalFresh } = sandbox;
 
 let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
@@ -113,34 +113,6 @@ t('형식이 아니면 null (날짜 범위를 건드리지 않음)', () => {
   assert.strictEqual(oneDayParams('202607'), null);
   assert.strictEqual(oneDayParams(''), null);
   assert.strictEqual(oneDayParams(null), null);
-});
-
-// changeConfirmed(관측바코드, 기대바코드, 직전바코드) — 배정과 선택취소를 대칭으로 판정
-console.log('changeConfirmed — 반영 완료 판정(배정/취소 공용)');
-t('배정: 빈값 → 새 바코드', () => {
-  assert.strictEqual(changeConfirmed('2604O0', '2604O0', ''), true);
-  assert.strictEqual(changeConfirmed(' 2604o0 ', '2604O0', ''), true);   // 공백·대소문자 무시
-});
-t('취소: 바코드 → 빈값', () => {
-  assert.strictEqual(changeConfirmed('', '', '2604O0'), true);
-  assert.strictEqual(changeConfirmed(null, '', '2604O0'), true);
-});
-t('아직 반영 전이면 실패', () => {
-  assert.strictEqual(changeConfirmed('', '2604O0', ''), false);          // 배정 대기
-  assert.strictEqual(changeConfirmed('2604O0', '', '2604O0'), false);    // 취소 대기
-});
-t('기대와 다른 바코드가 붙었으면 실패 (경합 감지)', () => {
-  assert.strictEqual(changeConfirmed('2604O9', '2604O0', ''), false);
-});
-// ★부분일치로 판정하면 '2604O' 기대 시 '2604O1' 을 성공으로 오인한다.
-t('접두사 관계인 바코드를 성공으로 오인하지 않는다', () => {
-  assert.strictEqual(changeConfirmed('2604O1', '2604O', ''), false);
-  assert.strictEqual(changeConfirmed('2604O', '2604O1', ''), false);
-});
-// ★before === target 이면 애초에 바뀔 게 없다 — 성공으로 보면 안 된다(무변경을 성공 처리 금지).
-t('직전 값과 기대값이 같으면 성공 아님', () => {
-  assert.strictEqual(changeConfirmed('2604O0', '2604O0', '2604O0'), false);
-  assert.strictEqual(changeConfirmed('', '', ''), false);
 });
 
 // statusMatchesLabel(상태셀텍스트, 상태필터 옵션라벨) — false 면 그 행을 목록에서 '지운다'.
