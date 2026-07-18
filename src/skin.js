@@ -804,7 +804,7 @@
   //        ②chrome.storage 는 모든 탭에 방송되므로 같은 주문이 보이는 다른 목록 탭들도
   //          제각각 재조회·갱신·토스트를 한다. 발급한 탭만 소비하게 막는다.
   const ASG_NONCE_PARAM = 'ubasg';
-  const asgIssued = new Set();   // 이 문서가 발급한 nonce
+  const asgIssued = new Map();   // nonce → { orderSeq, beforeBarcode }  (이 문서가 발급한 것만)
   const ASG_TTL = 60000;          // 신호 만료
   const ASG_VERIFY_MS = 12000;    // 서버 반영 확인 최대 대기
   const ASG_FETCH_MS = 8000;      // 재조회 1회 타임아웃(무한 대기 방지)
@@ -812,6 +812,7 @@
   function isOrderJunList() { return /\/jun\/orderitem\/orderItemList\.do/.test(location.pathname); }
   function isAssignPopupForm() { return /\/jun\/orderitem\/orderItemPopCurrentSettingModifyForm\.do/.test(location.pathname); }
   function isAssignModify() { return /\/jun\/orderitem\/orderItemPopCurrentSettingModify\.do/.test(location.pathname); }
+  function isAssignCancel() { return /\/jun\/orderitem\/orderItemPopCurrentSettingCancel\.do/.test(location.pathname); }
   // 팝업 URL 에 실어 보내는 검색 파라미터(네이티브 CONST_URL 과 동일 구성).
   //  CONST_URL 은 페이지(MAIN world) 전역이라 ISOLATED 에서 못 읽는다 → form1 현재값으로 재구성.
   const ASG_SEARCH_FIELDS = [
@@ -845,19 +846,45 @@
     return { syear: d.slice(0, 4), smonth: d.slice(4, 6), sday: d.slice(6, 8),
              eyear: d.slice(0, 4), emonth: d.slice(4, 6), eday: d.slice(6, 8) };
   }
-  // 배정 성공 판정: 상태가 입고완료 + 응답 행의 링크가 실은 바코드가 기대값과 '정확히' 일치.
-  //  ⚠ 텍스트 부분일치(indexOf) 금지 — '2604O' 를 기대할 때 '2604O1' 을 성공으로 오인한다.
-  //  ⚠ 바코드 없이 '입고완료'만으로 판정하면 같은 Modify.do 를 타는 배정취소(cancelForm)
-  //    흐름을 오인해 방금 취소한 행을 '입고완료'로 되칠하고 고착시킨다.
-  function assignConfirmed(statusText, observedBarcode, wantBarcode) {
-    const t = String(statusText == null ? '' : statusText).replace(/\s+/g, '');
-    if (!/입고완료/.test(t)) return false;
-    const want = String(wantBarcode == null ? '' : wantBarcode).trim().toUpperCase();
-    const got = String(observedBarcode == null ? '' : observedBarcode).trim().toUpperCase();
-    if (!want || !got) return false;
-    return got === want;
+  // 반영 완료 판정 — 배정과 선택취소를 대칭으로 다룬다.
+  //  관측 바코드(응답 행의 currentSetting 3번째 인자)가 ①기대값과 정확히 같고
+  //  ②직전 값과 달라졌으면 서버가 실제로 처리한 것이다.
+  //    배정  : before='' → target='2604O0' → observed='2604O0'
+  //    취소  : before='2604O0' → target='' → observed=''
+  //  ⚠ 텍스트 부분일치(indexOf) 금지 — '2604O' 기대 시 '2604O1' 을 성공으로 오인한다.
+  //  ⚠ before 와 같으면 아직 반영 전이다(취소인데 바코드가 그대로면 성공이 아니다).
+  const asgNorm = (s) => String(s == null ? '' : s).trim().toUpperCase();
+  function changeConfirmed(observedBarcode, targetBarcode, beforeBarcode) {
+    const o = asgNorm(observedBarcode), t = asgNorm(targetBarcode), b = asgNorm(beforeBarcode);
+    if (o !== t) return false;
+    return o !== b;
   }
-  const asgDoneKey = (orderSeq, barcode) => String(orderSeq) + '|' + String(barcode || '').toUpperCase();
+  // 지금 걸린 상태 필터에 이 행이 여전히 맞는가. 안 맞으면 목록에서 빠지는 게 맞다
+  //  (본사확인 필터로 보다가 입고완료된 건 / 입고완료 필터로 보다가 취소된 건).
+  //  상태 필터가 없으면 그 건은 목록에 계속 속하므로 제자리 갱신한다.
+  //  순수 비교(단위테스트 대상) — 행을 '지울지' 정하는 판단이라 따로 뺐다.
+  //  ⚠ 옵션 라벨의 괄호는 떼고 비교한다. 셀 텍스트의 괄호는 '바코드'인데 옵션에도 괄호가
+  //   있는 항목이 있어(출고확인(매장재고)) 그대로 비교하면 실제 셀 '출고확인(240HTI)' 과
+  //   안 맞아 멀쩡한 행을 지운다.
+  function statusMatchesLabel(statusText, optionLabel) {
+    const label = String(optionLabel == null ? '' : optionLabel).replace(/\s+/g, '').replace(/\(.*$/, '');
+    if (!label) return true;               // 라벨을 못 읽으면 남긴다
+    return String(statusText == null ? '' : statusText).replace(/\s+/g, '').indexOf(label) === 0;
+  }
+  function rowStillMatchesFilter(statusText) {
+    try {
+      const f = document.forms['form1'];
+      const sel = f && f.elements['searchItemStatus'];
+      if (!sel || !sel.value) return true;   // 상태 필터 없음 → 그대로 남는다
+      const opt = sel.options[sel.selectedIndex];
+      return statusMatchesLabel(statusText, opt ? opt.text : '');
+    } catch (_) { return true; }   // 판단 못 하면 남긴다(잘못 지우는 쪽이 더 위험)
+  }
+  // ★작업 동일성은 nonce 로 잡는다. orderSeq+목표바코드로 잡으면 '취소'는 목표값이 항상 ''
+  //  이라 같은 주문의 서로 다른 취소가 같은 작업으로 뭉개진다(A취소→B배정→B취소 를 30초 안에
+  //  하면 두 번째 취소가 폐기되어, 서버는 바뀌었는데 부모 행만 옛 상태로 남는다).
+  //  nonce 는 클릭마다 새로 발급되므로 같은 nonce 의 intent/done 만 하나로 병합된다.
+  //  목표값·직전값은 '반영됐는지' 검증에만 쓴다.
   function asgSignalFresh(sig, now) {
     return !!sig && !!sig.orderSeq && typeof sig.ts === 'number' && (now - sig.ts) <= ASG_TTL;
   }
@@ -883,7 +910,9 @@
         const a = e.target && e.target.closest ? e.target.closest('a[href*="currentSetting"]') : null;
         if (!a) return;
         args = parseCurrentSettingArgs(a.getAttribute('href'));
-        if (!isUnassigned(args)) return;            // 이미 배정된 행 → 네이티브 그대로
+        // 미배정(본사확인→배정)과 배정됨(입고완료→선택취소) 둘 다 가로챈다. 취소도 같은
+        //  팝업·같은 새로고침 문제를 겪는다. 판정은 '바코드가 달라졌는가' 하나로 대칭 처리.
+        if (!args || !args.orderSeq) return;
         // ⚠ 사전조건은 가로채기 '전에' 전부 검사한다. 가로챈 뒤 실패하면 사용자가
         //   아무것도 못 하게 되므로, 조금이라도 미심쩍으면 네이티브로 흘려보낸다.
         if (!document.forms['form1']) return;
@@ -914,10 +943,12 @@
           try { w.close(); } catch (_) {}
           return;
         }
-        asgIssued.add(nonce);
+        // 발급 기록에 '지금 바코드'를 남긴다 — 성공 판정이 이 값과의 차이로 이뤄진다.
+        asgIssued.set(nonce, { orderSeq: args.orderSeq, beforeBarcode: String(args.barcode || '') });
         e.preventDefault();
         e.stopImmediatePropagation();
-        asgLog('가로챔 — orderSeq', args.orderSeq, '/ opener 끊고 팝업 오픈, nonce', nonce);
+        asgLog('가로챔 —', isUnassigned(args) ? '배정' : '선택취소', 'orderSeq', args.orderSeq,
+               '/ before=' + (args.barcode || '(없음)') + ', nonce', nonce);
       } catch (err) { asgLog('팝업 오픈 실패 → 네이티브 진행', err); }
     }, true);
   }
@@ -953,22 +984,30 @@
     };
     document.addEventListener('click', (e) => {
       try {
-        const a = e.target && e.target.closest ? e.target.closest('a[href*="setCurrent"]') : null;
-        if (!a) return;
-        const bc = parseSetCurrentBarcode(a.getAttribute('href'));
-        if (!bc) return;
+        const t = e.target;
+        if (!t || !t.closest) return;
+        // 이 동작이 끝나면 그 행의 바코드가 '무엇이 되어야 하는가'(=기대값)를 정한다.
+        let target = null;
+        const a = t.closest('a[href*="setCurrent"]');
+        if (a) {
+          const bc = parseSetCurrentBarcode(a.getAttribute('href'));
+          if (!bc) return;
+          target = bc;                        // 재고 배정 → 그 바코드가 붙는다
+        } else if (t.closest('[onclick*="cancelForm"]')) {
+          target = '';                        // 선택취소 → 바코드가 떨어진다
+        } else return;
         // 부모가 발급한 nonce 가 있을 때만 '우리가 연 팝업'이다(없으면 네이티브로 열린 창).
         //  검색·페이징으로 URL 에서 ubasg 가 빠졌을 수 있으니 보존해 둔 sessionStorage 가 1순위.
         let nonce = '';
         try { nonce = sessionStorage.getItem(ASG_OURS_KEY) || ''; } catch (_) {}
         if (!nonce) { try { nonce = new URLSearchParams(location.search).get(ASG_NONCE_PARAM) || ''; } catch (_) {} }
         if (!nonce) { asgLog('nonce 없는 팝업(네이티브) → 관여 안 함'); return; }
-        // preventDefault 하지 않는다 — 배정은 네이티브가 그대로 수행한다.
-        writeAssignSignal(hidden('orderSeq'), bc, hidden('orderDate'), 'intent', '', nonce);
+        // preventDefault 하지 않는다 — 배정·취소는 네이티브가 그대로 수행한다.
+        writeAssignSignal(hidden('orderSeq'), target, hidden('orderDate'), 'intent', '', nonce);
       } catch (err) { asgLog('팝업 신호 실패', err); }
     }, true);
   }
-  function bindAssignModifyPage() {
+  function bindAssignResultPage(kind) {   // 'assign'(Modify.do) | 'cancel'(Cancel.do)
     // ★우리가 연 배정 팝업일 때만 관여한다. 이 판정이 없으면 같은 Modify.do 를 타는
     //  배정취소(cancelForm) 흐름까지 삼켜서, 방금 취소한 행을 '입고완료'로 되칠할 수 있다.
     let nonce = '';
@@ -978,7 +1017,11 @@
     const finish = () => {
       try {
         const sp = new URLSearchParams(location.search);
-        const bc = sp.get('barcode');
+        const urlBc = sp.get('barcode');
+        // ★취소 결과 페이지의 URL barcode 는 '방금 뗀' 바코드다. 끝난 뒤의 값은 빈 값이므로
+        //  그걸 기대값으로 쓰면 영원히 확인되지 않는다.
+        const target = (kind === 'cancel') ? '' : (urlBc || '');
+        const ok = (kind === 'cancel') || !!urlBc;
         // ★진단: 이 응답이 부모를 '어떻게' 새로고침하려 했는지 아직 아무도 실물을 본 적이 없다.
         //  설계 전체가 'opener 접근이 첫 줄에서 죽는다'에 걸려 있으므로, opener 를 건드리는
         //  스크립트 원문을 신호에 실어 부모 콘솔([UB][assign])에 남긴다. 창은 곧 닫혀서
@@ -988,7 +1031,7 @@
           diag = [...document.querySelectorAll('script')].map(s => s.textContent || '')
             .filter(t => /opener/.test(t)).join(' || ').replace(/\s+/g, ' ').slice(0, 600);
         } catch (_) {}
-        if (bc) writeAssignSignal(sp.get('orderSeq'), bc, sp.get('orderDate'), 'done', diag, nonce);
+        if (ok) writeAssignSignal(sp.get('orderSeq'), target, sp.get('orderDate'), 'done', diag, nonce);
         else asgLog('barcode 없는 Modify → 배정이 아님, 신호 생략');
       } catch (e) { asgLog('Modify 신호 실패', e); }
       // opener 를 끊었으므로 네이티브 self.close() 는 앞선 TypeError 로 실행되지 않는다 → 우리가 닫는다.
@@ -1006,6 +1049,26 @@
   function asgStatusTd(tr) {
     const link = tr ? tr.querySelector('a[href*="currentSetting"]') : null;
     return link ? link.closest('td') : null;
+  }
+  // '총 : N 개' 도 같이 줄인다 — 안 줄이면 개수와 목록이 어긋나 사용자가 혼란스럽다.
+  function asgDecrementTotal() {
+    try {
+      const el = [...document.querySelectorAll('span.f_bold')].find(s =>
+        /^\d+$/.test((s.textContent || '').trim()) &&
+        /총/.test(((s.previousElementSibling || {}).textContent) || ''));
+      if (!el) return;
+      const n = parseInt(el.textContent, 10);
+      if (n > 0) el.textContent = String(n - 1);
+    } catch (_) {}
+  }
+  function asgRemoveRow(tr) {
+    try {
+      // 사라지는 건 드문 일이라 짧게만 알린다(§25: 이탈은 ease-out, 300ms 미만, opacity 만).
+      tr.style.transition = 'opacity .24s ease-out';
+      tr.style.opacity = '0';
+      setTimeout(() => { try { tr.remove(); } catch (_) {} }, 240);
+    } catch (_) { try { tr.remove(); } catch (__) {} }
+    asgDecrementTotal();
   }
   function pickStatusCell(doc, orderSeq) {
     const box = [...doc.querySelectorAll('input[name=idx]')]
@@ -1049,8 +1112,8 @@
   const asgDone = new Map();   // orderSeq → 완료시각. 'intent'/'done' 중복 갱신을 막되 영구는 아니다.
   // 완료 기억은 orderSeq 가 아니라 orderSeq+barcode 로. orderSeq 만 쓰면 배정→취소→다른
   //  바코드로 재배정을 30초간 막아버린다(정상 작업인데 화면이 안 바뀜).
-  function asgRecentlyDone(seq, barcode) {
-    const k = asgDoneKey(seq, barcode), ts = asgDone.get(k);
+  function asgRecentlyDone(nonce) {
+    const k = String(nonce || ''), ts = k ? asgDone.get(k) : 0;
     if (!ts) return false;
     if (Date.now() - ts > ASG_DONE_TTL) { asgDone.delete(k); return false; }
     return true;
@@ -1066,14 +1129,20 @@
       });
     } catch (_) {}
   }
-  const asgPending = new Map();   // 검증 중 도착한 최신 신호(같은 orderSeq) — 끝나고 이어받는다
+  const asgPending = new Map();   // 검증 중 도착한 '다음 작업' 신호(같은 orderSeq) — 끝나고 이어받는다
+  const asgActive = new Map();    // orderSeq → 지금 검증 중인 작업의 nonce
   async function verifyAndPatchRow(sig) {
     const key = String(sig.orderSeq);
     // 이미 반영한 배정이면 신호를 남겨두지 않는다(남기면 다음 로드에서 또 소비한다).
-    if (asgRecentlyDone(sig.orderSeq, sig.barcode)) { asgClearSignalIfSame(sig); return; }
+    if (asgRecentlyDone(sig.nonce)) { asgClearSignalIfSame(sig); return; }
     // 검증 중 같은 주문이 다른 바코드로 재배정되면 그 신호를 버리지 않고 대기시켰다가 이어서 처리.
     //  ⚠ 콜백 도착 순서 ≠ 신호 생성 순서라, 더 새로운 것만 남긴다.
     if (asgBusy.has(key)) {
+      // ⚠ 지금 처리 중인 '그 작업'의 후속 신호(intent 뒤에 오는 done)는 대기열에 넣지 않는다.
+      //  ts 는 작업이 아니라 신호마다 새로 찍히므로, 늦게 도착한 현재 작업의 done 이 그 사이
+      //  들어온 '다음 작업'의 신호를 최신이라며 덮어쓰고, finally 는 그걸 현재 작업이라며
+      //  버린다 → 다음 작업이 통째로 유실되어 그 행이 옛 상태로 고착된다.
+      if (String(sig.nonce) === String(asgActive.get(key))) return;
       const prev = asgPending.get(key);
       if (!prev || (sig.ts || 0) > (prev.ts || 0)) asgPending.set(key, sig);
       return;
@@ -1081,6 +1150,7 @@
     // ★busy 는 첫 await 앞에서 잡는다. 행 대기(await) 뒤에 잡으면 intent/done 이 둘 다
     //  통과해 같은 주문에 폴링이 두 개 돌고, 오래된 응답이 최신 상태를 덮어쓸 수 있다.
     asgBusy.add(key);
+    asgActive.set(key, String(sig.nonce));   // 이 행에서 '지금 검증 중인 작업'
     const deadline = Date.now() + ASG_VERIFY_MS;
     try {
       // 부모가 막 로드된 참이면 표가 아직 안 그려졌을 수 있다 → 바로 포기하지 말고 잠깐 기다린다.
@@ -1089,21 +1159,29 @@
       while (Date.now() < deadline) {
         let cell = null;
         try { cell = await fetchStatusCell(sig.orderSeq, sig.orderDate); } catch (err) { asgLog('재조회 실패', err); }
-        if (cell && assignConfirmed(cell.text, cell.barcode, sig.barcode)) {
+        const issued = asgIssued.get(sig.nonce) || {};
+        if (cell && changeConfirmed(cell.barcode, sig.barcode, issued.beforeBarcode)) {
           // ⚠ 행 참조를 루프 밖에서 잡아두면 안 된다 — 폴링 수초 사이에 표가 다시 그려지면
           //   분리된(detached) 노드를 고치고도 성공으로 처리해 화면은 그대로인 사고가 난다.
           //   성공 직전에 다시 찾고 isConnected 까지 확인한 뒤, 실제로 바꾼 경우에만 완료 처리.
           const tr = asgFindRow(sig.orderSeq);
           const td = tr && tr.isConnected ? asgStatusTd(tr) : null;
           if (!td) { asgLog('갱신 대상 행이 사라짐 — 재시도', sig.orderSeq); await new Promise(r => setTimeout(r, 700)); continue; }
-          // 서버가 렌더한 셀을 그대로 이식 → 손으로 만든 마크업이 아니라서
-          // 이후 그 행에서 다시 링크를 눌러도 네이티브 동작이 그대로 이어진다.
-          td.innerHTML = cell.html;
-          tr.classList.add('ub-ms-hl');
-          asgDone.set(asgDoneKey(sig.orderSeq, sig.barcode), Date.now());
+          if (rowStillMatchesFilter(cell.text)) {
+            // 서버가 렌더한 셀을 그대로 이식 → 손으로 만든 마크업이 아니라서
+            // 이후 그 행에서 다시 링크를 눌러도 네이티브 동작이 그대로 이어진다.
+            td.innerHTML = cell.html;
+            tr.classList.add('ub-ms-hl');
+            asgLog('제자리 갱신', sig.orderSeq, cell.text);
+            asgToast('반영: ' + cell.text);
+          } else {
+            // 상태가 바뀌어 지금 필터 조건에서 벗어난 건 → 목록에 남아 있으면 안 된다.
+            asgRemoveRow(tr);
+            asgLog('필터 이탈 → 행 제거', sig.orderSeq, cell.text);
+            asgToast('반영: ' + cell.text + ' (목록에서 제외)');
+          }
+          asgDone.set(String(sig.nonce), Date.now());
           asgClearSignalIfSame(sig);
-          asgLog('제자리 갱신 완료', sig.orderSeq, cell.text);
-          asgToast('재고배정 반영: ' + cell.text);
           return;
         }
         await new Promise(r => setTimeout(r, 700));
@@ -1114,15 +1192,13 @@
       asgToast('배정은 됐을 수 있습니다 — 상태만 확인하지 못했습니다');
     } finally {
       asgBusy.delete(key);
-      // 검증 중 밀려온 최신 신호가 있으면 이어서 처리한다. 그냥 버리면 그 배정은
-      //  화면에 영영 반영되지 않는다(취소 후 다른 바코드로 재배정한 경우).
+      asgActive.delete(key);
+      // 검증 중 밀려온 '다음 작업' 신호가 있으면 이어서 처리한다. 그냥 버리면 그 작업은
+      //  화면에 영영 반영되지 않는다(취소 직후 다른 바코드로 재배정한 경우 등).
+      //  현재 작업의 후속 신호는 위 asgActive 가드에서 이미 걸러져 여기 들어오지 않는다.
       const next = asgPending.get(key);
       asgPending.delete(key);
-      // 같은 배정의 intent/done 은 하나로 본다. 이미 12초를 폴링했으므로 같은 건을 또 돌리면
-      //  검증 시간이 두 배가 되고 실패 토스트가 두 번 뜬다. 다른 바코드일 때만 이어서 처리.
-      if (next && asgDoneKey(next.orderSeq, next.barcode) !== asgDoneKey(sig.orderSeq, sig.barcode)) {
-        handleAssignSignal(next);
-      }
+      if (next) handleAssignSignal(next);
     }
   }
   function handleAssignSignal(sig) {
@@ -1163,7 +1239,8 @@
     if (!state.ubSkin) return;
     try {
       if (isOrderJunList()) { bindAssignIntercept(); bindAssignStorage(); }
-      else if (isAssignModify()) bindAssignModifyPage();
+      else if (isAssignModify()) bindAssignResultPage('assign');
+      else if (isAssignCancel()) bindAssignResultPage('cancel');
       else if (isAssignPopupForm()) bindAssignPopupForm();
     } catch (e) { asgLog('초기화 실패', e); }
   }

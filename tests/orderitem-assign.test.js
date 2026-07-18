@@ -31,20 +31,25 @@ function extractFn(src, name) {
 }
 
 const NAMES = ['parseCurrentSettingArgs', 'isUnassigned', 'parseSetCurrentBarcode',
-               'oneDayParams', 'assignConfirmed', 'asgSignalFresh'];
+               'oneDayParams', 'changeConfirmed', 'statusMatchesLabel', 'asgSignalFresh'];
 const ASG_TTL_SRC = SRC.match(/const\s+ASG_TTL\s*=\s*(\d+)/);
 assert.ok(ASG_TTL_SRC, 'skin.js 에서 ASG_TTL 상수를 찾지 못했습니다');
 const ASG_TTL = Number(ASG_TTL_SRC[1]);
 
+// changeConfirmed 는 파일 상단의 asgNorm 헬퍼를 쓴다 → 같이 실어준다.
+const ASG_NORM_SRC = SRC.match(/const\s+asgNorm\s*=\s*[^;]+;/);
+assert.ok(ASG_NORM_SRC, 'skin.js 에서 asgNorm 을 찾지 못했습니다');
+
 const sandbox = {};
 // eslint-disable-next-line no-new-func
 new Function('exports', 'ASG_TTL',
+  ASG_NORM_SRC[0] + '\n' +
   NAMES.map(n => extractFn(SRC, n)).join('\n') + '\n' +
   NAMES.map(n => `exports.${n} = ${n};`).join('\n')
 )(sandbox, ASG_TTL);
 
 const { parseCurrentSettingArgs, isUnassigned, parseSetCurrentBarcode,
-        oneDayParams, assignConfirmed, asgSignalFresh } = sandbox;
+        oneDayParams, changeConfirmed, statusMatchesLabel, asgSignalFresh } = sandbox;
 
 let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
@@ -110,33 +115,57 @@ t('형식이 아니면 null (날짜 범위를 건드리지 않음)', () => {
   assert.strictEqual(oneDayParams(null), null);
 });
 
-// assignConfirmed(상태텍스트, 응답링크의 관측바코드, 기대바코드)
-console.log('assignConfirmed — 성공 판정(서버 재조회 결과 기준)');
-t('입고완료 + 바코드 정확일치면 성공', () => {
-  assert.strictEqual(assignConfirmed('입고완료(2604O0)', '2604O0', '2604O0'), true);
-  assert.strictEqual(assignConfirmed(' 입고완료 (2604O0) ', '2604O0', '2604o0'), true);   // 대소문자 무시
+// changeConfirmed(관측바코드, 기대바코드, 직전바코드) — 배정과 선택취소를 대칭으로 판정
+console.log('changeConfirmed — 반영 완료 판정(배정/취소 공용)');
+t('배정: 빈값 → 새 바코드', () => {
+  assert.strictEqual(changeConfirmed('2604O0', '2604O0', ''), true);
+  assert.strictEqual(changeConfirmed(' 2604o0 ', '2604O0', ''), true);   // 공백·대소문자 무시
 });
-t('아직 본사확인이면 실패 (아직 반영 전)', () => {
-  assert.strictEqual(assignConfirmed('본사확인', '', '2604O0'), false);
+t('취소: 바코드 → 빈값', () => {
+  assert.strictEqual(changeConfirmed('', '', '2604O0'), true);
+  assert.strictEqual(changeConfirmed(null, '', '2604O0'), true);
 });
-t('다른 바코드가 배정됐으면 실패 (경합 감지)', () => {
-  assert.strictEqual(assignConfirmed('입고완료(2604O9)', '2604O9', '2604O0'), false);
+t('아직 반영 전이면 실패', () => {
+  assert.strictEqual(changeConfirmed('', '2604O0', ''), false);          // 배정 대기
+  assert.strictEqual(changeConfirmed('2604O0', '', '2604O0'), false);    // 취소 대기
 });
-// ★부분일치(indexOf)로 판정하면 '2604O' 를 기대할 때 '2604O1' 을 성공으로 오인한다.
+t('기대와 다른 바코드가 붙었으면 실패 (경합 감지)', () => {
+  assert.strictEqual(changeConfirmed('2604O9', '2604O0', ''), false);
+});
+// ★부분일치로 판정하면 '2604O' 기대 시 '2604O1' 을 성공으로 오인한다.
 t('접두사 관계인 바코드를 성공으로 오인하지 않는다', () => {
-  assert.strictEqual(assignConfirmed('입고완료(2604O1)', '2604O1', '2604O'), false);
-  assert.strictEqual(assignConfirmed('입고완료(2604O)', '2604O', '2604O1'), false);
+  assert.strictEqual(changeConfirmed('2604O1', '2604O', ''), false);
+  assert.strictEqual(changeConfirmed('2604O', '2604O1', ''), false);
 });
-// ★바코드 없이 '입고완료'만으로 성공 판정하면, 같은 Modify.do 를 타는 배정취소 흐름에서
-//   방금 취소한 행을 '입고완료'로 되칠하고 고착시킨다(리뷰 지적). 바코드 대조는 필수.
-t('바코드를 모르면 성공 판정하지 않는다 (배정취소 오인 차단)', () => {
-  assert.strictEqual(assignConfirmed('입고완료(2604O0)', '2604O0', ''), false);
-  assert.strictEqual(assignConfirmed('입고완료(2604O0)', '2604O0', null), false);
-  assert.strictEqual(assignConfirmed('입고완료(2604O0)', '', '2604O0'), false);   // 관측 실패
+// ★before === target 이면 애초에 바뀔 게 없다 — 성공으로 보면 안 된다(무변경을 성공 처리 금지).
+t('직전 값과 기대값이 같으면 성공 아님', () => {
+  assert.strictEqual(changeConfirmed('2604O0', '2604O0', '2604O0'), false);
+  assert.strictEqual(changeConfirmed('', '', ''), false);
 });
-t('빈/널 입력은 실패', () => {
-  assert.strictEqual(assignConfirmed('', '2604O0', '2604O0'), false);
-  assert.strictEqual(assignConfirmed(null, '2604O0', '2604O0'), false);
+
+// statusMatchesLabel(상태셀텍스트, 상태필터 옵션라벨) — false 면 그 행을 목록에서 '지운다'.
+//  잘못 false 가 나오면 멀쩡한 행이 사라지므로, 애매하면 남기는(true) 쪽으로 설계했다.
+console.log('statusMatchesLabel — 행을 지울지 정하는 판단');
+t('필터와 같은 상태면 남긴다', () => {
+  assert.strictEqual(statusMatchesLabel('입고완료(2604O0)', '입고완료'), true);
+  assert.strictEqual(statusMatchesLabel('본사확인', '본사확인'), true);
+});
+t('상태가 바뀌어 필터를 벗어나면 지운다', () => {
+  assert.strictEqual(statusMatchesLabel('입고완료(2604O0)', '본사확인'), false);   // 배정 후
+  assert.strictEqual(statusMatchesLabel('본사확인', '입고완료'), false);            // 취소 후
+});
+// ★옵션 라벨에 괄호가 있는 항목(출고확인(매장재고))을 그대로 비교하면 실제 셀
+//   '출고확인(240HTI)' 과 안 맞아 멀쩡한 행을 지운다.
+t('옵션 라벨의 괄호를 떼고 비교한다', () => {
+  assert.strictEqual(statusMatchesLabel('출고확인(240HTI)', '출고확인(매장재고)'), true);
+});
+t('앞부분 일치만 인정한다 (다른 상태를 오인하지 않음)', () => {
+  assert.strictEqual(statusMatchesLabel('주문취소', '주문완료'), false);
+  assert.strictEqual(statusMatchesLabel('출고완료(2607KJ)', '출고확인(매장재고)'), false);
+});
+t('라벨을 못 읽으면 남긴다 (지우는 쪽이 더 위험)', () => {
+  assert.strictEqual(statusMatchesLabel('본사확인', ''), true);
+  assert.strictEqual(statusMatchesLabel('본사확인', null), true);
 });
 
 console.log('asgSignalFresh — 신호 만료');
