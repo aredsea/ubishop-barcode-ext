@@ -57,19 +57,21 @@
   function discountRate(sale, price) { return sale > 0 ? Math.round((sale - price) / sale * 1000) / 10 : null; }
   function discountText(sale, price) { const rate = discountRate(sale, price); return rate == null ? '—' : rate.toFixed(1) + '%'; }
   /* 이익율 = (실판매가 − 총입고가) ÷ 실판매가.
-   *  ⚠ null 을 돌려주는 두 경우는 **표기하지 않는다**(사용자 요청 — 사은품 등이 많아 가독성을 해친다):
-   *    ① 실판매가 0 이하 → 나눌 수 없음(사은품·100% 할인)
-   *    ② 반올림 결과가 정확히 0.0% → 원가와 같아 이익이 없음
    *  집계에서는 '비율의 평균'이 아니라 **합계끼리 계산**한다(Σ실판매가, Σ총입고가).
-   *  건별 비율을 평균내면 금액이 큰 건과 작은 건이 같은 무게가 되어 실제와 어긋난다. */
+   *  건별 비율을 평균내면 금액이 큰 건과 작은 건이 같은 무게가 되어 실제와 어긋난다.
+   *
+   *  값(profitRate)과 표시(profitText)를 나눈 이유:
+   *   '0% 는 숨긴다'는 사용자 규칙은 **표의 행**을 위한 것이다(사은품이 많아 가독성을 해친다).
+   *   요약 한 줄에까지 적용하면 '진짜 0%' 와 '낼 수 없음' 이 똑같이 '—' 로 보여 구분이 사라진다.
+   *   그래서 은닉은 profitText 만 하고, 요약·정렬은 profitRate 를 직접 쓴다. */
   function profitRate(real, cost) {
-    // ★원가 결측(null)은 0원이 아니다. 0으로 넘기면 이익율이 100% 로 부풀려 표시된다 —
-    //  '모르는 것'을 '이익 100%'로 보여주는 게 이 기능에서 제일 위험하다. 그래서 미표기.
-    if (cost == null || !(real > 0)) return null;
-    const r = Math.round((real - cost) / real * 1000) / 10;
-    return r === 0 ? null : r;
+    // ★원가 결측(null)은 0원이 아니다. 0으로 넘기면 이익율이 100% 로 부풀려 나온다 —
+    //  '모르는 것'을 '이익 100%'로 보여주는 게 이 기능에서 제일 위험하다. 그래서 null.
+    if (cost == null || !(real > 0)) return null;   // 실판매가 0 이하 = 사은품·100% 할인 → 나눌 수 없음
+    return Math.round((real - cost) / real * 1000) / 10;
   }
-  function profitText(real, cost) { const r = profitRate(real, cost); return r == null ? '' : r.toFixed(1) + '%'; }
+  // 표의 행 표시. 낼 수 없거나(null) 정확히 0.0% 면 빈칸(사용자 요청 — 사은품 등 가독성).
+  function profitText(real, cost) { const r = profitRate(real, cost); return (r == null || r === 0) ? '' : r.toFixed(1) + '%'; }
   // 금액 셀 → 숫자. 숫자가 하나도 없으면(빈 칸·'-') null = 결측. firstNum 은 0 을 돌려주므로 구분이 안 된다.
   function numOrNull(s) { return /\d/.test(String(s == null ? '' : s)) ? firstNum(s) : null; }
 
@@ -497,7 +499,8 @@
         cQty: findCol(cells, [/수량/]),
         cSup: findCol(cells, [/^총공급가$/]),
         cSale: findCol(cells, [/^판매가$/]),
-        cPrice: findCol(cells, [/실판매가/])
+        cPrice: findCol(cells, [/실판매가/]),
+        cCost: findCol(cells, [/^총입고가$/])   // 이익율 원가
       };
     }
     return null;
@@ -533,6 +536,8 @@
           supExp: g.cSup >= 0 ? firstNum(r.cells[g.cSup] && r.cells[g.cSup].textContent) : 0,
           saleExp: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0,
           price: g.cPrice >= 0 ? firstNum(r.cells[g.cPrice] && r.cells[g.cPrice].textContent) : 0,
+          // 원가(총입고가). 열이 없거나 칸이 비면 null = 결측 — 0 으로 두면 이익율이 100% 로 잘못 나온다.
+          cost: g.cCost >= 0 ? numOrNull(r.cells[g.cCost] && r.cells[g.cCost].textContent) : null,
           staff: hit ? hit.staff : '(미지정)'
         });
       }
@@ -628,6 +633,9 @@
       return true;
     });
   }
+  // 그룹에 원가를 더한다. 결측이 하나라도 있으면 그 그룹의 이익율은 내지 않는다
+  //  (결측분을 빼고 합하면 분모는 그대로인데 원가만 작아져 이익율이 부풀려진다).
+  function addCost(g, it) { if (it.cost == null) g.costMissing = true; else g.cost = (g.cost || 0) + it.cost; }
   /* ---------- 그룹핑(제품별): 수량/공급가/판매가 합산 ---------- */
   function buildOrderGroups(items) {
     const map = new Map();
@@ -635,9 +643,9 @@
     for (const it of items) {
       const np = normProduct(it.name);   // 사은품 포함(제외 안 함) · 판매탭과 동일한 수기 보정 재사용
       let g = map.get(np.name);
-      if (!g) { g = { type: np.type, name: np.name, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; map.set(np.name, g); }
+      if (!g) { g = { type: np.type, name: np.name, qty: 0, supExp: 0, saleExp: 0, price: 0, cost: 0, costMissing: false, members: [] }; map.set(np.name, g); }
       g.type = np.type;
-      g.qty += it.qty; g.supExp += it.supExp; g.saleExp += it.saleExp; g.price += it.price; g.members.push(it);
+      g.qty += it.qty; g.supExp += it.supExp; g.saleExp += it.saleExp; g.price += it.price; addCost(g, it); g.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
     return { groups, gift };
@@ -649,12 +657,12 @@
     for (const it of items) {
       const staff = it.staff || '(미지정)';
       let sg = map.get(staff);
-      if (!sg) { sg = { staff, qty: 0, supExp: 0, saleExp: 0, price: 0, products: new Map() }; map.set(staff, sg); }
-      sg.qty += it.qty; sg.supExp += it.supExp; sg.saleExp += it.saleExp; sg.price += it.price;
+      if (!sg) { sg = { staff, qty: 0, supExp: 0, saleExp: 0, price: 0, cost: 0, costMissing: false, products: new Map() }; map.set(staff, sg); }
+      sg.qty += it.qty; sg.supExp += it.supExp; sg.saleExp += it.saleExp; sg.price += it.price; addCost(sg, it);
       const np = normProduct(it.name);
       let pg = sg.products.get(np.name);
-      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; sg.products.set(np.name, pg); }
-      pg.qty += it.qty; pg.supExp += it.supExp; pg.saleExp += it.saleExp; pg.price += it.price; pg.members.push(it);
+      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, saleExp: 0, price: 0, cost: 0, costMissing: false, members: [] }; sg.products.set(np.name, pg); }
+      pg.qty += it.qty; pg.supExp += it.supExp; pg.saleExp += it.saleExp; pg.price += it.price; addCost(pg, it); pg.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
     groups.forEach(sg => { sg.productList = [...sg.products.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp); });
@@ -666,12 +674,12 @@
     for (const it of items) {
       const store = it.store || '(미지정)';
       let sg = map.get(store);
-      if (!sg) { sg = { store, qty: 0, supExp: 0, saleExp: 0, price: 0, products: new Map() }; map.set(store, sg); }
-      sg.qty += it.qty; sg.supExp += it.supExp; sg.saleExp += it.saleExp; sg.price += it.price;
+      if (!sg) { sg = { store, qty: 0, supExp: 0, saleExp: 0, price: 0, cost: 0, costMissing: false, products: new Map() }; map.set(store, sg); }
+      sg.qty += it.qty; sg.supExp += it.supExp; sg.saleExp += it.saleExp; sg.price += it.price; addCost(sg, it);
       const np = normProduct(it.name);
       let pg = sg.products.get(np.name);
-      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, saleExp: 0, price: 0, members: [] }; sg.products.set(np.name, pg); }
-      pg.qty += it.qty; pg.supExp += it.supExp; pg.saleExp += it.saleExp; pg.price += it.price; pg.members.push(it);
+      if (!pg) { pg = { name: np.name, type: np.type, qty: 0, supExp: 0, saleExp: 0, price: 0, cost: 0, costMissing: false, members: [] }; sg.products.set(np.name, pg); }
+      pg.qty += it.qty; pg.supExp += it.supExp; pg.saleExp += it.saleExp; pg.price += it.price; addCost(pg, it); pg.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
     groups.forEach(sg => { sg.productList = [...sg.products.values()].sort((a, b) => b.qty - a.qty || b.supExp - a.supExp); });
@@ -792,6 +800,10 @@
       '#ub-stat .fbtns{display:flex;gap:4px;margin-left:8px;}',
       '#ub-stat .fbtn{padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700;background:#eef1f5;color:#4b5563;border:0;cursor:pointer;}',
       '#ub-stat .fbtn.on{background:#35C5F0;color:#fff;}',
+      '#ub-stat .osort{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#4b5563;font-weight:700;}',
+      '#ub-stat .osort select{font-size:12px;padding:4px 6px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#111;cursor:pointer;}',
+      '#ub-stat .obtn{width:24px;height:24px;line-height:1;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#4b5563;cursor:pointer;font-size:11px;}',
+      '#ub-stat .obtn:disabled{opacity:.4;cursor:default;}',
       '#ub-stat button{font-family:inherit;border:0;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;padding:8px 14px;}',
       '#ub-stat .bx{background:#1f8f52;color:#fff;} #ub-stat .bc{background:#eef1f5;color:#374151;}',
       '#ub-stat .bd{flex:1;overflow:auto;padding:0 18px 18px;}',
@@ -800,10 +812,6 @@
       ' padding:9px 8px;border-bottom:2px solid #35C5F0;text-align:right;white-space:nowrap;}',
       '#ub-stat thead th.l{text-align:left;}',
       // 정렬 가능한 헤더 — 현재 기준 열은 색으로, 방향은 ▲▼ 로 보여준다.
-      '#ub-stat thead th.sortable{cursor:pointer;user-select:none;}',
-      '#ub-stat thead th.sortable:hover{background:#e3f5fc;}',
-      '#ub-stat thead th.sortable.on{color:#0b556c;}',
-      '#ub-stat thead th.sortable::after{content:attr(data-dir);font-size:10px;margin-left:3px;opacity:.85;}',
       '#ub-stat tbody td{padding:8px;border-bottom:1px solid #eef1f5;text-align:right;white-space:nowrap;}',
       '#ub-stat tbody td.l{text-align:left;} #ub-stat tbody tr.g{cursor:pointer;}',
       '#ub-stat tbody tr.g:hover{background:#f7fbfd;}',
@@ -882,14 +890,7 @@
         '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="bd"><table>' +
-        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th>' +
-          '<th class="sortable" data-s="qty">총수량</th>' +
-          '<th class="sortable" data-s="sup">총공급가</th>' +
-          '<th class="sortable" data-s="sale">총판매가</th>' +
-          '<th class="sortable" data-s="dc">총DC금액</th>' +
-          '<th class="sortable" data-s="real">총실판매가</th>' +
-          '<th class="sortable" data-s="profit">이익율</th>' +
-          '<th class="sortable" data-s="cnt">코드수</th></tr></thead>' +
+        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총공급가</th><th>총판매가</th><th>총DC금액</th><th>총실판매가</th><th>코드수</th></tr></thead>' +
         '<tbody id="ub-stat-tbody"></tbody></table></div>';
 
     document.body.appendChild(mask);
@@ -911,7 +912,6 @@
           `<td>${nf(g.sale)}</td>` +
           `<td>${nf(g.dc)}</td>` +
           `<td>${nf(g.real)}</td>` +
-          `<td>${g.costMissing ? '' : profitText(g.real, g.cost)}</td>` +
           `<td>${g.members.length}</td></tr>`;
         const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
           '<tr>' +
@@ -921,11 +921,10 @@
           `<td>${nf(m.sale)}</td>` +
           `<td>${nf(m.dc)}</td>` +
           `<td>${nf(m.real)}</td>` +
-          `<td>${profitText(m.real, m.cost)}</td>` +
           '</tr>').join('');
-        rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="9">` +
+        rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th><th>이익율</th>' +
+          '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
           `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
       });
       return rows;
@@ -941,60 +940,23 @@
         }
       }));
     }
-    // 정렬 상태. 기본은 기존 동작(수량 많은 순) 유지.
-    let sortKey = 'qty', sortDesc = true;
-    const sortVal = (g, k) => {
-      if (k === 'cnt') return g.members.length;
-      if (k === 'profit') return g.costMissing ? null : profitRate(g.real, g.cost);   // 미표기(null)는 아래에서 뒤로
-      return g[k] || 0;
-    };
-    function sortList(list) {
-      const dir = sortDesc ? -1 : 1;
-      return list.slice().sort((a, b) => {
-        const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
-        // 이익율이 '미표기'인 항목은 정렬 방향과 무관하게 항상 뒤로 — 0 으로 취급하면
-        //  오름차순에서 맨 앞을 채워 정작 보려는 낮은 이익율 제품이 묻힌다.
-        if (va == null && vb == null) return b.qty - a.qty;
-        if (va == null) return 1;
-        if (vb == null) return -1;
-        return (va - vb) * dir || b.qty - a.qty;
-      });
-    }
     function apply() {
-      const base = (filter === 'all') ? allGroups : allGroups.filter(g => g.type === filter);
-      curList = sortList(base);
+      curList = (filter === 'all') ? allGroups : allGroups.filter(g => g.type === filter);
       box.querySelector('#ub-stat-tbody').innerHTML = rowsHtml(curList);
       bindRows();
       const q = curList.reduce((a, g) => a + g.qty, 0);
       const sup = curList.reduce((a, g) => a + g.sup, 0);
       const real = curList.reduce((a, g) => a + g.real, 0);
-      const anyMissing = curList.some(g => g.costMissing);
-      const cost = curList.reduce((a, g) => a + (g.cost || 0), 0);
-      const pr = anyMissing ? '' : profitText(real, cost);   // 원가 결측이 섞이면 합계 이익율도 내지 않는다
       box.querySelector('#ub-stat-sum').textContent =
-        `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원`
-        + ` · 총입고가 ${nf(cost)}원 · 이익율 ${pr || '—'}`
-        + ` · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${meta}`;
+        `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${meta}`;
       box.querySelectorAll('.fbtn').forEach(b => b.classList.toggle('on', b.dataset.f === filter));
-      box.querySelectorAll('th.sortable').forEach(th => {
-        const on = th.dataset.s === sortKey;
-        th.classList.toggle('on', on);
-        th.dataset.dir = on ? (sortDesc ? '▼' : '▲') : '';
-      });
     }
-    box.querySelectorAll('th.sortable').forEach(th => th.addEventListener('click', () => {
-      const k = th.dataset.s;
-      if (sortKey === k) sortDesc = !sortDesc; else { sortKey = k; sortDesc = true; }
-      apply();
-    }));
 
     box.querySelector('#ub-stat-close').addEventListener('click', close);
     box.querySelectorAll('.fbtn').forEach(b => b.addEventListener('click', () => { filter = b.dataset.f; apply(); }));
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
-      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '총입고가', '이익율', '코드수']];
-      curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale),
-        Math.round(g.dc), Math.round(g.real), Math.round(g.cost || 0),
-        g.costMissing ? '' : profitText(g.real, g.cost), g.members.length]));
+      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '코드수']];
+      curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), Math.round(g.dc), Math.round(g.real), g.members.length]));
       downloadXlsx(aoa, xlsxName());
       log('xlsx 저장', xlsxName(), aoa.length - 1, '행', 'filter=' + filter);
     });
@@ -1041,6 +1003,16 @@
           '<button class="fbtn" data-f="자사">자사</button>' +
           '<button class="fbtn" data-f="사입">타사</button>' +
         '</span>' +
+        '<span class="osort">정렬 ' +
+          '<select id="ub-o-sort">' +
+            '<option value="">기본(수량)</option>' +
+            '<option value="qty">수량</option>' +
+            '<option value="supExp">' + esc(PAGE.supLabel) + '</option>' +
+            '<option value="price">' + esc(PAGE.priceLabel) + '</option>' +
+            (IS_ORDER ? '' : '<option value="disc">할인율</option><option value="profit">이익율</option>') +
+          '</select>' +
+          '<button class="obtn" id="ub-o-sortdir" title="오름/내림 전환">▼</button>' +
+        '</span>' +
         '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="ofl">' +
@@ -1066,13 +1038,47 @@
     const discountHead = IS_ORDER ? '' : '<th>할인율</th>';
     const discountCell = (sale, price) => IS_ORDER ? '' : `<td class="disc">${discountText(sale, price)}</td>`;
     const discountSummary = (sale, price) => IS_ORDER ? '' : ` · 할인율 ${discountText(sale, price)}`;
+    // 이익율(판매탭 전용) — 할인율과 동일한 자리·방식. 원가 결측 그룹은 빈칸(부풀림 방지).
+    const profitHead = IS_ORDER ? '' : '<th>이익율</th>';
+    const profitCell = (o) => IS_ORDER ? '' : `<td class="disc">${o && o.costMissing ? '' : profitText(o ? o.price : 0, o ? o.cost : null)}</td>`;
+    // 요약은 한 줄뿐이라 0% 를 숨기지 않는다 — 숨기면 '진짜 0%' 와 '낼 수 없음' 이 똑같이 '—' 가 된다.
+    const profitSummary = (pr, cost, missing) => {
+      if (IS_ORDER) return '';
+      const r = missing ? null : profitRate(pr, cost);
+      return ` · 이익율 ${r == null ? '—' : r.toFixed(1) + '%'}`;
+    };
 
+    /* ----- 정렬(헤더 바 컨트롤) : 기본은 기존과 같은 수량 내림차순 ----- */
+    let oSortKey = '', oSortDesc = true;
+    const oSortVal = (o, k) => {
+      // 정렬은 '화면에 보이는 값' 기준이어야 한다 — 표에서 빈칸인 것(결측·0%)은 값이 없는 것으로
+      //  보고 뒤로 보낸다. 그러지 않으면 빈 칸이 -5% 와 3% 사이에 끼어 오류처럼 보인다.
+      if (k === 'profit') {
+        const r = o.costMissing ? null : profitRate(o.price, o.cost);
+        return r === 0 ? null : r;
+      }
+      if (k === 'disc') return discountRate(o.saleExp, o.price);
+      return o[k] || 0;
+    };
+    function applySort(list) {
+      if (!oSortKey) return list;
+      const dir = oSortDesc ? -1 : 1;
+      return list.slice().sort((a, b) => {
+        const va = oSortVal(a, oSortKey), vb = oSortVal(b, oSortKey);
+        // 이익율 '미표기'(원가 결측·사은품)는 정렬 방향과 무관하게 항상 뒤로 —
+        //  0 으로 취급하면 오름차순에서 맨 앞을 채워 정작 보려는 낮은 이익율이 묻힌다.
+        if (va == null && vb == null) return b.qty - a.qty;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        return (va - vb) * dir || b.qty - a.qty;
+      });
+    }
     /* ----- 표시 필터(구분/검색) : 재그룹 없이 표시만 ----- */
     function productDisplay() {
       let list = prodGroups;
       if (typeFilter !== 'all') list = list.filter(g => g.type === typeFilter);
       if (nameQuery) { const q = nameQuery.toLowerCase(); list = list.filter(g => g.name.toLowerCase().indexOf(q) >= 0); }
-      return list;
+      return applySort(list);
     }
     function countedProducts() { return productDisplay().filter(g => !excluded.has(g.name)); }
     function staffDisplay() {
@@ -1088,11 +1094,15 @@
           qty: prods.reduce((a, p) => a + p.qty, 0),
           supExp: prods.reduce((a, p) => a + p.supExp, 0),
           saleExp: prods.reduce((a, p) => a + p.saleExp, 0),
-          price: prods.reduce((a, p) => a + p.price, 0)
+          price: prods.reduce((a, p) => a + p.price, 0),
+          // ★필터로 걸러진 목록에서 다시 합산한다 — 원본 그룹의 cost 를 쓰면 화면에 없는
+          //  제품의 원가까지 섞여 이익율이 틀린다.
+          cost: prods.reduce((a, p) => a + (p.cost || 0), 0),
+          costMissing: prods.some(p => p.costMissing)
         });
       });
       out.sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
-      return out;
+      return applySort(out);
     }
     function storeDisplay() {
       const q = nameQuery.toLowerCase();
@@ -1107,11 +1117,15 @@
           qty: prods.reduce((a, p) => a + p.qty, 0),
           supExp: prods.reduce((a, p) => a + p.supExp, 0),
           saleExp: prods.reduce((a, p) => a + p.saleExp, 0),
-          price: prods.reduce((a, p) => a + p.price, 0)
+          price: prods.reduce((a, p) => a + p.price, 0),
+          // ★필터로 걸러진 목록에서 다시 합산한다 — 원본 그룹의 cost 를 쓰면 화면에 없는
+          //  제품의 원가까지 섞여 이익율이 틀린다.
+          cost: prods.reduce((a, p) => a + (p.cost || 0), 0),
+          costMissing: prods.some(p => p.costMissing)
         });
       });
       out.sort((a, b) => b.qty - a.qty || b.supExp - a.supExp);
-      return out;
+      return applySort(out);
     }
     const memStores = (mem) => [...new Set(mem.map(m => m.store).filter(Boolean))].join(', ');
 
@@ -1126,7 +1140,7 @@
           `<td class="qty">${nf(sg.qty)}</td>` +
           `<td class="sup">${nf(sg.supExp)}</td>` +
           `<td class="prc">${nf(sg.price)}</td>` +
-          discountCell(sg.saleExp, sg.price) +
+          discountCell(sg.saleExp, sg.price) + profitCell(sg) +
           `<td>${sg.products.length}</td></tr>`;
         const pr = sg.products.map(p =>
           '<tr>' +
@@ -1134,16 +1148,16 @@
           `<td>${nf(p.qty)}</td>` +
           `<td class="sup">${nf(p.supExp)}</td>` +
           `<td class="prc">${nf(p.price)}</td>` +
-          discountCell(p.saleExp, p.price) +
+          discountCell(p.saleExp, p.price) + profitCell(p) +
           `<td class="l">${esc(memStores(p.members))}</td>` +
           '</tr>').join('');
-        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 5 : 6) + '">' +
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 5 : 7) + '">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">제품명</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th class="l">매장</th>' +
+          '<th class="l">제품명</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + profitHead + '<th class="l">매장</th>' +
           `</tr></thead><tbody>${pr}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th>제품수</th>' +
+        '<th>#</th><th class="l">직원</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + profitHead + '<th>제품수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       bindExpanders();
     }
@@ -1163,7 +1177,7 @@
           `<td class="qty">${nf(g.qty)}</td>` +
           `<td class="sup">${nf(g.supExp)}</td>` +
           `<td class="prc">${nf(g.price)}</td>` +
-          discountCell(g.saleExp, g.price) +
+          discountCell(g.saleExp, g.price) + profitCell(g) +
           `<td>${g.members.length}</td></tr>`;
         const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
           '<tr>' +
@@ -1172,18 +1186,18 @@
           `<td>${nf(m.qty)}</td>` +
           `<td class="sup">${nf(m.supExp)}</td>` +
           `<td class="prc">${nf(m.price)}</td>` +
-          discountCell(m.saleExp, m.price) +
+          discountCell(m.saleExp, m.price) + profitCell(m) +
           `<td class="l">${esc(m.store)}</td>` +
           `<td class="l${m.staff === '(미지정)' ? ' miss' : ''}">${esc(m.staff)}</td>` +
           `<td class="l">${esc(m.customer)}</td>` +
           '</tr>').join('');
-        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 7 : 8) + '">' +
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 7 : 9) + '">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
+          '<th class="l">상품명</th><th class="l">바코드</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + profitHead + '<th class="l">매장</th><th class="l">직원</th><th class="l">고객</th>' +
           `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th>코드수</th>' +
+        '<th class="ub-ck"><input type="checkbox" id="ub-o-all" checked></th><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + profitHead + '<th>코드수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       // 개별 ON/OFF 체크박스 배선(합계·XLSX 제외) — 제품별 뷰 전용, 현행 유지
       const allCb = bd.querySelector('#ub-o-all');
@@ -1222,7 +1236,7 @@
           `<td class="qty">${nf(sg.qty)}</td>` +
           `<td class="sup">${nf(sg.supExp)}</td>` +
           `<td class="prc">${nf(sg.price)}</td>` +
-          discountCell(sg.saleExp, sg.price) +
+          discountCell(sg.saleExp, sg.price) + profitCell(sg) +
           `<td>${sg.products.length}</td></tr>`;
         const pr = sg.products.map(p => {
           const tag = p.type === '자사' ? '<span class="tag tj">자사</span>' : '<span class="tag ts">사입</span>';
@@ -1232,16 +1246,16 @@
             `<td>${nf(p.qty)}</td>` +
             `<td class="sup">${nf(p.supExp)}</td>` +
             `<td class="prc">${nf(p.price)}</td>` +
-            discountCell(p.saleExp, p.price) +
+            discountCell(p.saleExp, p.price) + profitCell(p) +
             '</tr>';
         }).join('');
-        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 5 : 6) + '">' +
+        rows += '<tr class="det" style="display:none"><td></td><td colspan="' + (IS_ORDER ? 5 : 7) + '">' +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">제품명</th><th class="l">구분</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead +
+          '<th class="l">제품명</th><th class="l">구분</th><th>수량</th><th>' + esc(PAGE.supLabel) + '</th><th>' + esc(PAGE.priceLabel) + '</th>' + discountHead + profitHead +
           `</tr></thead><tbody>${pr}</tbody></table></td></tr>`;
       });
       bd.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th class="l">매장</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + '<th>제품수</th>' +
+        '<th>#</th><th class="l">매장</th><th>총수량</th><th>총' + esc(PAGE.supLabel) + '</th><th>총' + esc(PAGE.priceLabel) + '</th>' + discountHead + profitHead + '<th>제품수</th>' +
         `</tr></thead><tbody>${rows}</tbody></table>`;
       bindExpanders();
     }
@@ -1265,21 +1279,27 @@
         const sup = list.reduce((a, s) => a + s.supExp, 0);
         const sale = list.reduce((a, s) => a + s.saleExp, 0);
         const pr = list.reduce((a, s) => a + s.price, 0);
-        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)} · 기간 ${meta}`;
+        const cost = list.reduce((a, s) => a + (s.cost || 0), 0);
+        const missing = list.some(s => s.costMissing);
+        sumEl.textContent = `직원 ${list.length}명 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)}${profitSummary(pr, cost, missing)} · 기간 ${meta}`;
       } else if (view === 'product') {
         const c = countedProducts();
         const q = c.reduce((a, g) => a + g.qty, 0);
         const sup = c.reduce((a, g) => a + g.supExp, 0);
         const sale = c.reduce((a, g) => a + g.saleExp, 0);
         const pr = c.reduce((a, g) => a + g.price, 0);
-        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)} · 기간 ${meta}`;
+        const cost = c.reduce((a, g) => a + (g.cost || 0), 0);
+        const missing = c.some(g => g.costMissing);
+        sumEl.textContent = `제품군 ${c.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)}${profitSummary(pr, cost, missing)} · 기간 ${meta}`;
       } else {
         const list = storeDisplay();
         const q = list.reduce((a, s) => a + s.qty, 0);
         const sup = list.reduce((a, s) => a + s.supExp, 0);
         const sale = list.reduce((a, s) => a + s.saleExp, 0);
         const pr = list.reduce((a, s) => a + s.price, 0);
-        sumEl.textContent = `매장 ${list.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)} · 기간 ${meta}`;
+        const cost = list.reduce((a, s) => a + (s.cost || 0), 0);
+        const missing = list.some(s => s.costMissing);
+        sumEl.textContent = `매장 ${list.length}개 · 총수량 ${nf(q)} · 총${PAGE.supLabel} ${nf(sup)}원 · 총${PAGE.priceLabel} ${nf(pr)}원${discountSummary(sale, pr)}${profitSummary(pr, cost, missing)} · 기간 ${meta}`;
       }
     }
 
@@ -1329,6 +1349,19 @@
       box.querySelectorAll('.fbtn').forEach(x => x.classList.toggle('on', x.dataset.f === typeFilter));
       render();
     }));
+    const sortDirBtn = box.querySelector('#ub-o-sortdir');
+    const syncSortDir = () => {
+      sortDirBtn.textContent = oSortDesc ? '▼' : '▲';
+      sortDirBtn.disabled = !oSortKey;                       // 기본 정렬일 땐 방향이 의미 없다
+      sortDirBtn.title = oSortKey ? (oSortDesc ? '내림차순 (클릭하면 오름차순)' : '오름차순 (클릭하면 내림차순)') : '정렬 기준을 먼저 고르세요';
+    };
+    box.querySelector('#ub-o-sort').addEventListener('change', e => {
+      oSortKey = e.target.value;
+      oSortDesc = true;                                      // 기준을 바꾸면 큰 값부터 — 매번 방향까지 맞추게 하지 않는다
+      syncSortDir(); render();
+    });
+    sortDirBtn.addEventListener('click', () => { if (!oSortKey) return; oSortDesc = !oSortDesc; syncSortDir(); render(); });
+    syncSortDir();
     box.querySelector('#ub-o-search').addEventListener('input', e => { nameQuery = e.target.value.trim(); render(); });
     let thrTimer = 0;
     const onThr = () => {
@@ -1345,26 +1378,26 @@
       let aoa;
       if (view === 'staff') {
         aoa = [['순위', '직원', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '제품수']];
-        if (!IS_ORDER) aoa[0].splice(5, 0, '할인율');
+        if (!IS_ORDER) aoa[0].splice(5, 0, '할인율', '이익율');
         staffDisplay().forEach((s, i) => {
           const row = [i + 1, s.staff, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length];
-          if (!IS_ORDER) row.splice(5, 0, discountText(s.saleExp, s.price));
+          if (!IS_ORDER) row.splice(5, 0, discountText(s.saleExp, s.price), s.costMissing ? '' : profitText(s.price, s.cost));
           aoa.push(row);
         });
       } else if (view === 'product') {
         aoa = [['순위', '제품명', '구분', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '코드수']];
-        if (!IS_ORDER) aoa[0].splice(6, 0, '할인율');
+        if (!IS_ORDER) aoa[0].splice(6, 0, '할인율', '이익율');
         countedProducts().forEach((g, i) => {
           const row = [i + 1, g.name, g.type, g.qty, Math.round(g.supExp), Math.round(g.price), g.members.length];
-          if (!IS_ORDER) row.splice(6, 0, discountText(g.saleExp, g.price));
+          if (!IS_ORDER) row.splice(6, 0, discountText(g.saleExp, g.price), g.costMissing ? '' : profitText(g.price, g.cost));
           aoa.push(row);
         });
       } else {
         aoa = [['순위', '매장', '총수량', '총' + PAGE.supLabel, '총' + PAGE.priceLabel, '제품수']];
-        if (!IS_ORDER) aoa[0].splice(5, 0, '할인율');
+        if (!IS_ORDER) aoa[0].splice(5, 0, '할인율', '이익율');
         storeDisplay().forEach((s, i) => {
           const row = [i + 1, s.store, s.qty, Math.round(s.supExp), Math.round(s.price), s.products.length];
-          if (!IS_ORDER) row.splice(5, 0, discountText(s.saleExp, s.price));
+          if (!IS_ORDER) row.splice(5, 0, discountText(s.saleExp, s.price), s.costMissing ? '' : profitText(s.price, s.cost));
           aoa.push(row);
         });
       }

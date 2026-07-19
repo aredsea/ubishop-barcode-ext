@@ -67,5 +67,7 @@ if (Test-Path $iconDir) {
 
 $out = [ordered]@{ version = $manifest.version; files = $files }
 $json = $out | ConvertTo-Json -Depth 5
-Set-Content (Join-Path $root 'shell-files.json') -Value $json -Encoding UTF8
+# ⚠ PS 5.1 의 `Set-Content -Encoding UTF8` 은 BOM 을 붙인다. 이 인덱스는 JSON.parse 대상이라
+#   BOM 이 섞이면 파싱이 통째로 죽는다. → BOM 없는 UTF-8 로 직접 쓴다.
+[System.IO.File]::WriteAllText((Join-Path $root 'shell-files.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "shell-files.json v$($manifest.version): $($files.Count) files (LF-normalized text hashes)"
