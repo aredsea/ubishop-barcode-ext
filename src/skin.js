@@ -27,7 +27,13 @@
     ubSidebar: true, ubPageSize: true, ubAutoSync: false,
     ubSbMode: 'docked', ubSbX: 24, ubSbY: 24, ubSbCollapsed: false,
     ubSbWidth: 256, ubSbHeight: 440, ubSbLocked: false,
-    ubBarcodes: []
+    ubBarcodes: [],
+    // v3.7.0 매입처 정보창 / 전표 기본탭
+    ubFactoryInfo: true,                       // 매입처·발주처명 클릭 → 정보 플로팅창
+    ubFwX: null, ubFwY: null, ubFwW: 380, ubFwH: 470,   // 정보창 위치·크기(null=최초 자동배치)
+    ubTabMode: 'off',                          // 'off' | 'global' | 'each'
+    ubTabGlobal: 'jun',                        // global 일 때 'jun'(장) | 'list'(내역)
+    ubTabEach: {}                              // each 일 때 { input:'list', balju:'jun', ... }
   };
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
@@ -804,11 +810,31 @@
   //        ②chrome.storage 는 모든 탭에 방송되므로 같은 주문이 보이는 다른 목록 탭들도
   //          제각각 재조회·갱신·토스트를 한다. 발급한 탭만 소비하게 막는다.
   const ASG_NONCE_PARAM = 'ubasg';
-  const asgIssued = new Map();   // nonce → { orderSeq, beforeBarcode }  (이 문서가 발급한 것만)
+  //  이 문서가 발급한 nonce(소비 자격). ★sessionStorage 에도 남긴다 — 메모리에만 두면
+  //  팝업을 열어둔 채 부모를 새로고침했을 때 새 문서엔 발급 기록이 없어 신호를 무시하고,
+  //  opener 도 끊겨 있어 그 행이 영영 옛 상태로 남는다(같은 탭이라 sessionStorage 는 유지된다).
+  const ASG_ISSUED_KEY = 'UB_ASG_ISSUED';
+  const asgIssued = new Set();
+  function asgLoadIssued() {
+    try {
+      const o = JSON.parse(sessionStorage.getItem(ASG_ISSUED_KEY) || '[]');
+      const now = Date.now();
+      (Array.isArray(o) ? o : []).forEach(e => { if (e && e.n && (now - (e.t || 0)) <= ASG_TTL) asgIssued.add(e.n); });
+    } catch (_) {}
+  }
+  function asgSaveIssued(nonce) {
+    asgIssued.add(nonce);
+    try {
+      const now = Date.now();
+      const cur = JSON.parse(sessionStorage.getItem(ASG_ISSUED_KEY) || '[]');
+      const keep = (Array.isArray(cur) ? cur : []).filter(e => e && e.n && (now - (e.t || 0)) <= ASG_TTL);
+      keep.push({ n: nonce, t: now });
+      sessionStorage.setItem(ASG_ISSUED_KEY, JSON.stringify(keep.slice(-20)));
+    } catch (_) {}
+  }
   const ASG_TTL = 60000;          // 신호 만료
   const ASG_VERIFY_MS = 12000;    // 서버 반영 확인 최대 대기
   const ASG_FETCH_MS = 8000;      // 재조회 1회 타임아웃(무한 대기 방지)
-  const ASG_DONE_TTL = 30000;     // 갱신 완료 기억 시간(취소 후 재배정을 막지 않도록 만료시킨다)
   function isOrderJunList() { return /\/jun\/orderitem\/orderItemList\.do/.test(location.pathname); }
   function isAssignPopupForm() { return /\/jun\/orderitem\/orderItemPopCurrentSettingModifyForm\.do/.test(location.pathname); }
   function isAssignModify() { return /\/jun\/orderitem\/orderItemPopCurrentSettingModify\.do/.test(location.pathname); }
@@ -846,19 +872,8 @@
     return { syear: d.slice(0, 4), smonth: d.slice(4, 6), sday: d.slice(6, 8),
              eyear: d.slice(0, 4), emonth: d.slice(4, 6), eday: d.slice(6, 8) };
   }
-  // 반영 완료 판정 — 배정과 선택취소를 대칭으로 다룬다.
-  //  관측 바코드(응답 행의 currentSetting 3번째 인자)가 ①기대값과 정확히 같고
-  //  ②직전 값과 달라졌으면 서버가 실제로 처리한 것이다.
-  //    배정  : before='' → target='2604O0' → observed='2604O0'
-  //    취소  : before='2604O0' → target='' → observed=''
-  //  ⚠ 텍스트 부분일치(indexOf) 금지 — '2604O' 기대 시 '2604O1' 을 성공으로 오인한다.
-  //  ⚠ before 와 같으면 아직 반영 전이다(취소인데 바코드가 그대로면 성공이 아니다).
+  //  바코드 비교용 정규화. 화면값과 서버값이 '다른가'만 보면 되므로 이거면 충분하다.
   const asgNorm = (s) => String(s == null ? '' : s).trim().toUpperCase();
-  function changeConfirmed(observedBarcode, targetBarcode, beforeBarcode) {
-    const o = asgNorm(observedBarcode), t = asgNorm(targetBarcode), b = asgNorm(beforeBarcode);
-    if (o !== t) return false;
-    return o !== b;
-  }
   // 지금 걸린 상태 필터에 이 행이 여전히 맞는가. 안 맞으면 목록에서 빠지는 게 맞다
   //  (본사확인 필터로 보다가 입고완료된 건 / 입고완료 필터로 보다가 취소된 건).
   //  상태 필터가 없으면 그 건은 목록에 계속 속하므로 제자리 갱신한다.
@@ -907,6 +922,9 @@
     document.addEventListener('click', (e) => {
       let args = null;
       try {
+        // ★킬스위치는 '클릭 시점'에도 본다. 초기화 때만 보면, 켜진 채 페이지를 열고 나서
+        //  꺼도 이미 등록된 리스너가 계속 가로챈다(끌 수가 없다).
+        if (!state.ubSkin) return;
         const a = e.target && e.target.closest ? e.target.closest('a[href*="currentSetting"]') : null;
         if (!a) return;
         args = parseCurrentSettingArgs(a.getAttribute('href'));
@@ -939,12 +957,15 @@
         let cut = false;
         try { w.opener = null; cut = (w.opener === null); } catch (err) { asgLog('opener 차단/확인 예외', err); }
         if (!cut) {
-          asgLog('opener 차단 확인 실패 → 가로채기 취소, 네이티브로 진행');
-          try { w.close(); } catch (_) {}
+          // ⚠ 여기서 창을 닫으면 안 된다. 이미 window.open 이 사용자 활성화를 썼기 때문에,
+          //  이어서 도는 네이티브 currentSetting 의 두 번째 window.open 이 팝업 차단에 걸려
+          //  '아무 일도 안 일어나는' 상태가 될 수 있다. 창은 그대로 두고 가로채기만 포기하면
+          //  네이티브가 같은 이름(orderitem_win)으로 이 창을 재사용한다 → 기능 이전 동작으로 복귀.
+          asgLog('opener 차단 확인 실패 → 가로채기 취소(창은 네이티브가 재사용)');
           return;
         }
         // 발급 기록에 '지금 바코드'를 남긴다 — 성공 판정이 이 값과의 차이로 이뤄진다.
-        asgIssued.set(nonce, { orderSeq: args.orderSeq, beforeBarcode: String(args.barcode || '') });
+        asgSaveIssued(nonce);
         e.preventDefault();
         e.stopImmediatePropagation();
         asgLog('가로챔 —', isUnassigned(args) ? '배정' : '선택취소', 'orderSeq', args.orderSeq,
@@ -1083,18 +1104,16 @@
              barcode: a ? a.barcode : '' };
   }
   async function fetchStatusCell(orderSeq, orderDate) {
-    const f = document.forms['form1'];
+    // ★검증 조회는 화면 필터를 물려받지 않는다. 배정/취소로 **값이 바뀌는 필드가 검색조건이면
+    //  그 행 자체가 응답에서 사라져**(예: 바코드로 검색해둔 행을 취소) 영영 '아직 반영 안 됨'
+    //  으로 오해하고 낡은 행을 그대로 둔다. 그래서 조건은 '그 주문의 날짜' 하나로만 좁힌다.
+    //  (실측: 한 달 주문이 1,013건 ≈ 하루 35건이라 pageSize 500 이면 1페이지에 다 들어온다.
+    //   현재 화면 필터에 맞는지는 조회 결과를 받은 뒤 rowStillMatchesFilter 로 따로 판정한다.)
     const p = new URLSearchParams();
     p.set('tcode', 'order_item');
     p.set('reqPage', '1');
-    if (f) ASG_SEARCH_FIELDS.forEach(n => {
-      const el = f.elements[n];
-      if (el && typeof el.value === 'string') p.set(n, el.value);
-    });
-    p.set('searchItemStatus', '');   // ★ 상태가 바뀌므로 비워야 대상 행이 응답에 들어온다
-    // 상태필터를 풀면 결과가 늘어나는데 reqPage=1 고정이라, 대상 행이 2페이지로 밀리면
-    //  영원히 못 찾고 12초를 헛돈다. 날짜를 하루로 좁히는 것과 별개로 페이지도 넉넉히.
     p.set('pageSize', '500');
+    p.set('searchItemStatus', '');
     const d = oneDayParams(orderDate);
     if (d) { p.set('searchDateType', 'a.orderDate'); Object.keys(d).forEach(k => p.set(k, d[k])); }
     const doc = await Promise.race([
@@ -1108,16 +1127,7 @@
     if (bar) { try { showToast(bar, msg); return; } catch (_) {} }
     asgLog(msg);
   }
-  const asgBusy = new Set();
-  const asgDone = new Map();   // orderSeq → 완료시각. 'intent'/'done' 중복 갱신을 막되 영구는 아니다.
-  // 완료 기억은 orderSeq 가 아니라 orderSeq+barcode 로. orderSeq 만 쓰면 배정→취소→다른
-  //  바코드로 재배정을 30초간 막아버린다(정상 작업인데 화면이 안 바뀜).
-  function asgRecentlyDone(nonce) {
-    const k = String(nonce || ''), ts = k ? asgDone.get(k) : 0;
-    if (!ts) return false;
-    if (Date.now() - ts > ASG_DONE_TTL) { asgDone.delete(k); return false; }
-    return true;
-  }
+  const asgBusy = new Set();   // 같은 행에 재동기화가 겹쳐 돌지 않게
   // 신호가 지워질 때, 그 사이 도착한 '더 새로운' 신호까지 날리지 않도록 ts 를 대조해 지운다.
   function asgClearSignalIfSame(sig) {
     try {
@@ -1129,76 +1139,76 @@
       });
     } catch (_) {}
   }
-  const asgPending = new Map();   // 검증 중 도착한 '다음 작업' 신호(같은 orderSeq) — 끝나고 이어받는다
-  const asgActive = new Map();    // orderSeq → 지금 검증 중인 작업의 nonce
-  async function verifyAndPatchRow(sig) {
+  /*  ★설계 단순화(2026-07-19, 검수 4라운드 끝에). 작업별 '기대값'을 재현·검증하지 않는다.
+   *   이 로직이 원하는 건 하나다 — **지금 서버가 뭐라고 하는지를 그 행에 반영한다.**
+   *   작업(nonce)별 완료기억·대기열·기대값 대조를 쌓을수록 유실·고착 경로만 늘었다
+   *   (같은 주문의 서로 다른 취소가 뭉개짐 / 늦은 done 이 다음 작업을 밀어냄 /
+   *    큐가 만료·중복에 걸려 뒤가 고립됨 …). 전부 '작업을 재현하려 한' 데서 나왔다.
+   *   그래서 신호는 '이 행이 낡았다'는 뜻으로만 쓰고, 화면에 보이는 값과 서버 값이 다르면
+   *   서버 쪽으로 맞춘다. 몇 개가 겹쳤든 마지막 재동기화가 진실을 보여준다.
+   */
+  const asgAgain = new Map();     // orderSeq → 진행 중에 온 '최신' 신호(끝나고 그걸로 한 번 더)
+  //  이미 화면에 반영을 끝낸 작업(nonce). 같은 클릭의 intent 뒤에 오는 done 이 또 12초짜리
+  //  폴링을 새로 시작해 700ms 간격 조회를 헛되이 퍼붓는 것을 막는다.
+  //  ⚠ '반영에 성공한' nonce 만 넣는다 — 변화를 못 봤다면 done 에게 기회를 줘야 한다.
+  const asgApplied = new Set();
+  //  그 행에 지금 '표시돼 있는' 바코드(상태셀 링크의 3번째 인자)
+  function asgShownBarcode(tr) {
+    const a = tr ? tr.querySelector('a[href*="currentSetting"]') : null;
+    const args = a ? parseCurrentSettingArgs(a.getAttribute('href')) : null;
+    return args ? args.barcode : null;
+  }
+  async function resyncRow(sig) {
     const key = String(sig.orderSeq);
-    // 이미 반영한 배정이면 신호를 남겨두지 않는다(남기면 다음 로드에서 또 소비한다).
-    if (asgRecentlyDone(sig.nonce)) { asgClearSignalIfSame(sig); return; }
-    // 검증 중 같은 주문이 다른 바코드로 재배정되면 그 신호를 버리지 않고 대기시켰다가 이어서 처리.
-    //  ⚠ 콜백 도착 순서 ≠ 신호 생성 순서라, 더 새로운 것만 남긴다.
-    if (asgBusy.has(key)) {
-      // ⚠ 지금 처리 중인 '그 작업'의 후속 신호(intent 뒤에 오는 done)는 대기열에 넣지 않는다.
-      //  ts 는 작업이 아니라 신호마다 새로 찍히므로, 늦게 도착한 현재 작업의 done 이 그 사이
-      //  들어온 '다음 작업'의 신호를 최신이라며 덮어쓰고, finally 는 그걸 현재 작업이라며
-      //  버린다 → 다음 작업이 통째로 유실되어 그 행이 옛 상태로 고착된다.
-      if (String(sig.nonce) === String(asgActive.get(key))) return;
-      const prev = asgPending.get(key);
-      if (!prev || (sig.ts || 0) > (prev.ts || 0)) asgPending.set(key, sig);
-      return;
-    }
-    // ★busy 는 첫 await 앞에서 잡는다. 행 대기(await) 뒤에 잡으면 intent/done 이 둘 다
-    //  통과해 같은 주문에 폴링이 두 개 돌고, 오래된 응답이 최신 상태를 덮어쓸 수 있다.
+    // 이 클릭은 이미 반영 완료 — 다만 신호는 지우고 나간다(안 지우면 진단 문자열이 남는다).
+    if (sig.nonce && asgApplied.has(sig.nonce)) { asgClearSignalIfSame(sig); return; }
+    if (asgBusy.has(key)) { asgAgain.set(key, sig); return; }   // 진행 중 → 끝나고 최신 걸로 한 번 더
     asgBusy.add(key);
-    asgActive.set(key, String(sig.nonce));   // 이 행에서 '지금 검증 중인 작업'
-    const deadline = Date.now() + ASG_VERIFY_MS;
     try {
-      // 부모가 막 로드된 참이면 표가 아직 안 그려졌을 수 있다 → 바로 포기하지 말고 잠깐 기다린다.
+      // 부모가 막 로드된 참이면 표가 아직 안 그려졌을 수 있다 → 잠깐 기다린다.
       for (let i = 0; i < 6 && !asgFindRow(sig.orderSeq); i++) await new Promise(r => setTimeout(r, 500));
-      if (!asgFindRow(sig.orderSeq)) return;   // 이 문서엔 해당 행이 없음(다른 검색화면) → 종료
+      const deadline = Date.now() + ASG_VERIFY_MS;
       while (Date.now() < deadline) {
+        const tr = asgFindRow(sig.orderSeq);
+        if (!tr || !tr.isConnected) return;   // 이 문서엔 없는 행(다른 검색화면) → 조용히 종료
+        const shown = asgShownBarcode(tr);
         let cell = null;
         try { cell = await fetchStatusCell(sig.orderSeq, sig.orderDate); } catch (err) { asgLog('재조회 실패', err); }
-        const issued = asgIssued.get(sig.nonce) || {};
-        if (cell && changeConfirmed(cell.barcode, sig.barcode, issued.beforeBarcode)) {
-          // ⚠ 행 참조를 루프 밖에서 잡아두면 안 된다 — 폴링 수초 사이에 표가 다시 그려지면
-          //   분리된(detached) 노드를 고치고도 성공으로 처리해 화면은 그대로인 사고가 난다.
-          //   성공 직전에 다시 찾고 isConnected 까지 확인한 뒤, 실제로 바꾼 경우에만 완료 처리.
-          const tr = asgFindRow(sig.orderSeq);
-          const td = tr && tr.isConnected ? asgStatusTd(tr) : null;
-          if (!td) { asgLog('갱신 대상 행이 사라짐 — 재시도', sig.orderSeq); await new Promise(r => setTimeout(r, 700)); continue; }
+        if (cell && asgNorm(cell.barcode) !== asgNorm(shown)) {
+          // 서버가 화면과 다르다 → 서버 쪽으로 맞춘다.
+          //  ⚠ 행은 await 사이에 다시 그려질 수 있으니 여기서 한 번 더 찾고 isConnected 확인.
+          const tr2 = asgFindRow(sig.orderSeq);
+          const td = tr2 && tr2.isConnected ? asgStatusTd(tr2) : null;
+          if (!td) { await new Promise(r => setTimeout(r, 700)); continue; }
           if (rowStillMatchesFilter(cell.text)) {
             // 서버가 렌더한 셀을 그대로 이식 → 손으로 만든 마크업이 아니라서
             // 이후 그 행에서 다시 링크를 눌러도 네이티브 동작이 그대로 이어진다.
             td.innerHTML = cell.html;
-            tr.classList.add('ub-ms-hl');
-            asgLog('제자리 갱신', sig.orderSeq, cell.text);
+            tr2.classList.add('ub-ms-hl');
+            asgLog('재동기화', sig.orderSeq, cell.text);
             asgToast('반영: ' + cell.text);
           } else {
             // 상태가 바뀌어 지금 필터 조건에서 벗어난 건 → 목록에 남아 있으면 안 된다.
-            asgRemoveRow(tr);
+            asgRemoveRow(tr2);
             asgLog('필터 이탈 → 행 제거', sig.orderSeq, cell.text);
             asgToast('반영: ' + cell.text + ' (목록에서 제외)');
           }
-          asgDone.set(String(sig.nonce), Date.now());
+          if (sig.nonce) asgApplied.add(sig.nonce);
           asgClearSignalIfSame(sig);
           return;
         }
         await new Promise(r => setTimeout(r, 700));
       }
-      asgLog('확인 시간초과 — 서버 반영을 확인하지 못함', sig.orderSeq);
-      // 배정 자체는 네이티브가 수행했으므로 '실패'가 아니라 '확인 못 함'이다.
-      //  이 기능이 없애려는 행동(새로고침)을 지시하지 않는다.
-      asgToast('배정은 됐을 수 있습니다 — 상태만 확인하지 못했습니다');
+      // 시간 안에 서버 값이 화면과 달라지지 않았다 = 바뀐 게 없다(작업 실패 등).
+      //  화면이 이미 서버와 같으므로 고칠 것도 알릴 것도 없다 — 조용히 끝낸다.
+      asgLog('변화 없음(화면이 이미 서버와 같음)', sig.orderSeq);
+      asgClearSignalIfSame(sig);
     } finally {
       asgBusy.delete(key);
-      asgActive.delete(key);
-      // 검증 중 밀려온 '다음 작업' 신호가 있으면 이어서 처리한다. 그냥 버리면 그 작업은
-      //  화면에 영영 반영되지 않는다(취소 직후 다른 바코드로 재배정한 경우 등).
-      //  현재 작업의 후속 신호는 위 asgActive 가드에서 이미 걸러져 여기 들어오지 않는다.
-      const next = asgPending.get(key);
-      asgPending.delete(key);
-      if (next) handleAssignSignal(next);
+      // 도는 동안 또 신호가 왔으면 한 번 더. 큐가 아니라 '한 번 더'면 충분하다 —
+      //  어차피 매번 서버의 현재값을 보므로, 중간 상태를 따로 재생할 이유가 없다.
+      const again = asgAgain.get(key);
+      if (again) { asgAgain.delete(key); resyncRow(again).catch(err => asgLog('재동기화 예외', err)); }
     }
   }
   function handleAssignSignal(sig) {
@@ -1209,7 +1219,7 @@
       if (!sig.nonce || !asgIssued.has(sig.nonce)) return;
       if (sig.diag) asgLog('Modify 응답의 opener 스크립트 원문 →', sig.diag);
       // await 하지 않으므로 rejection 을 반드시 삼킨다(unhandled rejection 방지).
-      verifyAndPatchRow(sig).catch(err => asgLog('검증 중 예외', err));
+      resyncRow(sig).catch(err => asgLog('재동기화 예외', err));
     } catch (err) { asgLog('신호 처리 실패', err); }
   }
   function bindAssignStorage() {
@@ -1238,11 +1248,465 @@
     //  가로채므로, 현장에서 오작동해도 팝업 토글로 끌 수 있어야 한다(확장은 다운그레이드 불가).
     if (!state.ubSkin) return;
     try {
-      if (isOrderJunList()) { bindAssignIntercept(); bindAssignStorage(); }
+      if (isOrderJunList()) { asgLoadIssued(); bindAssignIntercept(); bindAssignStorage(); }
       else if (isAssignModify()) bindAssignResultPage('assign');
       else if (isAssignCancel()) bindAssignResultPage('cancel');
       else if (isAssignPopupForm()) bindAssignPopupForm();
     } catch (e) { asgLog('초기화 실패', e); }
+  }
+
+  /* ==========================================================================
+   *  5.8) 매입처 정보 플로팅창 + 전표 기본탭 (v3.7.0)
+   *
+   *  (A) 전표의 매입처·발주처명을 누르면 매입처관리의 상세(factoryView.do 의 table.t_form)를
+   *      화면 위 플로팅창으로 띄운다. 원본 view(seq) 는 팝업이 아니라 **페이지 이동**이라
+   *      그대로 쓰면 보던 목록·필터·스크롤이 날아간다(5.7 에서 없앤 바로 그 문제).
+   *      ⚠ 전표의 매입처명은 링크가 아니라 그냥 텍스트라 seq 가 없다 → 매입처 목록에서
+   *        '이름 → seq' 맵을 만들어 캐시한다(실측: 현재 화면 17종 전부 정확일치).
+   *      ⚠ 컬럼명이 페이지마다 다르다(발주처명 / 매입처 / 매입처(매장명) / 매입처입고일).
+   *        인덱스를 박으면 깨지므로 **헤더에서 컬럼을 찾는다**. '매입처상품코드'는 제외.
+   *
+   *  (B) 전표 메뉴 진입 시 '장' 과 '내역' 중 어느 쪽을 먼저 볼지 지정한다.
+   *      두 탭은 사실 서로 다른 페이지다(○○JunList.do?tcode=xxx_jun ↔ ○○List.do?tcode=xxx).
+   *      ★진입 후 리다이렉트하지 않고 **좌측 메뉴의 링크 자체를 바꾼다** — 페이지가 한 번 더
+   *        뜨지 않고, 되돌아가는 루프도 없고, 탭 클릭은 네이티브 그대로 남는다.
+   * ========================================================================== */
+  const FW_TAG = '[UB][factory]';
+  const fwLog = (...a) => { try { console.log(FW_TAG, ...a); } catch (_) {} };
+  const FW_MAP_KEY = 'ubFactoryMap';       // { at, map:{이름:seq} }
+  //  이 캐시에는 계정 식별자가 없다. **매입처 목록은 모든 계정이 같은 데이터를 공유한다(사용자
+  //   확인, 2026-07-19)** — 계정마다 seq 가 달라 엉뚱한 업체가 열리는 경로는 성립하지 않는다.
+  //   그래도 방어는 남겨둔다: 상세를 열 때 이름을 대조하고, 계정 전환 신호(ubAccounts 변경)에
+  //   캐시를 버린다. TTL 은 위험이 아니라 '새 매입처가 언제 눌리게 되나' 기준으로 잡았다.
+  const FW_MAP_TTL = 6 * 60 * 60 * 1000;
+  const FW_ID = 'ub-fw';
+  const FW_STYLE_ID = 'ub-fw-style';
+  // 전표 기본탭 대상. jun=장, list=내역. 좌측 메뉴 링크는 항상 jun 쪽을 가리킨다.
+  //  menu = 좌측 메뉴에 찍히는 글자. ★이걸로 메뉴 링크만 집는다 — 경로만 보면 같은 화면의
+  //  페이지네이션([2][3])이 같은 pathname·같은 tcode 라 함께 바뀌어 페이징이 깨진다(Codex 지적).
+  const TAB_MENUS = [
+    { key: 'input',  label: '상품입고',   menu: '상품입고전표',   jun: '/jun/inputitem/inputItemJunList.do?tcode=input_item_jun&searchItemType=1', list: '/jun/inputitem/inputItemList.do?tcode=input_item' },
+    { key: 'balju',  label: '상품발주',   menu: '상품발주전표',   jun: '/jun/baljuitem/baljuItemJunList.do?tcode=balju_item_jun',                  list: '/jun/baljuitem/baljuItemList.do?tcode=balju_item' },
+    { key: 'stone',  label: '메인석입고', menu: '메인석입고전표', jun: '/jun/inputstone/inputStoneJunList.do?tcode=input_stone_jun&searchItemType=2', list: '/jun/inputstone/inputStoneList.do?tcode=input_stone' },
+    { key: 'rotate', label: '회전입고',   menu: '회전입고전표',   jun: '/jun/rotateitem/rotateItemJunList.do?tcode=rotate_item_jun',                list: '/jun/rotateitem/rotateItemList.do?tcode=rotate_item' },
+    { key: 'deliv',  label: '매장출고',   menu: '매장출고전표',   jun: '/jun/delivitem/delivItemJunList.do?tcode=deliv_item_jun',                   list: '/jun/delivitem/delivItemList.do?tcode=deliv_item' }
+  ];
+  // ── 순수 헬퍼(DOM 비의존, 단위테스트 대상) ────────────────────────────────
+  //  헤더 라벨이 매입처/발주처 컬럼인가. '매입처상품코드'는 상품 코드라 제외해야 한다.
+  function isFactoryHeader(label) {
+    const t = String(label == null ? '' : label).replace(/\s+/g, '');
+    if (!t || /상품코드/.test(t)) return false;
+    return /매입처|발주처/.test(t);
+  }
+  //  이 설정이 의미 있는 페이지인가 = 장/내역 탭이 실제로 있는 전표 화면(전표당 2개 경로).
+  //  다른 화면에서는 사이드바에 띄우지 않는다(관계없는 곳에서 자리만 차지한다).
+  function isTabPrefPath(pathname, menus) {
+    const p = String(pathname == null ? '' : pathname);
+    return (menus || []).some(m => p === m.jun.split('?')[0] || p === m.list.split('?')[0]);
+  }
+  //  ○○JunList.do?tcode=xxx_jun ↔ ○○List.do?tcode=xxx 중 어느 쪽을 쓸지.
+  //  mode 가 off 면 손대지 않는다(null 반환 = 원본 유지).
+  function tabPrefFor(key, mode, global, each) {
+    if (mode === 'global') return (global === 'list') ? 'list' : 'jun';
+    if (mode === 'each') {
+      const v = each && each[key];
+      return (v === 'list') ? 'list' : (v === 'jun' ? 'jun' : null);
+    }
+    return null;
+  }
+  // ── 매입처 이름 → seq 맵 ─────────────────────────────────────────────────
+  //  ⚠ 동명 매입처가 둘 이상이면 그 이름은 아예 링크하지 않는다. 첫 seq 로 확정하면
+  //   두 번째 업체의 칸을 눌렀을 때 '다른 업체의 정보'가 뜬다 — 조용히 틀린 값을 보여주는
+  //   쪽이 안 눌리는 것보다 나쁘다.
+  function fwParseFactoryMap(doc) {
+    const seen = {}, dup = {};
+    doc.querySelectorAll('a[href*="view("]').forEach(a => {
+      const m = (a.getAttribute('href') || '').match(/view\(\s*'?(\d+)'?\s*\)/);
+      const name = (a.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!m || !name) return;
+      if (name in seen) { if (seen[name] !== m[1]) dup[name] = 1; return; }
+      seen[name] = m[1];
+    });
+    const map = {};
+    Object.keys(seen).forEach(n => { if (!dup[n]) map[n] = seen[n]; });
+    const dn = Object.keys(dup);
+    if (dn.length) fwLog('동명 매입처 → 링크 제외', dn.length, '건', dn.slice(0, 5));
+    return map;
+  }
+  let fwMapMem = null, fwMapLoading = null;
+  function fwGetMap() {
+    if (fwMapMem) return Promise.resolve(fwMapMem);
+    if (fwMapLoading) return fwMapLoading;
+    fwMapLoading = new Promise((resolve) => {
+      let done = false;
+      const finish = (m) => { if (done) return; done = true; fwMapMem = m || {}; fwMapLoading = null; resolve(fwMapMem); };
+      const fetchFresh = () => {
+        // pageSize 를 넉넉히 — 한 번에 다 받아야 이름이 빠지지 않는다(실측 323개).
+        postDoc('/basic/factory/factoryList.do?tcode=factory', new URLSearchParams({ tcode: 'factory', pageSize: '1000', reqPage: '1' }))
+          .then(doc => {
+            const map = fwParseFactoryMap(doc);
+            fwLog('매입처 목록 로드', Object.keys(map).length, '건');
+            try { chrome.storage.local.set({ [FW_MAP_KEY]: { at: Date.now(), map } }); } catch (_) {}
+            finish(map);
+          })
+          .catch(err => { fwLog('매입처 목록 로드 실패', err); finish({}); });
+      };
+      try {
+        chrome.storage.local.get(FW_MAP_KEY, (d) => {
+          const c = d && d[FW_MAP_KEY];
+          if (c && c.map && (Date.now() - (c.at || 0)) < FW_MAP_TTL && Object.keys(c.map).length) finish(c.map);
+          else fetchFresh();
+        });
+      } catch (_) { fetchFresh(); }
+    });
+    return fwMapLoading;
+  }
+  // ── 전표에서 매입처명 셀 표시 ────────────────────────────────────────────
+  //  셀 첫 줄만 이름이다(뒤에 발주일·매장명 등이 붙는 칸이 있다).
+  function fwCellName(td) {
+    if (!td) return '';
+    const sp = td.querySelector('span.f_bold, b, strong');
+    if (sp) return (sp.textContent || '').replace(/\s+/g, ' ').trim();
+    const first = [...td.childNodes].find(n => n.nodeType === 3 && (n.nodeValue || '').trim());
+    return first ? first.nodeValue.replace(/\s+/g, ' ').trim() : '';
+  }
+  function fwMarkNames(map) {
+    let n = 0;
+    document.querySelectorAll('table.t_list').forEach(t => {
+      // ★헤더는 '첫 매칭 행'으로 한 번만 정하고 그 아래 행만 처리한다.
+      //  매 행에서 다시 판정하면, 상품명·상품코드에 '매입처'가 들어간 데이터 행을 헤더로
+      //  오인해 열 위치가 통째로 어긋나고 무관한 칸에 링크가 걸린다(Codex 지적).
+      const rows = [...t.rows];
+      let cols = null, hdr = -1;
+      for (let r = 0; r < rows.length; r++) {
+        const cs = [...rows[r].cells].map(c => c.textContent || '');
+        const idxs = cs.map((c, i) => isFactoryHeader(c) ? i : -1).filter(i => i >= 0);
+        if (idxs.length) { cols = idxs; hdr = r; break; }
+      }
+      if (!cols) return;
+      for (let r = hdr + 1; r < rows.length; r++) {
+        const row = rows[r];
+        cols.forEach(i => {
+          const td = row.cells[i];
+          if (!td || td.dataset.ubFw) return;
+          const name = fwCellName(td);
+          const seq = name && map[name];
+          if (!seq) return;
+          td.dataset.ubFw = seq;
+          const host = td.querySelector('span.f_bold, b, strong') || td;
+          host.classList.add('ub-fw-name');
+          host.title = '매입처 정보 보기';
+          n++;
+        });
+      }
+    });
+    if (n) fwLog('매입처명 표시', n, '칸');
+  }
+  function bindFactoryNames() {
+    if (!on('ubFactoryInfo')) return;
+    if (!/^\/jun\//.test(location.pathname)) return;   // 전표 화면에서만
+    fwGetMap().then(map => { if (map && Object.keys(map).length) fwMarkNames(map); });
+  }
+  // ── 플로팅 정보창 ────────────────────────────────────────────────────────
+  const FW_CSS = `
+    .ub-fw {
+      position: fixed; z-index: 2147483647;
+      background: #fff; color: #1b1b1b;
+      border: 1px solid #e5e7eb; border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(15,20,25,.18);
+      font-family: Pretendard, -apple-system, 'Malgun Gothic', sans-serif;
+      display: flex; flex-direction: column; overflow: hidden;
+      min-width: 280px; min-height: 200px;
+    }
+    .ub-fw-h {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 12px 12px 16px; cursor: move; user-select: none;
+      border-bottom: 1px solid #e5e7eb; background: #f7f9fc;
+    }
+    .ub-fw-h b { font-size: 13px; font-weight: 700; letter-spacing: -.01em; flex: 1;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ub-fw-x {
+      width: 24px; height: 24px; border: 0; background: transparent; cursor: pointer;
+      border-radius: 6px; color: #6b7280; display: flex; align-items: center; justify-content: center;
+      transition: background .16s ease-out, color .16s ease-out;
+    }
+    .ub-fw-x:hover { background: #eceff3; color: #1b1b1b; }
+    .ub-fw-b { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 16px 16px; font-size: 12px; }
+    .ub-fw-dl { margin: 0; }
+    .ub-fw-dl > div {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 9px 0; border-bottom: 1px solid #f0f2f5;
+    }
+    .ub-fw-dl > div:last-child { border-bottom: 0; }
+    .ub-fw-dl dt {
+      flex: none; width: 76px; color: #6b7280; font-size: 11px; line-height: 1.6;
+      letter-spacing: -.01em;
+    }
+    .ub-fw-dl dd {
+      margin: 0; flex: 1; min-width: 0; line-height: 1.6; word-break: break-word;
+      white-space: pre-wrap; color: #1b1b1b;
+    }
+    .ub-fw-dl dd.ub-fw-empty { color: #c7ccd4; }
+    .ub-fw-msg { color: #6b7280; padding: 24px 4px; text-align: center; font-size: 12px; }
+    .ub-fw-rz { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+                cursor: nwse-resize; }
+    .ub-fw-rz::after { content: ''; position: absolute; right: 3px; bottom: 3px;
+                       width: 7px; height: 7px; border-right: 2px solid #c7ccd4; border-bottom: 2px solid #c7ccd4; }
+    .ub-fw-name { cursor: pointer; border-bottom: 1px dashed #35C5F0; }
+    .ub-fw-name:hover { color: #2bb5e0; }
+  `;
+  function ensureFwStyle() {
+    if (document.getElementById(FW_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = FW_STYLE_ID; s.textContent = FW_CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+  const FW_X_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+  function fwSavePos(el) {
+    try {
+      chrome.storage.local.set({
+        ubFwX: parseInt(el.style.left, 10) || 0, ubFwY: parseInt(el.style.top, 10) || 0,
+        ubFwW: el.offsetWidth, ubFwH: el.offsetHeight
+      });
+    } catch (_) {}
+  }
+  function fwEnsurePanel() {
+    ensureFwStyle();
+    let el = document.getElementById(FW_ID);
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = FW_ID; el.className = 'ub-fw';
+    el.innerHTML = '<div class="ub-fw-h"><b></b><button class="ub-fw-x" title="닫기">' + FW_X_SVG + '</button></div>'
+                 + '<div class="ub-fw-b"></div><div class="ub-fw-rz"></div>';
+    // 최초엔 화면 오른쪽 위 근처, 이후엔 사용자가 둔 자리.
+    const w = Math.max(280, state.ubFwW | 0 || 380), h = Math.max(200, state.ubFwH | 0 || 470);
+    // ⚠ `|| 기본값` 으로 판정하면 저장값 0(화면 맨 왼쪽·맨 위에 둔 경우)이 '미저장'으로 취급돼
+    //   매번 기본 위치로 튄다. 숫자인지로 판정한다.
+    const num = (v) => (typeof v === 'number' && isFinite(v));
+    const x = num(state.ubFwX) ? state.ubFwX : Math.max(16, window.innerWidth - w - 40);
+    const y = num(state.ubFwY) ? state.ubFwY : 80;
+    el.style.width = w + 'px'; el.style.height = h + 'px';
+    el.style.left = Math.min(x, Math.max(0, window.innerWidth - 80)) + 'px';
+    el.style.top = Math.min(y, Math.max(0, window.innerHeight - 60)) + 'px';
+    document.body.appendChild(el);
+    el.querySelector('.ub-fw-x').addEventListener('click', () => { el.remove(); });
+    // 드래그(헤더) — 버튼 위에서 시작하면 무시
+    const hd = el.querySelector('.ub-fw-h');
+    hd.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.ub-fw-x')) return;
+      e.preventDefault();
+      const sx = e.clientX, sy = e.clientY;
+      const ox = parseInt(el.style.left, 10) || 0, oy = parseInt(el.style.top, 10) || 0;
+      const mv = (ev) => {
+        el.style.left = Math.max(0, Math.min(window.innerWidth - 60, ox + ev.clientX - sx)) + 'px';
+        el.style.top  = Math.max(0, Math.min(window.innerHeight - 40, oy + ev.clientY - sy)) + 'px';
+      };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); fwSavePos(el); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    // 크기조절(우하단)
+    el.querySelector('.ub-fw-rz').addEventListener('mousedown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const sx = e.clientX, sy = e.clientY, ow = el.offsetWidth, oh = el.offsetHeight;
+      const mv = (ev) => {
+        el.style.width  = Math.max(280, ow + ev.clientX - sx) + 'px';
+        el.style.height = Math.max(200, oh + ev.clientY - sy) + 'px';
+      };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); fwSavePos(el); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    return el;
+  }
+  //  값 칸에서 실제 값을 뽑는다. 대부분 readonly input, 거래유형만 체크박스 묶음이다.
+  function fwCellValue(td) {
+    const chks = [...td.querySelectorAll('input[type="checkbox"]')];
+    if (chks.length) {
+      // 체크박스 라벨은 보통 바로 뒤 텍스트노드에 있다. 없으면 칸 전체 텍스트를
+      //  순서대로 토큰화해 위치로 맞춘다(마크업이 조금 달라도 버티도록).
+      const toks = (td.textContent || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+      const on = chks.map((c, i) => {
+        if (!c.checked) return '';
+        const n = c.nextSibling;
+        const s = (n && n.nodeValue ? n.nodeValue : '').replace(/\s+/g, ' ').trim();
+        return s || toks[i] || '';
+      }).filter(Boolean);
+      return on.join(', ');
+    }
+    const f = td.querySelector('input[type="text"], input:not([type]), textarea, select');
+    if (f) {
+      if (f.tagName === 'SELECT') { const o = f.options[f.selectedIndex]; return (o ? o.text : '').trim(); }
+      return String(f.value == null ? '' : f.value).replace(/\s+/g, ' ').trim();
+    }
+    return (td.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+  //  factoryView.do 의 table.t_form 은 [라벨][값] 2칸 행의 반복이다(실측).
+  //  원본 표를 그대로 넣으면 고정폭 input 때문에 가로로 잘리므로 값만 뽑아 다시 그린다.
+  function fwExtractPairs(table) {
+    const out = [];
+    table.querySelectorAll('tr').forEach(tr => {
+      const cs = tr.cells;
+      if (!cs || cs.length !== 2) return;
+      // 라벨 칸에 입력요소나 중첩표가 있으면 그건 래퍼 행이지 라벨이 아니다.
+      if (cs[0].querySelector('input, select, textarea, table')) return;
+      const label = (cs[0].textContent || '').replace(/\s+/g, ' ').trim();
+      if (!label || label.length > 12) return;
+      out.push({ label: label, value: fwCellValue(cs[1]) });
+    });
+    return out;
+  }
+  const fwEsc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  function fwRenderPairs(pairs) {
+    if (!pairs.length) return '';
+    return '<dl class="ub-fw-dl">' + pairs.map(p =>
+      '<div><dt>' + fwEsc(p.label) + '</dt><dd' + (p.value ? '' : ' class="ub-fw-empty"') + '>'
+      + (p.value ? fwEsc(p.value) : '—') + '</dd></div>').join('') + '</dl>';
+  }
+  let fwSeqShown = null;
+  function fwShow(name, seq) {
+    const el = fwEnsurePanel();
+    el.querySelector('.ub-fw-h b').textContent = name || '매입처';
+    const body = el.querySelector('.ub-fw-b');
+    if (fwSeqShown === seq && body.dataset.ok === '1') return;   // 같은 곳 다시 눌러도 재요청 안 함
+    fwSeqShown = seq; body.dataset.ok = '';
+    body.innerHTML = '<div class="ub-fw-msg">불러오는 중…</div>';
+    postDoc('/basic/factory/factoryView.do?tcode=factory', new URLSearchParams({ tcode: 'factory', seq: String(seq) }))
+      .then(doc => {
+        if (fwSeqShown !== seq) return;            // 그 사이 다른 매입처를 눌렀으면 버린다
+        const t = doc.querySelector('table.t_form');
+        const pairs = t ? fwExtractPairs(t) : [];
+        if (!pairs.length) { body.innerHTML = '<div class="ub-fw-msg">상세 정보를 찾지 못했습니다.</div>'; return; }
+        // ★검증: 받아온 상세의 매입처명이 누른 이름과 다르면 캐시(이름→seq)가 틀어진 것이다
+        //  (계정 전환·매입처 재편 등). 조용히 '다른 업체 정보'를 보여주는 게 최악이므로,
+        //  그때는 표시하지 않고 캐시를 버린 뒤 다시 누르도록 안내한다.
+        // ⚠ fail-open 금지: 이름을 못 읽었으면(라벨 변경·빈 값) 검증이 성립하지 않은 것이므로
+        //  그때도 표시하지 않는다. '확신이 없으면 보여주지 않는다'가 이 기능의 원칙이다.
+        const got = (pairs.find(p => /매입처\s*명/.test(p.label)) || {}).value || '';
+        const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
+        if (!got || !name || norm(got) !== norm(name)) {
+          fwLog('이름 검증 실패 — 캐시 폐기', { 누름: name, 받음: got || '(못읽음)', seq: seq });
+          fwMapMem = null;
+          try { chrome.storage.local.remove(FW_MAP_KEY); } catch (_) {}
+          document.querySelectorAll('td[data-ub-fw]').forEach(td => {
+            delete td.dataset.ubFw;
+            const h = td.querySelector('.ub-fw-name'); if (h) h.classList.remove('ub-fw-name');
+          });
+          bindFactoryNames();
+          body.innerHTML = '<div class="ub-fw-msg">매입처 목록이 바뀌었습니다.<br>목록을 새로 받았으니 다시 눌러주세요.</div>';
+          return;
+        }
+        body.innerHTML = fwRenderPairs(pairs); body.dataset.ok = '1';
+      })
+      .catch(err => {
+        fwLog('상세 로드 실패', err);
+        if (fwSeqShown === seq) body.innerHTML = '<div class="ub-fw-msg">불러오지 못했습니다.</div>';
+      });
+  }
+  function bindFactoryClick() {
+    document.addEventListener('click', (e) => {
+      try {
+        if (!on('ubFactoryInfo')) return;   // 클릭 시점 킬스위치(초기화 때만 보면 끌 수 없다)
+        const host = e.target && e.target.closest ? e.target.closest('.ub-fw-name') : null;
+        if (!host) return;
+        const td = host.closest('td');
+        const seq = td && td.dataset ? td.dataset.ubFw : '';
+        if (!seq) return;
+        e.preventDefault(); e.stopPropagation();
+        fwShow(fwCellName(td), seq);
+      } catch (err) { fwLog('클릭 처리 실패', err); }
+    }, true);
+    // ESC 로 닫기
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      const el = document.getElementById(FW_ID);
+      if (el) el.remove();
+    });
+  }
+  // ── 전표 기본탭: 좌측 메뉴 링크 재작성 ───────────────────────────────────
+  function applyTabPref() {
+    // ★꺼졌을 때 그냥 return 하면 이미 바꿔둔 메뉴 링크가 그대로 남아 '껐는데도 계속 먹는' 상태가
+    //  된다. 꺼짐은 '설정 없음(null)'으로 취급해 아래 복원 경로를 태운다.
+    const off = !state.ubSkin;
+    let n = 0;
+    TAB_MENUS.forEach(m => {
+      const pref = off ? null : tabPrefFor(m.key, state.ubTabMode, state.ubTabGlobal, state.ubTabEach);
+      const junPath = m.jun.split('?')[0];
+      const listPath = m.list.split('?')[0];
+      document.querySelectorAll('a[href]').forEach(a => {
+        // 메뉴 글자가 정확히 일치하는 링크만 — 페이지네이션·본문 링크는 건드리지 않는다.
+        if ((a.textContent || '').replace(/\s+/g, '') !== m.menu) return;
+        const href = a.getAttribute('href') || '';
+        if (/^javascript:/i.test(href)) return;
+        let p = '';
+        try { p = new URL(href, location.origin).pathname; } catch (_) { return; }
+        const isOurs = p === junPath || (a.dataset.ubTabOrig && p === listPath);
+        if (!isOurs) return;
+        if (pref === 'list') {
+          if (href.indexOf(listPath) >= 0) return;              // 이미 내역
+          if (!a.dataset.ubTabOrig) a.dataset.ubTabOrig = href;  // 되돌릴 원본 보관
+          a.setAttribute('href', m.list); n++;
+        } else if (a.dataset.ubTabOrig) {
+          // 설정을 되돌렸다 → 원본 복원(페이지를 새로 열지 않아도 즉시 맞는다)
+          a.setAttribute('href', a.dataset.ubTabOrig);
+          delete a.dataset.ubTabOrig; n++;
+        }
+      });
+    });
+    if (n) fwLog('기본탭 메뉴 링크', n, '개 갱신');
+  }
+  // ── 사이드바: 전표 기본탭 설정 UI ────────────────────────────────────────
+  const TAB_OPT = (v, cur) => `<option value="${v}"${cur === v ? ' selected' : ''}>${v === 'jun' ? '장' : '내역'}</option>`;
+  function renderTabPrefSection() {
+    if (!isTabPrefPath(location.pathname, TAB_MENUS)) return '';   // 해당 전표 화면에서만
+    const mode = state.ubTabMode || 'off';
+    const each = state.ubTabEach || {};
+    const rows = TAB_MENUS.map(m => {
+      const cur = each[m.key] === 'list' ? 'list' : 'jun';
+      return `<div class="ub-tp-row"><span>${m.label}</span>
+        <select class="ub-tp-sel" data-tp-each="${m.key}">${TAB_OPT('jun', cur)}${TAB_OPT('list', cur)}</select></div>`;
+    }).join('');
+    return `
+      <div class="ub-sb-sect">
+        <div class="ub-sb-sect-t">${ICONS.panelLeft}<span>전표 기본탭</span></div>
+        <select class="ub-tp-sel" data-tp-mode>
+          <option value="off"${mode === 'off' ? ' selected' : ''}>사용 안 함</option>
+          <option value="global"${mode === 'global' ? ' selected' : ''}>전체 한 번에</option>
+          <option value="each"${mode === 'each' ? ' selected' : ''}>전표별 개별</option>
+        </select>
+        ${mode === 'global' ? `
+          <div class="ub-tp-row"><span>모든 전표</span>
+            <select class="ub-tp-sel" data-tp-global>${TAB_OPT('jun', state.ubTabGlobal)}${TAB_OPT('list', state.ubTabGlobal)}</select>
+          </div>` : ''}
+        ${mode === 'each' ? rows : ''}
+        ${mode === 'off' ? '' : '<div class="ub-tp-hint">메뉴 링크를 바꿔 처음부터 그 탭으로 엽니다. 화면의 탭 클릭은 그대로 동작합니다.</div>'}
+      </div>`;
+  }
+  function bindTabPrefSection(bar) {
+    const save = (patch) => {
+      Object.assign(state, patch);
+      try { chrome.storage.local.set(patch); } catch (_) {}
+      applyTabPref();      // 지금 보고 있는 페이지의 메뉴에도 바로 반영
+      renderSidebar();     // 모드가 바뀌면 하위 항목 구성이 달라진다
+    };
+    const modeSel = bar.querySelector('[data-tp-mode]');
+    if (modeSel) modeSel.addEventListener('change', () => save({ ubTabMode: modeSel.value }));
+    const gSel = bar.querySelector('[data-tp-global]');
+    if (gSel) gSel.addEventListener('change', () => save({ ubTabGlobal: gSel.value }));
+    bar.querySelectorAll('[data-tp-each]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const each = Object.assign({}, state.ubTabEach || {});
+        each[sel.dataset.tpEach] = sel.value;
+        save({ ubTabEach: each });
+      });
+    });
+  }
+  function initFactory() {
+    try {
+      if (!state.ubSkin) return;
+      bindFactoryClick();
+      bindFactoryNames();
+      // applyTabPref 는 applyAll 에서 돈다(설정 변경·다른 탭 반영까지 한 곳으로).
+    } catch (e) { fwLog('초기화 실패', e); }
   }
 
   /* ==========================================================================
@@ -1462,6 +1926,20 @@
       0%, 100% { outline: 2px solid rgba(74,188,199,.15); outline-offset: -2px; }
       50%      { outline: 3px solid rgba(74,188,199,.95); outline-offset: -3px; }
     }
+
+    /* 전표 기본탭 설정 */
+    .ub-sidebar .ub-tp-sel {
+      width: 100%; height: 32px; padding: 0 8px; box-sizing: border-box;
+      border: 1px solid var(--ub-line); border-radius: 8px; background: var(--ub-bg);
+      color: var(--ub-fg); font-size: 12px; font-family: inherit; cursor: pointer;
+    }
+    .ub-sidebar .ub-tp-sel:focus { outline: none; border-color: var(--ub-on); }
+    .ub-sidebar .ub-tp-row {
+      display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    }
+    .ub-sidebar .ub-tp-row span { flex: 1; font-size: 12px; color: var(--ub-sub); }
+    .ub-sidebar .ub-tp-row .ub-tp-sel { width: 84px; flex: none; height: 28px; }
+    .ub-sidebar .ub-tp-hint { margin-top: 8px; font-size: 11px; color: var(--ub-sub); line-height: 1.5; }
   `;
   function ensureSidebarStyle() {
     if (document.getElementById(SIDEBAR_STYLE_ID)) return;
@@ -1823,6 +2301,8 @@
 
       ${renderCacheSection()}
 
+      ${renderTabPrefSection()}
+
       <div class="ub-sb-rz-x" title="너비 조절 (드래그)"></div>
       <div class="ub-sb-rz" title="크기 조절 (드래그)"></div>
     `;
@@ -1833,6 +2313,8 @@
     // 드래그 / 리사이즈
     bindDrag(bar);
     bindResize(bar);
+
+    bindTabPrefSection(bar);
 
     // 헤더 액션
     bar.querySelectorAll('.ub-ico').forEach(b => b.addEventListener('click', (e) => {
@@ -1974,6 +2456,7 @@
       img.title = on('ubThumbEdit') ? '상품 수정 (새 창)' : '';
     });
     ubHighlightPending();   // 재고화·회전입고·메인석: 로드 후 검색 바코드 행 강조+스크롤
+    applyTabPref();         // v3.7.0: 전표 기본탭(설정 변경·다른 탭에서 바뀐 경우 포함)
   }
   let mo = null;
   function startObserver() {
@@ -1989,7 +2472,7 @@
           if (n.querySelector && n.querySelector('select[name=pageSize]')) needPaging = true;
         }
       }
-      if (needThumb) { bindThumbEdit(document); ubHighlightPending(); }   // idx 행 동적렌더 시 강조 재시도
+      if (needThumb) { bindThumbEdit(document); ubHighlightPending(); bindFactoryNames(); }   // idx 행 동적렌더 시 강조·매입처명 재시도
       if (needPaging) injectPageSizeOptions();
       if (!document.getElementById(SIDEBAR_ID) && !document.getElementById(HANDLE_ID) && on('ubSidebar')) needSidebar = true;
       if (needSidebar) renderSidebar();
@@ -2353,6 +2836,7 @@
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
+    initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
@@ -2412,7 +2896,12 @@
   // 를 재유발하지 않는다(무한루프 없음).
   try {
     chrome.storage.onChanged.addListener((ch, area) => {
-      if (area === 'local' && (ch.ubAccounts || ch.ubLoginSalt)) mirrorAccounts();
+      if (area === 'local' && (ch.ubAccounts || ch.ubLoginSalt)) {
+        mirrorAccounts();
+        // 계정이 바뀌면 매입처 '이름→seq' 캐시를 버린다. 계정마다 매입처 마스터가 다르면
+        //  옛 seq 로 다른 업체 정보를 열 수 있다(이름 대조만으론 동명일 때 못 걸러진다).
+        try { fwMapMem = null; chrome.storage.local.remove(FW_MAP_KEY); } catch (_) {}
+      }
     });
   } catch (_) {}
 })();
