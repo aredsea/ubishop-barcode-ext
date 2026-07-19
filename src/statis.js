@@ -63,11 +63,15 @@
    *  집계에서는 '비율의 평균'이 아니라 **합계끼리 계산**한다(Σ실판매가, Σ총입고가).
    *  건별 비율을 평균내면 금액이 큰 건과 작은 건이 같은 무게가 되어 실제와 어긋난다. */
   function profitRate(real, cost) {
-    if (!(real > 0)) return null;
+    // ★원가 결측(null)은 0원이 아니다. 0으로 넘기면 이익율이 100% 로 부풀려 표시된다 —
+    //  '모르는 것'을 '이익 100%'로 보여주는 게 이 기능에서 제일 위험하다. 그래서 미표기.
+    if (cost == null || !(real > 0)) return null;
     const r = Math.round((real - cost) / real * 1000) / 10;
     return r === 0 ? null : r;
   }
   function profitText(real, cost) { const r = profitRate(real, cost); return r == null ? '' : r.toFixed(1) + '%'; }
+  // 금액 셀 → 숫자. 숫자가 하나도 없으면(빈 칸·'-') null = 결측. firstNum 은 0 을 돌려주므로 구분이 안 된다.
+  function numOrNull(s) { return /\d/.test(String(s == null ? '' : s)) ? firstNum(s) : null; }
 
   /* ---------- 상품코드 셀 → {code, name} ---------- */
   function splitCodeName(cellText) {
@@ -239,7 +243,8 @@
           real: g.cReal >= 0 ? firstNum(r.cells[g.cReal] && r.cells[g.cReal].textContent) : 0,
           // 총입고가 = 원가. 셀은 "165,637<br>165,637<br>0" 처럼 값이 붙어 나오지만
           //  firstNum 이 콤마 3자리 그룹으로 첫 정상 숫자만 집어낸다.
-          cost: g.cCost >= 0 ? firstNum(r.cells[g.cCost] && r.cells[g.cCost].textContent) : 0
+          //  열이 없거나 칸이 비면 null(결측) — 0 으로 두면 이익율이 100% 로 잘못 나온다.
+          cost: g.cCost >= 0 ? numOrNull(r.cells[g.cCost] && r.cells[g.cCost].textContent) : null
         });
       }
     }
@@ -591,10 +596,13 @@
       if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
       const key = name;   // 같은 제품명끼리 병합(구분 무관)
       let g = map.get(key);
-      if (!g) { g = { type, name, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, cost: 0, members: [] }; map.set(key, g); }
+      if (!g) { g = { type, name, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, cost: 0, costMissing: false, members: [] }; map.set(key, g); }
       if (ov && ov.type) g.type = ov.type;   // 교정된 구분 우선
       g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real;
-      g.cost += (it.cost || 0); g.members.push(it);
+      // 원가가 하나라도 결측이면 그 그룹의 이익율은 계산하지 않는다 — 결측분을 빼고 합하면
+      //  분모는 그대로인데 원가만 작아져 이익율이 실제보다 높게 나온다.
+      if (it.cost == null) g.costMissing = true; else g.cost += it.cost;
+      g.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.sup - a.sup);
     return { groups, excluded, kept, gift };
@@ -903,7 +911,7 @@
           `<td>${nf(g.sale)}</td>` +
           `<td>${nf(g.dc)}</td>` +
           `<td>${nf(g.real)}</td>` +
-          `<td>${profitText(g.real, g.cost || 0)}</td>` +
+          `<td>${g.costMissing ? '' : profitText(g.real, g.cost)}</td>` +
           `<td>${g.members.length}</td></tr>`;
         const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
           '<tr>' +
@@ -913,7 +921,7 @@
           `<td>${nf(m.sale)}</td>` +
           `<td>${nf(m.dc)}</td>` +
           `<td>${nf(m.real)}</td>` +
-          `<td>${profitText(m.real, m.cost || 0)}</td>` +
+          `<td>${profitText(m.real, m.cost)}</td>` +
           '</tr>').join('');
         rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="9">` +
           '<table class="sub"><thead><tr>' +
@@ -937,7 +945,7 @@
     let sortKey = 'qty', sortDesc = true;
     const sortVal = (g, k) => {
       if (k === 'cnt') return g.members.length;
-      if (k === 'profit') return profitRate(g.real, g.cost || 0);   // 미표기(null)는 아래에서 뒤로
+      if (k === 'profit') return g.costMissing ? null : profitRate(g.real, g.cost);   // 미표기(null)는 아래에서 뒤로
       return g[k] || 0;
     };
     function sortList(list) {
@@ -960,8 +968,9 @@
       const q = curList.reduce((a, g) => a + g.qty, 0);
       const sup = curList.reduce((a, g) => a + g.sup, 0);
       const real = curList.reduce((a, g) => a + g.real, 0);
+      const anyMissing = curList.some(g => g.costMissing);
       const cost = curList.reduce((a, g) => a + (g.cost || 0), 0);
-      const pr = profitText(real, cost);
+      const pr = anyMissing ? '' : profitText(real, cost);   // 원가 결측이 섞이면 합계 이익율도 내지 않는다
       box.querySelector('#ub-stat-sum').textContent =
         `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원`
         + ` · 총입고가 ${nf(cost)}원 · 이익율 ${pr || '—'}`
@@ -984,7 +993,8 @@
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
       const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '총입고가', '이익율', '코드수']];
       curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale),
-        Math.round(g.dc), Math.round(g.real), Math.round(g.cost || 0), profitText(g.real, g.cost || 0), g.members.length]));
+        Math.round(g.dc), Math.round(g.real), Math.round(g.cost || 0),
+        g.costMissing ? '' : profitText(g.real, g.cost), g.members.length]));
       downloadXlsx(aoa, xlsxName());
       log('xlsx 저장', xlsxName(), aoa.length - 1, '행', 'filter=' + filter);
     });
@@ -1536,11 +1546,13 @@
     }
     // 판매탭의 연결번호 슬롯을 이익율로 재사용(할인율과 같은 방식 — 열 추가/삭제 없음).
     //  ⚠ 0% 와 계산 불가(실판매가 0 = 사은품 등)는 빈칸으로 둔다 — 사용자 요청(가독성).
-    if (!IS_ORDER && cLink >= 0) {
+    //  ★총입고가 열이 없으면 아예 손대지 않는다(연결번호를 그대로 둔다). 원가를 0 으로 가정하면
+    //   모든 행이 '이익율 100%' 로 표시되어 완전히 잘못된 숫자를 보여주게 된다.
+    if (!IS_ORDER && cLink >= 0 && cCost >= 0) {
       headRow.cells[cLink].textContent = '이익율';
       for (const r of table.querySelectorAll('tr.ubm-row')) {
         const real = cPrice >= 0 && r.cells[cPrice] ? firstNum(r.cells[cPrice].textContent) : 0;
-        const cost = cCost >= 0 && r.cells[cCost] ? firstNum(r.cells[cCost].textContent) : 0;
+        const cost = r.cells[cCost] ? numOrNull(r.cells[cCost].textContent) : null;
         r.cells[cLink].textContent = profitText(real, cost);
       }
     }
