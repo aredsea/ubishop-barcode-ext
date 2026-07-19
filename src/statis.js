@@ -56,6 +56,18 @@
   function nf(n) { try { return Math.round(n).toLocaleString('ko-KR'); } catch (_) { return String(n); } }
   function discountRate(sale, price) { return sale > 0 ? Math.round((sale - price) / sale * 1000) / 10 : null; }
   function discountText(sale, price) { const rate = discountRate(sale, price); return rate == null ? '—' : rate.toFixed(1) + '%'; }
+  /* 이익율 = (실판매가 − 총입고가) ÷ 실판매가.
+   *  ⚠ null 을 돌려주는 두 경우는 **표기하지 않는다**(사용자 요청 — 사은품 등이 많아 가독성을 해친다):
+   *    ① 실판매가 0 이하 → 나눌 수 없음(사은품·100% 할인)
+   *    ② 반올림 결과가 정확히 0.0% → 원가와 같아 이익이 없음
+   *  집계에서는 '비율의 평균'이 아니라 **합계끼리 계산**한다(Σ실판매가, Σ총입고가).
+   *  건별 비율을 평균내면 금액이 큰 건과 작은 건이 같은 무게가 되어 실제와 어긋난다. */
+  function profitRate(real, cost) {
+    if (!(real > 0)) return null;
+    const r = Math.round((real - cost) / real * 1000) / 10;
+    return r === 0 ? null : r;
+  }
+  function profitText(real, cost) { const r = profitRate(real, cost); return r == null ? '' : r.toFixed(1) + '%'; }
 
   /* ---------- 상품코드 셀 → {code, name} ---------- */
   function splitCodeName(cellText) {
@@ -195,7 +207,8 @@
         if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
         rows.push(r);
       }
-      return { rows, cCode: idx('상품코드'), cQty: idx('수량'), cSup: idx('총공급가'), cSale: idx('판매가'), cDC: idx('DC금액'), cReal: idx('실판매가') };
+      return { rows, cCode: idx('상품코드'), cQty: idx('수량'), cSup: idx('총공급가'), cSale: idx('판매가'),
+               cDC: idx('DC금액'), cReal: idx('실판매가'), cCost: idx('총입고가') };
     }
     return null;
   }
@@ -223,7 +236,10 @@
           sup: firstNum(r.cells[g.cSup] && r.cells[g.cSup].textContent),
           sale: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0,
           dc: g.cDC >= 0 ? firstNum(r.cells[g.cDC] && r.cells[g.cDC].textContent) : 0,
-          real: g.cReal >= 0 ? firstNum(r.cells[g.cReal] && r.cells[g.cReal].textContent) : 0
+          real: g.cReal >= 0 ? firstNum(r.cells[g.cReal] && r.cells[g.cReal].textContent) : 0,
+          // 총입고가 = 원가. 셀은 "165,637<br>165,637<br>0" 처럼 값이 붙어 나오지만
+          //  firstNum 이 콤마 3자리 그룹으로 첫 정상 숫자만 집어낸다.
+          cost: g.cCost >= 0 ? firstNum(r.cells[g.cCost] && r.cells[g.cCost].textContent) : 0
         });
       }
     }
@@ -575,9 +591,10 @@
       if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
       const key = name;   // 같은 제품명끼리 병합(구분 무관)
       let g = map.get(key);
-      if (!g) { g = { type, name, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, members: [] }; map.set(key, g); }
+      if (!g) { g = { type, name, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, cost: 0, members: [] }; map.set(key, g); }
       if (ov && ov.type) g.type = ov.type;   // 교정된 구분 우선
-      g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real; g.members.push(it);
+      g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real;
+      g.cost += (it.cost || 0); g.members.push(it);
     }
     const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.sup - a.sup);
     return { groups, excluded, kept, gift };
@@ -774,6 +791,11 @@
       '#ub-stat thead th{position:sticky;top:0;background:#f3fbfe;color:#0f6f8c;font-weight:800;',
       ' padding:9px 8px;border-bottom:2px solid #35C5F0;text-align:right;white-space:nowrap;}',
       '#ub-stat thead th.l{text-align:left;}',
+      // 정렬 가능한 헤더 — 현재 기준 열은 색으로, 방향은 ▲▼ 로 보여준다.
+      '#ub-stat thead th.sortable{cursor:pointer;user-select:none;}',
+      '#ub-stat thead th.sortable:hover{background:#e3f5fc;}',
+      '#ub-stat thead th.sortable.on{color:#0b556c;}',
+      '#ub-stat thead th.sortable::after{content:attr(data-dir);font-size:10px;margin-left:3px;opacity:.85;}',
       '#ub-stat tbody td{padding:8px;border-bottom:1px solid #eef1f5;text-align:right;white-space:nowrap;}',
       '#ub-stat tbody td.l{text-align:left;} #ub-stat tbody tr.g{cursor:pointer;}',
       '#ub-stat tbody tr.g:hover{background:#f7fbfd;}',
@@ -852,7 +874,14 @@
         '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
       '</div>' +
       '<div class="bd"><table>' +
-        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총공급가</th><th>총판매가</th><th>총DC금액</th><th>총실판매가</th><th>코드수</th></tr></thead>' +
+        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th>' +
+          '<th class="sortable" data-s="qty">총수량</th>' +
+          '<th class="sortable" data-s="sup">총공급가</th>' +
+          '<th class="sortable" data-s="sale">총판매가</th>' +
+          '<th class="sortable" data-s="dc">총DC금액</th>' +
+          '<th class="sortable" data-s="real">총실판매가</th>' +
+          '<th class="sortable" data-s="profit">이익율</th>' +
+          '<th class="sortable" data-s="cnt">코드수</th></tr></thead>' +
         '<tbody id="ub-stat-tbody"></tbody></table></div>';
 
     document.body.appendChild(mask);
@@ -874,6 +903,7 @@
           `<td>${nf(g.sale)}</td>` +
           `<td>${nf(g.dc)}</td>` +
           `<td>${nf(g.real)}</td>` +
+          `<td>${profitText(g.real, g.cost || 0)}</td>` +
           `<td>${g.members.length}</td></tr>`;
         const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
           '<tr>' +
@@ -883,10 +913,11 @@
           `<td>${nf(m.sale)}</td>` +
           `<td>${nf(m.dc)}</td>` +
           `<td>${nf(m.real)}</td>` +
+          `<td>${profitText(m.real, m.cost || 0)}</td>` +
           '</tr>').join('');
-        rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
+        rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="9">` +
           '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
+          '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th><th>이익율</th>' +
           `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
       });
       return rows;
@@ -902,23 +933,58 @@
         }
       }));
     }
+    // 정렬 상태. 기본은 기존 동작(수량 많은 순) 유지.
+    let sortKey = 'qty', sortDesc = true;
+    const sortVal = (g, k) => {
+      if (k === 'cnt') return g.members.length;
+      if (k === 'profit') return profitRate(g.real, g.cost || 0);   // 미표기(null)는 아래에서 뒤로
+      return g[k] || 0;
+    };
+    function sortList(list) {
+      const dir = sortDesc ? -1 : 1;
+      return list.slice().sort((a, b) => {
+        const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
+        // 이익율이 '미표기'인 항목은 정렬 방향과 무관하게 항상 뒤로 — 0 으로 취급하면
+        //  오름차순에서 맨 앞을 채워 정작 보려는 낮은 이익율 제품이 묻힌다.
+        if (va == null && vb == null) return b.qty - a.qty;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        return (va - vb) * dir || b.qty - a.qty;
+      });
+    }
     function apply() {
-      curList = (filter === 'all') ? allGroups : allGroups.filter(g => g.type === filter);
+      const base = (filter === 'all') ? allGroups : allGroups.filter(g => g.type === filter);
+      curList = sortList(base);
       box.querySelector('#ub-stat-tbody').innerHTML = rowsHtml(curList);
       bindRows();
       const q = curList.reduce((a, g) => a + g.qty, 0);
       const sup = curList.reduce((a, g) => a + g.sup, 0);
       const real = curList.reduce((a, g) => a + g.real, 0);
+      const cost = curList.reduce((a, g) => a + (g.cost || 0), 0);
+      const pr = profitText(real, cost);
       box.querySelector('#ub-stat-sum').textContent =
-        `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${meta}`;
+        `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원`
+        + ` · 총입고가 ${nf(cost)}원 · 이익율 ${pr || '—'}`
+        + ` · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${meta}`;
       box.querySelectorAll('.fbtn').forEach(b => b.classList.toggle('on', b.dataset.f === filter));
+      box.querySelectorAll('th.sortable').forEach(th => {
+        const on = th.dataset.s === sortKey;
+        th.classList.toggle('on', on);
+        th.dataset.dir = on ? (sortDesc ? '▼' : '▲') : '';
+      });
     }
+    box.querySelectorAll('th.sortable').forEach(th => th.addEventListener('click', () => {
+      const k = th.dataset.s;
+      if (sortKey === k) sortDesc = !sortDesc; else { sortKey = k; sortDesc = true; }
+      apply();
+    }));
 
     box.querySelector('#ub-stat-close').addEventListener('click', close);
     box.querySelectorAll('.fbtn').forEach(b => b.addEventListener('click', () => { filter = b.dataset.f; apply(); }));
     box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
-      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '코드수']];
-      curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), Math.round(g.dc), Math.round(g.real), g.members.length]));
+      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '총입고가', '이익율', '코드수']];
+      curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale),
+        Math.round(g.dc), Math.round(g.real), Math.round(g.cost || 0), profitText(g.real, g.cost || 0), g.members.length]));
       downloadXlsx(aoa, xlsxName());
       log('xlsx 저장', xlsxName(), aoa.length - 1, '행', 'filter=' + filter);
     });
@@ -1446,6 +1512,8 @@
     const cPrice = findCol(cells, [/실판매가/]);
     const cDc = findCol(cells, [/^DC금액$/]);
     const cConvert = findCol(cells, [/전환\s*P|전환포인트/, /^할인율$/]);
+    const cCost = findCol(cells, [/^총입고가$/]);
+    const cLink = findCol(cells, [/^연결번호$/, /^이익율$/]);   // 연결번호 슬롯을 이익율로 재사용
     // 데이터행: ubm-row 부여 + 인라인 hover 제거(CSS hover 적용) + 원본순서 기록
     let ord = 0;
     for (const r of table.rows) {
@@ -1464,6 +1532,16 @@
         const price = cPrice >= 0 && r.cells[cPrice] ? firstNum(r.cells[cPrice].textContent) : 0;
         const dc = cDc >= 0 && r.cells[cDc] ? firstNum(r.cells[cDc].textContent) : sale - price;
         r.cells[cConvert].textContent = sale > 0 ? (Math.round(dc / sale * 1000) / 10).toFixed(1) + '%' : '—';
+      }
+    }
+    // 판매탭의 연결번호 슬롯을 이익율로 재사용(할인율과 같은 방식 — 열 추가/삭제 없음).
+    //  ⚠ 0% 와 계산 불가(실판매가 0 = 사은품 등)는 빈칸으로 둔다 — 사용자 요청(가독성).
+    if (!IS_ORDER && cLink >= 0) {
+      headRow.cells[cLink].textContent = '이익율';
+      for (const r of table.querySelectorAll('tr.ubm-row')) {
+        const real = cPrice >= 0 && r.cells[cPrice] ? firstNum(r.cells[cPrice].textContent) : 0;
+        const cost = cCost >= 0 && r.cells[cCost] ? firstNum(r.cells[cCost].textContent) : 0;
+        r.cells[cLink].textContent = profitText(real, cost);
       }
     }
     // 직원열(전표 조인) — lookup 있으면
