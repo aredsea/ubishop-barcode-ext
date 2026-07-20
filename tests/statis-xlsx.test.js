@@ -9,10 +9,14 @@
  * ========================================================================== */
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'src', 'statis.js'), 'utf8');
-const SAMPLE_PATH = 'C:\\Users\\D102\\AppData\\Local\\Temp\\claude\\C--Clauede-Code\\dc7eba0b-079c-440c-86c0-43df981d907c\\scratchpad\\판매통계_이익율_샘플.xlsx';
+// ⚠ 여기에 특정 기기·세션의 절대경로를 박지 마라. 작성 당시 세션의 스크래치패드 경로가
+//    하드코딩돼 있어 다른 PC(그리고 같은 PC의 다른 세션)에서 EPERM 으로 전체 스위트가
+//    깨졌다. 샘플은 사람이 눈으로 열어보는 용도이므로 OS 임시폴더면 충분하다.
+const SAMPLE_PATH = path.join(os.tmpdir(), '판매통계_이익율_샘플.xlsx');
 
 function extractFn(src, name) {
   const start = src.indexOf('function ' + name + '(');
