@@ -3,11 +3,12 @@
  *  loader 동적로드(MAIN world). 상품집계 페이지에서만 동작.
  *
  *  흐름: [제품별 통계화] 버튼 → 월 전체 데이터 POST 재조회(pageSize=500 순차)
- *        → 단가(총공급가/수량) 50,000원 초과 행만 → 제품별 그룹핑 → 통계 오버레이
- *        → XLSX 다운로드.
+ *        → 전표 조인 → 제품별 그룹핑 → 통계 오버레이 → XLSX 다운로드.
  *
  *  그룹핑 규칙(사용자 확정 2026-07-02):
- *   · 단가 = 총공급가 ÷ 수량 > 50,000 인 행만 대상(이하 제외).
+ *   · 단가(총공급가 ÷ 수량) 범위 필터는 기본 무제한이다. 오버레이 상단에 사용자가
+ *     최소/최대를 입력했을 때만 thresholdFilter 가 적용된다(0 = 무제한).
+ *     ⚠ 구 파이프라인의 고정 하한 50,000원(PRICE_MIN)은 폐기됐다.
  *   · 자사(상품명이 "D자사/"로 시작): "D자사/" 제거 후 제품명 뒤 성별표기
  *     (SR·LR·S·L 모두)와 그 이후(옵션·괄호·/·*개) 잘라낸 것이 제품명.
  *     성별(SR/LR/S/L) 달라도 같은 제품명이면 합산.
@@ -26,7 +27,6 @@
 
   const TAG = '[UB][statis]';
   const log = (...a) => { try { console.log(TAG, ...a); } catch (_) {} };
-  const PRICE_MIN = 50000;
   const FETCH_PS = 500;
   const PAGE = IS_ORDER ? {
     lookup: buildLookup,
@@ -74,15 +74,6 @@
   function profitText(real, cost) { const r = profitRate(real, cost); return (r == null || r === 0) ? '' : r.toFixed(1) + '%'; }
   // 금액 셀 → 숫자. 숫자가 하나도 없으면(빈 칸·'-') null = 결측. firstNum 은 0 을 돌려주므로 구분이 안 된다.
   function numOrNull(s) { return /\d/.test(String(s == null ? '' : s)) ? firstNum(s) : null; }
-
-  /* ---------- 상품코드 셀 → {code, name} ---------- */
-  function splitCodeName(cellText) {
-    const t = String(cellText || '').replace(/\s+/g, ' ').trim();
-    // 앞 토큰이 코드(영숫자+하이픈), 나머지가 상품명
-    const m = t.match(/^([A-Za-z0-9][A-Za-z0-9\-]*)\s+(.+)$/);
-    if (m) return { code: m[1], name: m[2].trim() };
-    return { code: t, name: t };
-  }
 
   const isJasa = (name) => /^D?자사\//.test(name);
 
@@ -191,61 +182,6 @@
     });
     const buf = await r.arrayBuffer();
     return ubErp.decodeErpHtml(buf);
-  }
-  // 문서에서 t_list(수량 헤더 보유) 찾아 컬럼 인덱스 + 데이터행 반환
-  function parseDoc(doc) {
-    for (const t of doc.querySelectorAll('table.t_list')) {
-      let hi = -1, cells = null;
-      for (const r of t.rows) {
-        const cs = [...r.cells].map(c => c.textContent.replace(/\s+/g, ' ').trim());
-        if (cs.includes('수량')) { hi = r.rowIndex; cells = cs; break; }
-      }
-      if (hi < 0) continue;
-      const idx = (nm) => cells.indexOf(nm);
-      const rows = [];
-      for (let i = hi + 1; i < t.rows.length; i++) {
-        const r = t.rows[i];
-        if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
-        rows.push(r);
-      }
-      return { rows, cCode: idx('상품코드'), cQty: idx('수량'), cSup: idx('총공급가'), cSale: idx('판매가'),
-               cDC: idx('DC금액'), cReal: idx('실판매가'), cCost: idx('총입고가') };
-    }
-    return null;
-  }
-  async function loadAll(setStatus) {
-    const fp = formParams();
-    if (!fp) throw new Error('검색폼(form1)을 찾지 못했습니다');
-    const total = readTotal();
-    const pages = total > 0 ? Math.ceil(total / FETCH_PS) : 1;
-    const items = [];
-    let cSaleSeen = -1;
-    for (let p = 1; p <= pages; p++) {
-      setStatus(`전체 ${total}건 불러오는 중… (${p}/${pages})`);
-      const params = new URLSearchParams(fp.params);
-      params.set('pageSize', String(FETCH_PS));
-      params.set('reqPage', String(p));
-      const html = await fetchHtml(fp.action, params);
-      const g = parseDoc(new DOMParser().parseFromString(html, 'text/html'));
-      if (!g) throw new Error('결과 표(t_list)를 파싱하지 못했습니다 (로그인 만료?)');
-      cSaleSeen = g.cSale;
-      for (const r of g.rows) {
-        const cn = splitCodeName(r.cells[g.cCode] ? r.cells[g.cCode].textContent : '');
-        items.push({
-          code: cn.code, name: cn.name,
-          qty: firstNum(r.cells[g.cQty] && r.cells[g.cQty].textContent),
-          sup: firstNum(r.cells[g.cSup] && r.cells[g.cSup].textContent),
-          sale: g.cSale >= 0 ? firstNum(r.cells[g.cSale] && r.cells[g.cSale].textContent) : 0,
-          dc: g.cDC >= 0 ? firstNum(r.cells[g.cDC] && r.cells[g.cDC].textContent) : 0,
-          real: g.cReal >= 0 ? firstNum(r.cells[g.cReal] && r.cells[g.cReal].textContent) : 0,
-          // 총입고가 = 원가. 셀은 "165,637<br>165,637<br>0" 처럼 값이 붙어 나오지만
-          //  firstNum 이 콤마 3자리 그룹으로 첫 정상 숫자만 집어낸다.
-          //  열이 없거나 칸이 비면 null(결측) — 0 으로 두면 이익율이 100% 로 잘못 나온다.
-          cost: g.cCost >= 0 ? numOrNull(r.cells[g.cCost] && r.cells[g.cCost].textContent) : null
-        });
-      }
-    }
-    return { items, total, hasSale: cSaleSeen >= 0 };
   }
 
   /* ---------- 주문전표(order) 조회·파싱 ---------- */
@@ -581,32 +517,6 @@
   };
 
   /* ---------- 그룹핑 + 필터 ---------- */
-  function buildGroups(items) {
-    const map = new Map();
-    let excluded = 0, kept = 0, gift = 0;
-    for (const it of items) {
-      if (/사은품/.test(it.name)) { gift++; continue; }   // 사은품은 순위에서 제외
-      const unit = it.qty > 0 ? it.sup / it.qty : 0;   // 단가 = 총공급가 ÷ 수량
-      if (unit <= PRICE_MIN) { excluded++; continue; }
-      kept++;
-      const jasa = isJasa(it.name);
-      let name = jasa ? jasaBase(it.name) : saipKey(it.name);
-      let type = jasa ? '자사' : '사입';
-      const ov = OVERRIDE[name];   // 수기 보정 적용
-      if (ov) { if (ov.name) name = ov.name; if (ov.type) type = ov.type; }
-      const key = name;   // 같은 제품명끼리 병합(구분 무관)
-      let g = map.get(key);
-      if (!g) { g = { type, name, qty: 0, sup: 0, sale: 0, dc: 0, real: 0, cost: 0, costMissing: false, members: [] }; map.set(key, g); }
-      if (ov && ov.type) g.type = ov.type;   // 교정된 구분 우선
-      g.qty += it.qty; g.sup += it.sup; g.sale += it.sale; g.dc += it.dc; g.real += it.real;
-      // 원가가 하나라도 결측이면 그 그룹의 이익율은 계산하지 않는다 — 결측분을 빼고 합하면
-      //  분모는 그대로인데 원가만 작아져 이익율이 실제보다 높게 나온다.
-      if (it.cost == null) g.costMissing = true; else g.cost += it.cost;
-      g.members.push(it);
-    }
-    const groups = [...map.values()].sort((a, b) => b.qty - a.qty || b.sup - a.sup);
-    return { groups, excluded, kept, gift };
-  }
 
   // 제품명 정규화 + 수기 보정(OVERRIDE) 적용 → {name, type}. 제품별·직원별 그룹 공용.
   function normProduct(rawName) {
