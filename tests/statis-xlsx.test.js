@@ -38,13 +38,12 @@ const xlsxSource = UTIL_NAMES.map(name => extractFn(SRC, name)).join('\n') +
 // eslint-disable-next-line no-new-func
 const { buildXlsx, discountText, profitText } = new Function(xlsxSource)();
 
-// ★ #ub-stat-xlsx 핸들러는 파일에 2개 있다. 앞의 것은 호출부 0개인 죽은 render(result, meta)
-//   소속이고, 실제로 그려지는 것은 renderOrder 쪽이다.
-//   "renderOrder 선언보다 뒤"로만 앵커를 잡으면 renderOrder '종료 후'에 생긴 제3의 핸들러도
-//   집어갈 수 있으므로, 아예 renderOrder 본문(중괄호 균형)만 잘라내 그 안에서 찾는다.
-//   → 추출한 코드가 renderOrder 안에 있음이 증명된다.
-//   또 죽은 코드가 나중에 제거돼도 이 앵커는 그대로 유효하다
-//   ('죽은 핸들러가 존재한다'는 단언을 두면 제거 작업을 막는 지뢰가 된다).
+// ★추출 대상이 renderOrder '본문 안'임을 구조적으로 보장한다 — renderOrder 본문(중괄호 균형)만
+//   잘라내 그 안에서 핸들러를 찾는다. "renderOrder 선언보다 뒤"라는 인덱스 비교로는
+//   renderOrder 종료 후에 생긴 제3의 핸들러도 집어갈 수 있다.
+//   (v2.9.1 이전에는 죽은 render(result, meta) 소속 #ub-stat-xlsx 핸들러가 하나 더 있어
+//    엉뚱한 쪽을 집을 위험이 실재했다. 그 죽은 코드는 제거됐지만, 같은 이름의 다른 것을
+//    집는 사고가 이 저장소에서 반복됐으므로 앵커는 계속 본문 기준으로 둔다.)
 const renderOrderSrc = extractFn(SRC, 'renderOrder');
 const handlerMarker = "box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {";
 const liveHandlerAt = renderOrderSrc.indexOf(handlerMarker);

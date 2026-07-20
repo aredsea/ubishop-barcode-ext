@@ -71,7 +71,23 @@ console.log('Task2 shell-files 규약 교차검증 OK');
 (function(){
   const app = JSON.parse(fs.readFileSync(path.join(__dirname,'..','app-files.json'),'utf8'));
   assert.ok(app.sha256, 'app-files.json sha256 맵 없음');
-  assert.ok(Array.isArray(app.files) && app.files.length === 6, 'files 6개 아님');
+  // ★개수 상수(=== 6)는 '어떤' 파일인지를 못 지켜 파일 추가 때 숫자만 올리는 의식이 된다.
+  //   그렇다고 개수 검사를 빼면 files+sha256 에서 파일을 '함께' 지웠을 때 아무도 못 잡는다
+  //   (집합 일치는 양쪽이 같이 줄면 통과한다). → 배포 계약인 '순서 있는 구성' 자체를 고정한다.
+  //   erp.js 는 소비자들이 bare ubErp 로 참조하므로 반드시 맨 앞이어야 한다.
+  assert.deepStrictEqual(app.files, [
+    'src/erp.js',
+    'src/config.js',
+    'src/overlay.js',
+    'src/collector.js',
+    'src/content.js',
+    'src/cache-intercept.js',
+    'src/statis.js'
+  ], 'LOGIC 번들 구성·순서가 바뀌었다(의도한 변경이면 이 목록을 함께 갱신)');
+  // files ↔ sha256 키 집합 일치 — 제거된 파일의 해시 잔재/누락을 잡는다(기존엔 검사 없었음).
+  assert.deepStrictEqual(
+    [...app.files].sort(), Object.keys(app.sha256).sort(),
+    'app-files.json 의 files 와 sha256 키가 불일치(잔재 해시 또는 누락)');
   for (const rel of app.files){
     assert.ok(/^[0-9a-f]{64}$/.test(app.sha256[rel]||''), 'sha256 누락/형식: '+rel);
     const raw = fs.readFileSync(path.join(__dirname,'..',rel));

@@ -102,8 +102,9 @@ t('붙어 나오는 금액셀에서 첫 값만 집는다', () => {
  *  각 뷰: 헤더의 <th> 개수(+ 판매탭에만 붙는 discountHead/profitHead) == 1 + colspan.
  *   (상세행은 <td></td> 한 칸을 앞에 두고 나머지를 colspan 으로 덮는다)
  * ------------------------------------------------------------------------- */
-// ★같은 파일에 호출부 0개인 죽은 render(result, meta) 가 남아 있어 그쪽 상세행까지 잡힌다.
-//   불변식은 실제로 그려지는 renderOrder 에만 적용한다.
+// ★불변식은 실제로 그려지는 renderOrder 이후 구간에만 적용한다.
+//   (v2.9.1 이전에는 같은 파일에 호출부 0개인 죽은 render(result, meta) 가 있어 그쪽 상세행까지
+//    잡혔다. 그 죽은 코드는 제거됐지만, 앞 구간을 배제하는 이 범위 한정은 그대로 유효하다.)
 const ALL = SRC.split(/\r?\n/);
 const ORDER_AT = ALL.findIndex(l => l.includes('function renderOrder('));
 assert.ok(ORDER_AT > 0, 'statis.js 에서 renderOrder 선언을 찾지 못했습니다');

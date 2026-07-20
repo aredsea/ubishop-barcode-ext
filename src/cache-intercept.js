@@ -243,25 +243,10 @@
       const buf = await r.arrayBuffer();
       const bytes = buf.byteLength;
       const ct = (r.headers.get('content-type') || '').toLowerCase();
-      let decoder = 'utf-8';
-      if (ct.includes('euc-kr') || ct.includes('ks_c_5601') || ct.includes('ksc5601')) {
-        decoder = 'euc-kr';
-      } else if (!ct.includes('utf-8') && bytes > 0) {
-        try {
-          const sample = new TextDecoder('utf-8', { fatal: false })
-            .decode(buf.slice(0, Math.min(4096, bytes)));
-          const replCount = (sample.match(/�/g) || []).length;
-          if (replCount > 5) decoder = 'euc-kr';
-        } catch (_) {}
-      }
-      let html = '';
-      try { html = new TextDecoder(decoder).decode(buf); }
-      catch (_) {
-        try { html = new TextDecoder(decoder === 'utf-8' ? 'euc-kr' : 'utf-8').decode(buf); } catch (__) {}
-      }
+      const html = ubErp.decodeErpHtml(buf, ct);
       const hasResultsMarker = html.indexOf('class="t_list"') >= 0 || html.indexOf("class='t_list'") >= 0;
       const ok = r.ok && bytes > 500 && hasResultsMarker;
-      return { ok, html, bytes, status: r.status, decoder, contentType: ct, elapsedMs: Date.now() - t0 };
+      return { ok, html, bytes, status: r.status, decoder: 'ubErp', contentType: ct, elapsedMs: Date.now() - t0 };
     } catch (e) {
       clearTimeout(tid);
       const aborted = e && e.name === 'AbortError';

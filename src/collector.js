@@ -199,29 +199,14 @@
     });
     if (!res.ok) throw new Error('infoItemBarPrint.do HTTP ' + res.status);
 
-    // 유비샵은 EUC-KR 가능성이 높다. 바이트로 받아 디코딩 시도.
+    // ERP 정규 디코더(SSOT)가 UTF-8/EUC-KR을 자동 판별한다.
     const buf = await res.arrayBuffer();
-    let html = decodeKr(buf);
+    let html = ubErp.decodeErpHtml(buf);
     if (CFG.debug) {
       window.__UB_LAST_BARPRINT_HTML = html;
       log('응답 HTML 저장됨 → window.__UB_LAST_BARPRINT_HTML (length=' + html.length + ')');
     }
     return html;
-  }
-
-  // UTF-8/EUC-KR 자동 판별 디코딩 — 치환문자(�)가 적은 쪽 채택.
-  // 실측: infoItemBarPrint.do 응답은 UTF-8 (2026-06 확인).
-  function decodeKr(buf) {
-    const score = (enc) => {
-      try {
-        const s = new TextDecoder(enc, { fatal: false }).decode(buf);
-        return { s, bad: (s.match(/�/g) || []).length };
-      } catch (e) { return { s: null, bad: Infinity }; }
-    };
-    const u = score('utf-8');
-    if (u.bad === 0) return u.s;          // 깨끗한 UTF-8 → 바로 채택
-    const e = score('euc-kr');
-    return (e.bad < u.bad ? e.s : u.s) || '';
   }
 
   /**

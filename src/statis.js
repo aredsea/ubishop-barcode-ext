@@ -190,12 +190,7 @@
       body: params.toString()
     });
     const buf = await r.arrayBuffer();
-    let html = '';
-    try {
-      html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
-      if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
-    } catch (_) { try { html = new TextDecoder('euc-kr').decode(buf); } catch (__) {} }
-    return html;
+    return ubErp.decodeErpHtml(buf);
   }
   // 문서에서 t_list(수량 헤더 보유) 찾아 컬럼 인덱스 + 데이터행 반환
   function parseDoc(doc) {
@@ -759,13 +754,6 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 3000);
   }
-  function xlsxName() {
-    const f = document.querySelector('form[name="form1"]');
-    const g = n => { const el = f && f.elements[n]; return el ? el.value : ''; };
-    const s = `${g('syear')}${g('smonth')}${g('sday')}`;
-    const e = `${g('eyear')}${g('emonth')}${g('eday')}`;
-    return (s && e) ? `상품집계_통계_${s}-${e}.xlsx` : '상품집계_통계.xlsx';
-  }
   function orderXlsxName() {
     const f = document.querySelector('form[name="form1"]');
     const g = n => { const el = f && f.elements[n]; return el ? el.value : ''; };
@@ -870,100 +858,6 @@
   function close() {
     ['ub-stat', 'ub-stat-mask'].forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
   }
-  function render(result, meta) {
-    ensureStyle();
-    close();
-    const mask = document.createElement('div'); mask.id = 'ub-stat-mask';
-    mask.addEventListener('click', close);
-    const box = document.createElement('div'); box.id = 'ub-stat';
-    const allGroups = result.groups;
-
-    box.innerHTML =
-      '<div class="hd">' +
-        '<span class="t">제품별 판매 통계</span>' +
-        '<span class="fbtns">' +
-          '<button class="fbtn on" data-f="all">전체</button>' +
-          '<button class="fbtn" data-f="자사">자사</button>' +
-          '<button class="fbtn" data-f="사입">타사</button>' +
-        '</span>' +
-        '<span class="sum" id="ub-stat-sum"></span>' +
-        '<span class="sp"><button class="bx" id="ub-stat-xlsx">엑셀 다운로드(XLSX)</button><button class="bc" id="ub-stat-close">닫기</button></span>' +
-      '</div>' +
-      '<div class="bd"><table>' +
-        '<thead><tr><th>#</th><th class="l">제품명</th><th class="l">구분</th><th>총수량</th><th>총공급가</th><th>총판매가</th><th>총DC금액</th><th>총실판매가</th><th>코드수</th></tr></thead>' +
-        '<tbody id="ub-stat-tbody"></tbody></table></div>';
-
-    document.body.appendChild(mask);
-    document.body.appendChild(box);
-
-    let filter = 'all';
-    let curList = allGroups;
-
-    function rowsHtml(list) {
-      let rows = '';
-      list.forEach((g, i) => {
-        const tag = g.type === '자사' ? '<span class="tag tj">자사</span>' : '<span class="tag ts">사입</span>';
-        rows += `<tr class="g" data-i="${i}">` +
-          `<td class="rk">${i + 1}</td>` +
-          `<td class="l">${esc(g.name)} <span class="exp">▸</span></td>` +
-          `<td class="l">${tag}</td>` +
-          `<td class="qty">${nf(g.qty)}</td>` +
-          `<td>${nf(g.sup)}</td>` +
-          `<td>${nf(g.sale)}</td>` +
-          `<td>${nf(g.dc)}</td>` +
-          `<td>${nf(g.real)}</td>` +
-          `<td>${g.members.length}</td></tr>`;
-        const memRows = g.members.slice().sort((a, b) => b.qty - a.qty).map(m =>
-          '<tr>' +
-          `<td class="l">${esc(m.name)}</td>` +
-          `<td>${nf(m.qty)}</td>` +
-          `<td>${nf(m.sup)}</td>` +
-          `<td>${nf(m.sale)}</td>` +
-          `<td>${nf(m.dc)}</td>` +
-          `<td>${nf(m.real)}</td>` +
-          '</tr>').join('');
-        rows += `<tr class="det" data-d="${i}" style="display:none"><td></td><td colspan="8">` +
-          '<table class="sub"><thead><tr>' +
-          '<th class="l">상품명</th><th>수량</th><th>총공급가</th><th>판매가</th><th>DC금액</th><th>실판매가</th>' +
-          `</tr></thead><tbody>${memRows}</tbody></table></td></tr>`;
-      });
-      return rows;
-    }
-    function bindRows() {
-      box.querySelectorAll('tr.g').forEach(tr => tr.addEventListener('click', () => {
-        const d = box.querySelector(`tr.det[data-d="${tr.dataset.i}"]`);
-        const caret = tr.querySelector('.exp');
-        if (d) {
-          const open = d.style.display === 'none';
-          d.style.display = open ? '' : 'none';
-          if (caret) caret.textContent = open ? '▾' : '▸';
-        }
-      }));
-    }
-    function apply() {
-      curList = (filter === 'all') ? allGroups : allGroups.filter(g => g.type === filter);
-      box.querySelector('#ub-stat-tbody').innerHTML = rowsHtml(curList);
-      bindRows();
-      const q = curList.reduce((a, g) => a + g.qty, 0);
-      const sup = curList.reduce((a, g) => a + g.sup, 0);
-      const real = curList.reduce((a, g) => a + g.real, 0);
-      box.querySelector('#ub-stat-sum').textContent =
-        `제품군 ${curList.length}개 · 총수량 ${nf(q)} · 총공급가 ${nf(sup)}원 · 총실판매가 ${nf(real)}원 · 단가 5만원 초과만 · 제외 ${result.excluded}행 · 사은품 제외 ${result.gift} · 기간 ${meta}`;
-      box.querySelectorAll('.fbtn').forEach(b => b.classList.toggle('on', b.dataset.f === filter));
-    }
-
-    box.querySelector('#ub-stat-close').addEventListener('click', close);
-    box.querySelectorAll('.fbtn').forEach(b => b.addEventListener('click', () => { filter = b.dataset.f; apply(); }));
-    box.querySelector('#ub-stat-xlsx').addEventListener('click', () => {
-      const aoa = [['순위', '제품명', '구분', '총수량', '총공급가', '총판매가', '총DC금액', '총실판매가', '코드수']];
-      curList.forEach((g, i) => aoa.push([i + 1, g.name, g.type, g.qty, Math.round(g.sup), Math.round(g.sale), Math.round(g.dc), Math.round(g.real), g.members.length]));
-      downloadXlsx(aoa, xlsxName());
-      log('xlsx 저장', xlsxName(), aoa.length - 1, '행', 'filter=' + filter);
-    });
-    apply();
-    log('통계 렌더', { groups: allGroups.length, excluded: result.excluded, kept: result.kept });
-  }
-
   /* ---------- 직원별/제품별/매장별 통계 오버레이(renderOrder) ---------- */
   //  기본 뷰 = 직원별(직원 → 그 직원 계약 제품). 제품별·매장별 토글 제공.
   //  공급가·판매가는 상품집계/PAGE 설정에 따르고 직원은 전표 조인. 임계값(공급가/수량) 이하 라인 숨김.
