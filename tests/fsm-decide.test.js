@@ -176,6 +176,21 @@ test('scenario 8: unrelated page during logout aborts instead of navigating blin
   assert.equal(result.terminalReason, 'unrelated_page');
 });
 
+// 회귀: v3.6.4(9a6df67)가 로그아웃 랜딩 화이트리스트를 도입하면서 실제 랜딩 경로를 빠뜨렸다.
+// honsu114 는 '/' 로 가면 곧바로 '/mall/main.ubs' 로 리다이렉트하고, ERP 미인증 접근도 같은
+// 곳으로 떨어진다(2026-07-20 라이브 실측). 그래서 로그아웃 직후엔 항상 '/mall/main.ubs' 인데
+// 화이트리스트에 없어 unrelated_page 로 흐름이 죽었다 = "로그아웃만 되고 그 다음이 없음".
+test('regression: 로그아웃이 실제로 떨어지는 /mall/main.ubs 에서 로그인 페이지로 진행한다', () => {
+  const result = decide(flow('loggingOut'), probe({
+    url: 'https://www.honsu114.com/mall/main.ubs',
+    path: '/mall/main.ubs',
+    hasLogout: false,   // 로그아웃이 실제로 완료됨
+    hasForm: false      // 아직 로그인 폼 페이지는 아님
+  }), 100);
+  assert.equal(result.action, 'navigateLogin');
+  assert.equal(result.nextPhase, 'toLogin');
+});
+
 test('scenario 9: start on the target account skips logout', () => {
   const withPms = decide(flow('start'), probe({ hasLogout: true, loginName: 'B', pmsHref: 'https://pms.example/' }), 100);
   assert.equal(withPms.action, 'navigatePms');

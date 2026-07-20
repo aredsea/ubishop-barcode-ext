@@ -39,9 +39,11 @@ function fsmExpired(flow, now) {
   return Number.isFinite(budget) && Number.isFinite(flow && flow.enteredAt) && now - flow.enteredAt > budget;
 }
 
+// 로그아웃 직후 '정상 착지' 판정. honsu114 는 '/' 를 '/mall/main.ubs' 로 리다이렉트하므로
+// 루트만 허용하면 실제로는 어떤 경로도 통과하지 못한다(v3.6.4 회귀의 원인).
 function fsmIsLogoutLanding(probe) {
   if (!/(^|\.)honsu114\.com$/i.test(probe.host)) return false;
-  return /^(?:\/|\/mall\/?|\/mall\/login\.ubs)$/i.test(probe.path);
+  return /^(?:\/|\/mall\/?|\/mall\/(?:main|login)\.ubs)$/i.test(probe.path);
 }
 
 function fsmWithAttemptCap(flow, decision) {
