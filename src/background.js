@@ -42,6 +42,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ---- 계정 빠른 전환 오케스트레이션(팝업 → SW) ----
   if (msg.type === 'ubSwitchAccount') { startSwitch(msg).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+
+  // ---- 자동화 오케스트레이터 ----
+  if (msg.type === 'ubAutoCreateJob')  { sendResponse(ubAutoCreateJob(msg, sender)); return false; }
+  if (msg.type === 'ubAutoFrameReady') { ubAutoOnFrameReady(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+  if (msg.type === 'ubAutoEndJob')     { sendResponse(ubAutoEndJob(msg.jobId, 'controller_end', sender)); return false; }
 });
 
 /* ---- transparent caching용 — ubdstore에서 단일 URL fetch ----
@@ -624,3 +629,297 @@ try {
 ubGetFlow().then(flow => {
   if (flow && flow.active) { ubArmWatchdog(); ubStep(flow.tabId, flow.flowId); }
 });
+
+/* =============================================================================
+ *  자동화 오케스트레이터 (Phase 0 — 읽기 전용 스파이크)
+ *  스펙: docs/superpowers/specs/2026-07-20-orderitem-batch-design.md §3.2
+ *
+ *  ★불변식 1 — background 가 operation 과 인자를 독점한다.
+ *    자식 프레임(skin.js 자동화 러너)은 "준비됐다 + 내가 어떤 문서인가"만 보고한다.
+ *    무엇을 어떤 인자로 실행할지는 전적으로 여기서 정한다. 허용 목록이 있어도
+ *    자식이 operation 이나 대상을 고를 수 있으면 그건 경계가 아니다.
+ *
+ *  ★불변식 2 — MAIN world 로만 페이지 함수를 부른다.
+ *    ISOLATED content script 는 MV3 CSP 때문에 javascript: 링크·inline handler 를
+ *    실행하지 못한다(Chrome 공식 문서·samples#769). 페이지 전역 함수를 부르는
+ *    유일한 길이 world:'MAIN' 주입이다. 계정전환도 같은 이유로 이 경로를 쓴다(296행~).
+ *
+ *  ★불변식 3 — frameId 가 아니라 documentId 로 타겟한다.
+ *    frameId 는 navigation 후 같은 번호가 새 문서에 재사용될 수 있어 로드/주입
+ *    사이에 경합이 난다. 대신 worker '슬롯'의 동일성은 frameId 로 고정한다.
+ *
+ *  ⚠ Phase 0 범위: 읽기(READ_PAGE_FACTS) 하나뿐이다. 쓰기 operation 은 Phase 0
+ *    체크리스트를 통과한 뒤에 추가한다. 저널(§3.7)도 그때 함께 들어간다.
+ * ========================================================================== */
+const UB_AUTO_ORIGINS = ['http://ubdstore.ubshop.biz', 'https://ubdstore.ubshop.biz'];
+const UB_AUTO_CONTROLLER_PATH = '/jun/orderitem/orderItemList.do';
+const UB_AUTO_IDLE_TTL_MS = 5 * 60 * 1000;    // lastActivity 기준
+const UB_AUTO_HARD_TTL_MS = 10 * 60 * 1000;   // createdAt 기준 — READY 반복으로 무한 연장되는 걸 막는다
+const UB_AUTO_MAX_RESULTS = 32;
+
+// operation → 허용 경로(exact). 다른 페이지에서 온 요청은 거부한다.
+const UB_AUTO_OPS = {
+  READ_PAGE_FACTS: {
+    write: false,
+    paths: [
+      '/jun/orderitem/orderItemList.do',
+      '/jun/orderitem/orderItemPopCurrentSettingModifyForm.do',
+      '/jun/orderitem/orderItemModifyForm.do'
+    ]
+  }
+};
+
+/* ★단계는 background 가 소유한다 — 자식이 어느 페이지를 태울지 고르지 못한다.
+ *  expectReject:true 는 "이 경로는 op 허용목록 밖이므로 거부되어야 정상" 이라는 뜻이다.
+ *  거부 단계도 반드시 같은 worker 프레임으로 와야 한다(다른 프레임이면 frame_mismatch 라
+ *  경로 검사에 도달하지 못해 아무것도 증명하지 못한다). */
+const UB_AUTO_SPIKE_STEPS = Object.freeze([
+  Object.freeze({ key: 'list',       path: '/jun/orderitem/orderItemList.do',       expectReject: false }),
+  Object.freeze({ key: 'modifyForm', path: '/jun/orderitem/orderItemModifyForm.do', expectReject: false }),
+  Object.freeze({ key: 'denied',     path: '/info/item/infoItemList.do',            expectReject: true  })
+]);
+
+const ubAutoJobs = new Map();   // jobId → job
+const ubAutoLog = (...a) => { try { console.log('[UB][auto]', ...a); } catch (_) {} };
+
+function ubAutoNewId() {
+  const a = new Uint8Array(16);
+  crypto.getRandomValues(a);
+  return 'ubauto_' + Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 문자열 prefix 가 아니라 URL 로 파싱해 origin·path 를 정확히 본다.
+function ubAutoParse(url) {
+  try { const u = new URL(url); return { origin: u.origin, path: u.pathname }; }
+  catch (_) { return null; }
+}
+
+function ubAutoExpired(job, now) {
+  return (now - job.createdAt > UB_AUTO_HARD_TTL_MS) || (now - job.lastActivity > UB_AUTO_IDLE_TTL_MS);
+}
+
+// 컨트롤러 메시지 공통 검증 — jobId 만 알면 아무나 조작할 수 있으면 경계가 아니다.
+function ubAutoCheckController(job, sender) {
+  if (!sender || !sender.tab || sender.tab.id !== job.tabId) return 'tab_mismatch';
+  if (sender.frameId !== 0) return 'not_controller_frame';
+  if (!sender.documentId || sender.documentId !== job.controllerDocumentId) return 'controller_document_mismatch';
+  const loc = ubAutoParse(sender.url || '');
+  if (!loc || !UB_AUTO_ORIGINS.includes(loc.origin) || loc.path !== UB_AUTO_CONTROLLER_PATH) return 'controller_path_mismatch';
+  return null;
+}
+
+function ubAutoCreateJob(msg, sender) {
+  const tabId = sender && sender.tab && sender.tab.id;
+  if (tabId == null) return { ok: false, error: 'no_tab' };
+  if (sender.frameId !== 0) return { ok: false, error: 'controller_must_be_top' };
+  if (!sender.documentId) return { ok: false, error: 'no_document_id' };
+  const loc = ubAutoParse(sender.url || '');
+  if (!loc || !UB_AUTO_ORIGINS.includes(loc.origin)) return { ok: false, error: 'bad_origin' };
+  if (loc.path !== UB_AUTO_CONTROLLER_PATH) return { ok: false, error: 'controller_path_not_allowed' };
+  // Phase 0 은 스파이크뿐. 임의 feature 문자열을 받지 않는다.
+  if (msg && msg.feature !== 'spike') return { ok: false, error: 'feature_not_allowed' };
+
+  const now = Date.now();
+  for (const [id, j] of ubAutoJobs) if (ubAutoExpired(j, now)) ubAutoJobs.delete(id);
+  for (const j of ubAutoJobs.values()) if (j.tabId === tabId) return { ok: false, error: 'job_already_running' };
+
+  const job = {
+    jobId: ubAutoNewId(),
+    feature: 'spike',
+    tabId,
+    controllerDocumentId: sender.documentId,
+    workerFrameId: null,            // ★경로 검증을 통과한 뒤에야 고정된다
+    steps: UB_AUTO_SPIKE_STEPS,
+    cursor: 0,
+    // documentId 단독 — 한 문서는 한 번만 handshake 한다.
+    // ⚠ 쓰기 operation 을 붙일 때 이걸 'operation dedupe' 로 재사용하면 안 된다.
+    //   같은 문서에서 read 후 write 를 하려면 READY 는 문서 bind 전용으로 두고,
+    //   operation 중복은 별도 nonce(+저널)로 막아야 한다.
+    seen: new Set(),
+    inFlight: false,
+    createdAt: now,
+    lastActivity: now,
+    results: []
+  };
+  ubAutoJobs.set(job.jobId, job);
+  ubAutoLog('job 생성', job.jobId, 'tab=' + tabId, '단계 ' + job.steps.length);
+  return { ok: true, jobId: job.jobId, steps: job.steps.map(s => s.key) };
+}
+
+function ubAutoEndJob(jobId, reason, sender) {
+  const job = ubAutoJobs.get(jobId);
+  if (!job) return { ok: false, error: 'unknown_job' };
+  // 컨트롤러가 부른 종료면 발신자를 검증한다(같은 탭의 다른 프레임이 끝내지 못하게).
+  if (sender) {
+    const bad = ubAutoCheckController(job, sender);
+    if (bad) return { ok: false, error: bad };
+  }
+  ubAutoJobs.delete(jobId);
+  const verdict = ubAutoVerdict(job);
+  ubAutoLog('job 종료', jobId, reason, verdict.pass ? 'PASS' : ('FAIL: ' + verdict.reasons.join(', ')));
+  return { ok: true, results: job.results, verdict };
+}
+
+/* 스파이크 판정을 background 가 계산한다 — 컨트롤러가 로그만 보고 눈대중하지 않게. */
+function ubAutoVerdict(job) {
+  const reasons = [];
+  const byStep = new Map(job.results.map(r => [r.stepKey, r]));
+  for (const step of job.steps) {
+    const r = byStep.get(step.key);
+    if (!r) { reasons.push(step.key + ': 결과 없음'); continue; }
+    if (step.expectReject) {
+      if (r.outcome !== 'rejected' || r.error !== 'path_not_allowed') {
+        reasons.push(step.key + ': 거부되어야 하는데 ' + r.outcome + '/' + r.error);
+      }
+    } else {
+      if (r.outcome !== 'ok') { reasons.push(step.key + ': ' + r.outcome + ' ' + (r.error || '')); continue; }
+      if (!r.facts || r.facts.path !== step.path) reasons.push(step.key + ': facts.path 불일치');
+    }
+  }
+  const ok = job.results.filter(r => r.outcome === 'ok');
+  const docIds = new Set(ok.map(r => r.senderDocumentId));
+  const frameIds = new Set(ok.map(r => r.frameId));
+  // 재-handshake 증명: 같은 worker 슬롯(frameId 1개)에서 문서만 바뀌어야 한다.
+  if (ok.length >= 2) {
+    if (frameIds.size !== 1) reasons.push('worker frameId 가 ' + frameIds.size + '개 — 같은 슬롯이 아니다');
+    if (docIds.size !== ok.length) reasons.push('documentId 가 재사용됐다 — navigation 재-handshake 미증명');
+  } else {
+    reasons.push('성공 단계가 2개 미만이라 재-handshake 를 증명할 수 없다');
+  }
+  return { pass: reasons.length === 0, reasons, okSteps: ok.length, documentIds: docIds.size, frameIds: frameIds.size };
+}
+
+function ubAutoRecord(job, entry) {
+  if (job.results.length < UB_AUTO_MAX_RESULTS) job.results.push(entry);
+  ubAutoLog('단계', entry.stepKey, entry.path, entry.outcome, entry.error || '');
+}
+
+/* 자식 프레임의 READY. 검증 순서가 안전 경계 자체다 —
+ * 경로를 확인하기 전에 worker 슬롯을 내주면 페이지 스크립트가 슬롯을 선점할 수 있다. */
+async function ubAutoOnFrameReady(msg, sender) {
+  const now = Date.now();
+  const job = ubAutoJobs.get(msg && msg.jobId);
+  if (!job) return { ok: false, error: 'unknown_job' };
+  if (ubAutoExpired(job, now)) { ubAutoJobs.delete(job.jobId); return { ok: false, error: 'expired' }; }
+
+  // ① 발신자 신뢰 경계
+  if (!sender || !sender.tab || sender.tab.id !== job.tabId) return { ok: false, error: 'tab_mismatch' };
+  if (!Number.isInteger(sender.frameId) || sender.frameId <= 0) return { ok: false, error: 'not_subframe' };
+  if (!sender.documentId) return { ok: false, error: 'no_document_id' };
+
+  // ② URL — 문자열 prefix 가 아니라 파싱해서 exact 로
+  const loc = ubAutoParse(sender.url || '');
+  if (!loc || !UB_AUTO_ORIGINS.includes(loc.origin)) return { ok: false, error: 'bad_origin' };
+
+  // ③ replay 차단 — 한 문서는 한 번만 처리한다.
+  //    ⚠ 반드시 경로 검사보다 '먼저' 봐야 한다. 하나의 문서에서 DOMContentLoaded 와
+  //      load 가 각각 READY 를 보내는데, 첫 READY 로 커서가 이미 다음 단계로 가 있어서
+  //      두 번째를 나중에 보면 duplicate 가 아니라 unexpected_path 로 오분류된다.
+  //      쓰기 operation 이 붙는 순간 이 오분류가 곧 중복 쓰기 창이 된다.
+  if (job.seen.has(sender.documentId)) return { ok: false, error: 'duplicate_ready' };
+  if (job.inFlight) return { ok: false, error: 'busy' };
+
+  // ④ 지금 단계가 기대하는 경로인가 (background 가 소유한 단계)
+  const step = job.steps[job.cursor];
+  if (!step) return { ok: false, error: 'no_more_steps' };
+  if (loc.path !== step.path) return { ok: false, error: 'unexpected_path', expected: step.path, got: loc.path };
+
+  // ⑤ 여기까지 통과한 뒤에야 worker 슬롯을 고정/비교한다
+  if (job.workerFrameId == null) job.workerFrameId = sender.frameId;
+  else if (job.workerFrameId !== sender.frameId) return { ok: false, error: 'frame_mismatch' };
+
+  job.seen.add(sender.documentId);
+  job.lastActivity = now;
+
+  // ⑥ operation 은 background 가 고른다. 경로가 허용목록 밖이면 여기서 거부된다.
+  const op = 'READ_PAGE_FACTS';
+  const spec = UB_AUTO_OPS[op];
+  const base = { stepKey: step.key, op, path: loc.path, frameId: sender.frameId,
+                 senderDocumentId: sender.documentId, at: now };
+  if (!spec.paths.includes(loc.path)) {
+    const entry = Object.assign({ outcome: 'rejected', error: 'path_not_allowed', facts: null }, base);
+    ubAutoRecord(job, entry);
+    job.cursor += 1;
+    return { ok: false, error: 'path_not_allowed', entry };
+  }
+
+  // ⑦ 실행 — 정확히 그 문서에만
+  job.inFlight = true;
+  let entry;
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId: job.tabId, documentIds: [sender.documentId] },
+      world: 'MAIN',
+      func: UB_AUTO_READ_FACTS
+    });
+    const bad = ubAutoBadInjection(res, sender, loc.path);
+    entry = bad
+      ? Object.assign({ outcome: 'invalid', error: bad, facts: null, injectionDocumentId: res && res[0] && res[0].documentId }, base)
+      : Object.assign({ outcome: 'ok', error: null, facts: res[0].result, injectionDocumentId: res[0].documentId }, base);
+  } catch (e) {
+    entry = Object.assign({ outcome: 'error', error: String(e && e.message || e), facts: null }, base);
+  } finally {
+    job.inFlight = false;
+  }
+  ubAutoRecord(job, entry);
+  job.cursor += 1;
+  return { ok: entry.outcome === 'ok', entry };
+}
+
+/* 주입 결과 검증 — 빈 결과·다른 문서·스키마 불일치를 성공으로 세면
+ * Phase 0 의 핵심 주장("정확한 문서에 MAIN 주입이 됐다")이 false positive 가 된다. */
+function ubAutoBadInjection(res, sender, expectedPath) {
+  if (!Array.isArray(res)) return 'injection_not_array';
+  if (res.length !== 1) return 'injection_count_' + res.length;
+  const r = res[0];
+  if (!r || typeof r !== 'object') return 'injection_no_entry';
+  // ⚠ "있으면 비교" 로 두면 필드가 없는 결과가 통과해 '정확한 문서에 주입됐다'는
+  //   Phase 0 의 핵심 주장이 false positive 가 된다. 존재까지 요구한다.
+  if (typeof r.documentId !== 'string' || !r.documentId) return 'injection_no_document_id';
+  if (r.documentId !== sender.documentId) return 'injection_document_mismatch';
+  if (!Number.isInteger(r.frameId)) return 'injection_no_frame_id';
+  if (r.frameId !== sender.frameId) return 'injection_frame_mismatch';
+  const f = r.result;
+  if (!f || typeof f !== 'object') return 'facts_not_object';
+  if (f.path !== expectedPath) return 'facts_path_mismatch';
+  for (const [k, t] of Object.entries({
+    charset: 'string', readyState: 'string', hasForm1: 'boolean', hasForm3: 'boolean',
+    hasStandby: 'boolean', hasSetCurrent: 'boolean', idxCount: 'number',
+    checkedCount: 'number', setCurrentLinks: 'number', statusColIdx: 'number',
+    tListRows: 'number', hasPasswordInput: 'boolean'
+  })) {
+    if (typeof f[k] !== t) return 'facts_schema_' + k;
+  }
+  return null;
+}
+
+/* MAIN world 에서 실행 — 고정 함수·고정 반환 스키마.
+ * ⚠ selector 나 HTML 을 인자로 받지 않는다. 받으면 사실상 범용 page reader 가 된다. */
+function UB_AUTO_READ_FACTS() {
+  const rows = [...document.querySelectorAll('table.t_list tr')];
+  const hdr = rows.find(r => [...r.cells].some(c => /^\s*상태\s*$/.test(c.textContent || '')));
+  const statusColIdx = hdr ? [...hdr.cells].findIndex(c => /^\s*상태\s*$/.test(c.textContent || '')) : -1;
+  return {
+    path: location.pathname,
+    charset: document.characterSet,
+    readyState: document.readyState,
+    hasForm1: !!document.forms['form1'],
+    hasForm3: !!document.forms['form3'],
+    hasStandby: typeof window.standby === 'function',
+    hasSetCurrent: typeof window.setCurrent === 'function',
+    idxCount: document.querySelectorAll('input[name=idx]').length,
+    checkedCount: document.querySelectorAll('input[name=idx]:checked').length,
+    setCurrentLinks: document.querySelectorAll('a[href*="setCurrent"]').length,
+    statusColIdx,
+    tListRows: rows.length,
+    // 로그인 만료·오류 페이지 식별용(Phase 0 체크리스트 10)
+    hasPasswordInput: !!document.querySelector('input[type=password]')
+  };
+}
+
+// 탭이 닫히면 그 탭의 job 을 정리한다(컨트롤러 상실).
+try {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    for (const [id, j] of ubAutoJobs) if (j.tabId === tabId) ubAutoEndJob(id, 'tab_closed');
+  });
+} catch (_) {}

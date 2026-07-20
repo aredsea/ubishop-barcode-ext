@@ -22,6 +22,57 @@
 (function () {
   'use strict';
 
+  /* ==========================================================================
+   *  ★자동화 프레임 가드 — 이 블록은 반드시 파일 최상단에 있어야 한다.
+   *  스펙: docs/superpowers/specs/2026-07-20-orderitem-batch-design.md §3.3
+   *
+   *  확장이 만든 숨은 iframe 안에서도 이 파일 전체가 다시 실행된다
+   *  (manifest all_frames:true. 주문전표 페이지엔 ERP 자체 iframe 도 10개 있다).
+   *  방치하면 ①iframe 안에 사이드바가 그려지고 ②배정 클릭 가로채기가 우리
+   *  프로그램적 클릭을 삼키고 ③storage.onChanged 가 모든 컨텍스트에 방송되어
+   *  (805행 함정) 중복 반응이 난다.
+   *
+   *  ⚠ URL 파라미터로 판별하면 안 된다 — 첫 navigation 에서 사라진다.
+   *    배정 팝업의 ubasg 에서 이미 당한 함정이다(993~997행). iframe 엘리먼트의
+   *    dataset 은 그 안에서 몇 번을 이동하든 살아남는다.
+   *
+   *  ⚠ init() 안에 두면 늦다 — ensurePageSizeAtStart 가 document_start 시점에
+   *    location.replace 를 부른다. 그래서 다른 무엇보다 먼저 여기서 판정한다.
+   *
+   *  ⚠ 이 표식은 '식별자'일 뿐 권한이 아니다. 무엇을 실행할지는 background 의
+   *    활성 job 레지스트리가 정한다. 자식이 operation 을 고를 수 있으면 그건
+   *    경계가 아니다(background.js 의 ubAuto* 참조).
+   * ========================================================================== */
+  const UB_AUTO_JOB = (() => {
+    try {
+      // cross-origin 부모면 frameElement 접근 자체가 throw → 우리 프레임이 아니다.
+      const fe = window.frameElement;
+      const v = fe && fe.dataset && fe.dataset.ubAutoJob;
+      return (typeof v === 'string' && v) ? v : null;
+    } catch (_) { return null; }
+  })();
+
+  if (UB_AUTO_JOB) {
+    // 자동화 프레임 — UI 기능을 전부 끄고 최소 러너만 돈다.
+    // 하는 일은 '나는 어떤 문서인가'를 보고하는 것뿐. sender 에서 background 가
+    // tabId·frameId·documentId 를 얻어 정확히 이 문서에만 MAIN world 를 주입한다.
+    const ubAutoReport = (phase) => {
+      try {
+        chrome.runtime.sendMessage({
+          source: 'ub', type: 'ubAutoFrameReady',
+          jobId: UB_AUTO_JOB, phase, url: location.href
+        });
+      } catch (_) {}
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => ubAutoReport('dom'), { once: true });
+    } else {
+      ubAutoReport('dom');
+    }
+    window.addEventListener('load', () => ubAutoReport('load'), { once: true });
+    return;   // ★ 이 아래로 단 한 줄도 실행하지 않는다
+  }
+
   const D = {
     ubSkin: false, ubDark: false, ubThumbEdit: true,
     ubSidebar: true, ubPageSize: true, ubAutoSync: false,
@@ -2828,6 +2879,103 @@
     } catch (_) {}
   }
 
+  /* ==========================================================================
+   *  Phase 0 스파이크 — 자동화 배관 검증 (읽기 전용, 임시 코드)
+   *  스펙 §6 Phase 0. 확인 대상:
+   *    ① iframe 생성순서(dataset→src→append)에서 첫 document_start 부터 가드가 걸리는가
+   *    ② 자식 READY → background 가 sender.documentId 로 MAIN world 주입에 성공하는가
+   *    ③ navigation 후 재-handshake 시 documentId 는 바뀌고 frameId 는 유지되는가
+   *    ④ 허용 경로 밖에서 RPC 가 거부되는가
+   *
+   *  ⚠ 임시다. Phase 0 통과 후 실제 컨트롤러로 대체한다.
+   *  ⚠ 기본 OFF. 켜려면 콘솔에서  sessionStorage.ub_auto_spike = '1'  후 새로고침.
+   *    1회성이라 자동으로 꺼진다. 읽기 전용이라 데이터를 바꾸지 않는다.
+   *  ⚠ 절대 orderItemPopCurrentSettingModify.do (Form 없는 쪽)를 열지 마라 —
+   *    그건 GET 인데 실행하면 실제 배정이 나간다(1절 '쓰기 계약' 참조).
+   * ========================================================================== */
+  const AUTO_SPIKE_KEY = 'ub_auto_spike';
+
+  function initAutoSpike() {
+    let want = false;
+    try { want = sessionStorage.getItem(AUTO_SPIKE_KEY) === '1'; } catch (_) {}
+    if (!want) return;
+    if (window !== window.top) return;      // 컨트롤러는 top frame 만
+    if (!isOrderJunList()) return;
+    try { sessionStorage.removeItem(AUTO_SPIKE_KEY); } catch (_) {}   // 1회성
+    runAutoSpike();
+  }
+
+  function autoSpikeSend(m) {
+    return new Promise(r => { try { chrome.runtime.sendMessage(m, x => r(x)); } catch (_) { r(null); } });
+  }
+
+  /* ★읽기 전용 URL 만 상수로 둔다. 임의 문자열을 받지 않는 게 방어선 1 이다.
+   *  setCurrent 는 GET 이동으로 배정을 수행하므로(1절 '쓰기 계약'), 그 URL 을
+   *  '확인용으로 한 번 여는' 순간이 곧 쓰기다. 실제로 그 실수를 한 번 했다. */
+  const AUTO_SPIKE_URLS = Object.freeze({
+    list:       '/jun/orderitem/orderItemList.do?tcode=order_item',
+    modifyForm: '/jun/orderitem/orderItemModifyForm.do?tcode=order_item',
+    denied:     '/info/item/infoItemList.do?tcode=info_item'
+  });
+  // 방어선 2 — 위 상수를 누가 잘못 고쳐도 쓰기로 보이는 경로면 거부한다.
+  const AUTO_WRITE_MARKERS = /(?:Standby|CurrentSettingModify|CurrentSettingCancel|orderItemModify)\.do(?:[?#]|$)/i;
+
+  function autoSpikeUrl(stepKey) {
+    const u = AUTO_SPIKE_URLS[stepKey];
+    if (!u) throw new Error('unknown_spike_step:' + stepKey);
+    if (AUTO_WRITE_MARKERS.test(u)) throw new Error('write_url_blocked:' + stepKey);
+    return u;
+  }
+
+  // dataset → src → append 순서가 불변식이다. src/append 뒤에 dataset 을 붙이면
+  // document_start content script 가 먼저 돌아 가드가 풀린 채 실행된다.
+  function autoSpikeFrame(jobId, url) {
+    const f = document.createElement('iframe');
+    f.dataset.ubAutoJob = jobId;                                   // ①
+    f.style.cssText = 'position:fixed;left:-10000px;top:0;width:1024px;height:700px;border:0;';
+    f.src = url;                                                   // ②
+    document.body.appendChild(f);                                  // ③
+    return f;
+  }
+
+  async function runAutoSpike() {
+    const log = (...a) => { try { console.log('[UB][spike]', ...a); } catch (_) {} };
+    const created = await autoSpikeSend({ source: 'ub', type: 'ubAutoCreateJob', feature: 'spike' });
+    if (!created || !created.ok) { log('job 생성 실패:', created); return; }
+    const jobId = created.jobId;
+    const steps = created.steps || [];
+    log('job', jobId, '· 단계:', steps.join(' → '));
+
+    let frame = null;
+    try {
+      for (const key of steps) {
+        const url = autoSpikeUrl(key);
+        if (!frame) frame = autoSpikeFrame(jobId, url);
+        // ★같은 worker 슬롯을 재사용한다. 단계마다 새 iframe 을 만들면 frameId 가
+        //   달라져 거부 단계가 frame_mismatch 에서 걸리고, 정작 검증하려던
+        //   path_not_allowed 에는 도달하지 못한다(= 아무것도 증명 못 함).
+        else frame.src = url;
+        await new Promise(r => setTimeout(r, 3500));
+      }
+    } catch (e) {
+      log('중단:', e && e.message);
+    } finally {
+      if (frame) { try { frame.remove(); } catch (_) {} }
+      const ended = await autoSpikeSend({ source: 'ub', type: 'ubAutoEndJob', jobId });
+      if (!ended || !ended.ok) {
+        // SW 재시작 등으로 job 이 사라지면 결과를 못 받는다. 이걸 PASS 로 오해하면 안 된다.
+        log('SPIKE_FAILED: job 결과를 받지 못함', ended);
+        return;
+      }
+      const rs = ended.results || [];
+      log('=== 단계 결과 ' + rs.length + '건 ===');
+      rs.forEach(e => log(' ', e.stepKey, e.path, '→', e.outcome, e.error || '',
+        'frame=' + e.frameId, 'doc=' + String(e.senderDocumentId).slice(0, 8)));
+      const v = ended.verdict || {};
+      log(v.pass ? 'SPIKE_PASS ✓' : 'SPIKE_FAILED ✗', JSON.stringify(v));
+    }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
@@ -2837,6 +2985,7 @@
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
     initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
+    initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
