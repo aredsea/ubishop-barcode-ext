@@ -23,15 +23,15 @@
                   },
                   {
                       "path":  "src/skin.js",
-                      "sha256":  "11d593399b29d4dc43b4e5a41834d52b7ba3818bad150d611d726d38951fb556"
+                      "sha256":  "fc00bb6d5fc098cc433103978924532f4548914661cd404b0729d2b56423b15d"
                   },
                   {
                       "path":  "popup/popup.html",
-                      "sha256":  "d9a27f6577b17f676d091222bd7ec18ff9246609f630a0c9217e280a2e99917e"
+                      "sha256":  "bf4add52fa94aa13c36f27936ec0377c27020024e5701d2a2cb1aeaa0349bc54"
                   },
                   {
                       "path":  "popup/popup.js",
-                      "sha256":  "aabfde6e2637372770811fc967a078ec6dff8a48d20a8b4dcc5a279e4ec836de"
+                      "sha256":  "8c73cc119870d45d3cf3f42a14a99d13503c0d426e49a72170a8b79eb5dd256c"
                   },
                   {
                       "path":  "rules/cache.json",

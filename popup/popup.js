@@ -8,7 +8,8 @@
 
   const D = {
     ubSkin: false, ubDark: false, ubSidebar: true,
-    ubPageSize: true, ubThumbEdit: true, ubAutoSync: false
+    ubPageSize: true, ubThumbEdit: true, ubAutoSync: false,
+    ubFactoryInfo: true, ubEditPopup: false
   };
 
   const $ = id => document.getElementById(id);
@@ -18,6 +19,8 @@
   const pageSize = $('pageSize');
   const thumb = $('thumb');
   const autoSync = $('autoSync');
+  const factoryInfo = $('factoryInfo');
+  const editPopup = $('editPopup');
   const sub = $('sub');
 
   try { $('ver').textContent = 'v' + chrome.runtime.getManifest().version; } catch (e) {}
@@ -29,8 +32,10 @@
     pageSize.checked = !!s.ubPageSize;
     thumb.checked = !!s.ubThumbEdit;
     autoSync.checked = !!s.ubAutoSync;
+    factoryInfo.checked = !!s.ubFactoryInfo;
+    editPopup.checked = !!s.ubEditPopup;
     sub.classList.toggle('hidden', !s.ubSkin);
-    [dark, sidebar, pageSize, thumb, autoSync].forEach(el => { el.disabled = !s.ubSkin; });
+    [dark, sidebar, pageSize, thumb, autoSync, factoryInfo, editPopup].forEach(el => { el.disabled = !s.ubSkin; });
   }
 
   function load(cb) { chrome.storage.local.get(D, cb); }
@@ -44,6 +49,8 @@
   pageSize.addEventListener('change', () => save({ ubPageSize: pageSize.checked }));
   thumb.addEventListener('change',    () => save({ ubThumbEdit: thumb.checked }));
   autoSync.addEventListener('change', () => save({ ubAutoSync: autoSync.checked }));
+  factoryInfo.addEventListener('change', () => save({ ubFactoryInfo: factoryInfo.checked }));
+  editPopup.addEventListener('change',   () => save({ ubEditPopup: editPopup.checked }));
 
   // 새 버전 감지 시 알림 블록 노출 + 재로드 버튼.
   // background.js checkUpdate 가 chrome.storage.local.ubUpdateAvailable 에 신버전

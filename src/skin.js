@@ -84,7 +84,10 @@
     ubFwX: null, ubFwY: null, ubFwW: 380, ubFwH: 470,   // 정보창 위치·크기(null=최초 자동배치)
     ubTabMode: 'off',                          // 'off' | 'global' | 'each'
     ubTabGlobal: 'jun',                        // global 일 때 'jun'(장) | 'list'(내역)
-    ubTabEach: {}                              // each 일 때 { input:'list', balju:'jun', ... }
+    ubTabEach: {},                             // each 일 때 { input:'list', balju:'jun', ... }
+    // v3.8.0 작업B 수정 팝업(slice 2a) — 기본 OFF. 패널 위치·크기는 매입처창(ubFw*)과 별도 키.
+    ubEditPopup: false,
+    ubEpX: null, ubEpY: null, ubEpW: 900, ubEpH: 660
   };
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
@@ -899,6 +902,27 @@
     'searchJunNum', 'searchItemSize', 'searchClientName', 'searchDateType',
     'syear', 'smonth', 'sday', 'eyear', 'emonth', 'eday'
   ];
+  // ── 작업B 순수 헬퍼 (slice 1) ─────────────────────────────────────────────
+  function parseModifyArgs(href) {
+    const m = String(href == null ? '' : href).match(
+      /^\s*(?:javascript\s*:\s*)?modify\s*\(\s*(['"])([^'"]*)\1\s*,\s*(['"])([^'"]*)\3\s*\)\s*;?\s*$/
+    );
+    return m ? { master: m[2], seq: m[4] } : null;
+  }
+  function classifyModifySave(input) {
+    if (!input || input.dispatched !== true) return 'fail';
+    const q = input.requery;
+    if (input.landedPathAllowed === true && input.isLoginOrError === false &&
+        q && q.found === true && q.matchesExpected === true) return 'success';
+    return 'uncertain';
+  }
+  function decideRowUpdateMode(input) {
+    if (!input || input.orderDateChanged !== false ||
+        input.filterMembershipChanged !== false || input.sortMembershipChanged !== false) {
+      return 'list-reload';
+    }
+    return 'in-place';
+  }
   // ── 순수 헬퍼(DOM 비의존, 단위테스트 대상) ────────────────────────────────
   //  currentSetting('master','orderSeq','barcode','shop','client','orderDate')
   function parseCurrentSettingArgs(href) {
@@ -2976,6 +3000,209 @@
     }
   }
 
+  /* ==========================================================================
+   *  5.9) 작업B — 수정 팝업 (slice 2a: 가로채기 + 플로팅 패널 + iframe)
+   *
+   *  목록의 [수정](a[href*="modify("]) 클릭을 capture 단계에서 잡아, 화면 이동 대신
+   *  매입처 정보창(ub-fw)과 '겉모습만 동일'한 플로팅 패널에 네이티브 수정폼
+   *  (orderItemModifyForm.do)을 iframe 으로 띄운다.
+   *
+   *  ⚠ preventDefault 는 인자 파싱·행 확인·패널/iframe 생성이 전부 성공한 뒤에만 부른다
+   *    (bindAssignIntercept 와 같은 규율 — skin.js:1006). 어느 단계든 실패하면 가로채지
+   *    않고 네이티브 modify() 화면 이동을 그대로 흘려보낸다.
+   *
+   *  ⚠ slice 2a 범위: 저장 감지·제출 가로채기·재조회·행 갱신은 하지 않는다(→ slice 2b).
+   *    사용자가 iframe 안 네이티브 폼에서 저장하면 네이티브 그대로 저장된다. 우리는 아직
+   *    그 결과를 검증하거나 목록 행을 갱신하지 않는다.
+   * ========================================================================== */
+  const EP_TAG = '[UB][editpop]';
+  const epLog = (...a) => { try { console.log(EP_TAG, ...a); } catch (_) {} };
+  const EP_ID = 'ub-ep';
+  const EP_STYLE_ID = 'ub-ep-style';
+  const EP_LOAD_MS = 8000;   // iframe 로드 최대 대기 → 초과 시 폴백 버튼 노출
+  // ub-fw(매입처 정보창) 룩을 그대로 재사용하고, iframe 바디·폴백 UI 용 최소 스타일만 덧붙인다.
+  const EP_CSS = `
+    .ub-ep .ub-ep-b { flex: 1; min-height: 0; display: flex; overflow: hidden; background: #fff; }
+    .ub-ep .ub-ep-frame { flex: 1; width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+    .ub-ep .ub-ep-fb { margin: auto; text-align: center; padding: 24px 20px; font-size: 12px; color: #6b7280; line-height: 1.6; }
+    .ub-ep .ub-ep-fb-btn { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 8px; background: #35C5F0; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .ub-ep .ub-ep-fb-btn:hover { background: #2bb5e0; }
+  `;
+  function ensureEpStyle() {
+    if (document.getElementById(EP_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = EP_STYLE_ID; s.textContent = EP_CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function epSavePos(el) {
+    try {
+      chrome.storage.local.set({
+        ubEpX: parseInt(el.style.left, 10) || 0, ubEpY: parseInt(el.style.top, 10) || 0,
+        ubEpW: el.offsetWidth, ubEpH: el.offsetHeight
+      });
+    } catch (_) {}
+  }
+  // 매입처 정보창(fwEnsurePanel)의 생성·드래그·크기조절·닫기·위치저장을 그대로 본떠 만든다.
+  //  바디에 dl 대신 iframe 을 담고, 위치는 별도 키(ubEp*)에 저장한다(정보창과 안 겹치게).
+  function epEnsurePanel() {
+    ensureFwStyle();   // .ub-fw 룩(테두리·헤더·닫기 버튼·크기조절 커서) 재사용
+    ensureEpStyle();
+    let el = document.getElementById(EP_ID);
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = EP_ID; el.className = 'ub-fw ub-ep';
+    el.innerHTML = '<div class="ub-fw-h"><b>수정</b><button class="ub-fw-x" title="닫기">' + FW_X_SVG + '</button></div>'
+                 + '<div class="ub-ep-b"></div><div class="ub-fw-rz"></div>';
+    const num = (v) => (typeof v === 'number' && isFinite(v));
+    const w = Math.max(360, state.ubEpW | 0 || 900), h = Math.max(240, state.ubEpH | 0 || 660);
+    const x = num(state.ubEpX) ? state.ubEpX : Math.max(16, (window.innerWidth - w) / 2 | 0);
+    const y = num(state.ubEpY) ? state.ubEpY : 64;
+    el.style.width = w + 'px'; el.style.height = h + 'px';
+    el.style.left = Math.min(x, Math.max(0, window.innerWidth - 80)) + 'px';
+    el.style.top = Math.min(y, Math.max(0, window.innerHeight - 60)) + 'px';
+    document.body.appendChild(el);
+    el.querySelector('.ub-fw-x').addEventListener('click', () => { el.remove(); });
+    const hd = el.querySelector('.ub-fw-h');
+    hd.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.ub-fw-x')) return;
+      e.preventDefault();
+      const sx = e.clientX, sy = e.clientY;
+      const ox = parseInt(el.style.left, 10) || 0, oy = parseInt(el.style.top, 10) || 0;
+      const mv = (ev) => {
+        el.style.left = Math.max(0, Math.min(window.innerWidth - 60, ox + ev.clientX - sx)) + 'px';
+        el.style.top  = Math.max(0, Math.min(window.innerHeight - 40, oy + ev.clientY - sy)) + 'px';
+      };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); epSavePos(el); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    el.querySelector('.ub-fw-rz').addEventListener('mousedown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const sx = e.clientX, sy = e.clientY, ow = el.offsetWidth, oh = el.offsetHeight;
+      const mv = (ev) => {
+        el.style.width  = Math.max(360, ow + ev.clientX - sx) + 'px';
+        el.style.height = Math.max(240, oh + ev.clientY - sy) + 'px';
+      };
+      const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); epSavePos(el); };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+    return el;
+  }
+  // iframe 안(same-origin) ERP 전역 헤더·메뉴를 가리고 폼만 보이게 한다.
+  //  ⚠ 보수적으로: 수정폼(form1)을 못 찾으면 아무것도 건드리지 않는다(문서 통째로 비우지 않음).
+  //   폼 서브트리의 조상·자손은 절대 숨기지 않는다 — 조상을 숨기면 폼이 사라지고 자손을 숨기면
+  //   폼 내부가 깨진다. 폼 밖 크롬만 display:none 한다.
+  function epHideChrome(doc) {
+    try {
+      if (!doc) return;
+      const form = doc.forms && doc.forms['form1'];
+      if (!form) return;   // 기대한 폼 컨테이너 없음(로그인/오류 화면 등) → 보수적으로 손대지 않는다
+      const CHROME_SEL = '#header,#top,#topWrap,#top_wrap,#gnb,#lnb,#snb,#nav,#footer,#left,#leftMenu,' +
+                         '.header,.top_wrap,.gnb,.lnb,.snb,.nav,.footer,.leftmenu,.left_menu,.menu_wrap';
+      let n = 0;
+      doc.querySelectorAll(CHROME_SEL).forEach((el) => {
+        try {
+          if (el && el.style && !el.contains(form) && !form.contains(el)) { el.style.display = 'none'; n++; }
+        } catch (_) {}
+      });
+      epLog('iframe 크롬 숨김', n, '개');
+    } catch (_) { /* cross-origin·예외 → 네이티브 폼 그대로 둔다 */ }
+  }
+  // orderItemModifyForm.do URL 구성. buildAssignPopupUrl 의 form1 필드복사 규약을 그대로
+  //  따른다(같은 목록 컨텍스트 전달). 최소 master+orderSeq+tcode 는 항상 싣는다.
+  function buildEditPopupUrl(args) {
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('master', args.master);
+    p.set('orderSeq', args.seq);
+    p.set('reqPage', '1');
+    const f = document.forms['form1'];
+    if (f) ASG_SEARCH_FIELDS.forEach((n) => {
+      const el = f.elements[n];   // f[n] 은 동명 필드가 있으면 조용히 누락된다(skin.js:988)
+      if (el && typeof el.value === 'string') p.set(n, el.value);
+    });
+    return '/jun/orderitem/orderItemModifyForm.do?' + p.toString();
+  }
+  // 패널을 열고 iframe 을 로드한다. 패널+iframe 이 DOM 에 성공적으로 붙으면 true 를 반환한다
+  //  (호출자는 이 true 뒤에만 preventDefault 한다). 로드 실패/타임아웃이면 패널에
+  //  [기존 화면으로 열기] 폴백을 띄운다 — 자동 이동보다 버튼을 우선한다(§4.1).
+  function epOpenPanel(args, url) {
+    const panel = epEnsurePanel();
+    const body = panel.querySelector('.ub-ep-b');
+    if (!body) return false;
+    body.innerHTML = '';   // 같은 패널 재사용 시 이전 iframe/폴백 제거
+    const frame = document.createElement('iframe');
+    frame.className = 'ub-ep-frame';
+    frame.setAttribute('title', '수정');
+    let settled = false;
+    const showFallback = (why) => {
+      if (settled) return; settled = true;
+      epLog('iframe 로드 실패 → 폴백', why);
+      try {
+        body.innerHTML = '';
+        const box = document.createElement('div');
+        box.className = 'ub-ep-fb';
+        box.textContent = '수정 화면을 이 창에 띄우지 못했습니다.';
+        const btn = document.createElement('button');
+        btn.className = 'ub-ep-fb-btn';
+        btn.textContent = '기존 화면으로 열기';
+        // 네이티브 modify() 는 location.href 전체 이동이다(설계 §1). ISOLATED 에서 페이지
+        //  전역 modify() 를 직접 못 부르므로, 같은 목적지로 top 문서를 이동시켜 동등 복구한다.
+        btn.addEventListener('click', () => { try { window.location.href = url; } catch (_) {} });
+        box.appendChild(document.createElement('br'));
+        box.appendChild(btn);
+        body.appendChild(box);
+      } catch (e) { epLog('폴백 렌더 실패', e); }
+    };
+    const timer = setTimeout(() => showFallback('timeout'), EP_LOAD_MS);
+    frame.addEventListener('load', () => {
+      if (settled) return;
+      // navigation 은 '저장 성공'의 증거가 아니지만(§4.1) slice 2a 는 저장 검증을 하지 않는다.
+      //  로드가 뜨면 크롬만 숨긴다. 로그인 리다이렉트면 form1 이 없어 epHideChrome 가 no-op.
+      settled = true; clearTimeout(timer);
+      epHideChrome(frame.contentDocument);
+    });
+    frame.addEventListener('error', () => { clearTimeout(timer); showFallback('error'); });
+    frame.src = url;
+    body.appendChild(frame);
+    return true;
+  }
+  // ── 부모: [수정] 클릭 가로채기 ────────────────────────────────────────────
+  //  게이트 OFF 에서도 한 번 idempotent 하게 bind 한다(§5). 발동 여부는 클릭 시점에 정한다.
+  function bindEditPopupIntercept(root) {
+    try {
+      // 목록 페이지에서만 의미가 있다(modify 링크가 그 페이지에만 있다). 다른 페이지·서브
+      //  iframe(all_frames) 에는 걸지 않는다.
+      if (!isOrderJunList()) return;
+      const host = (root && root.documentElement) || document.documentElement;
+      if (!host || host.dataset.ubEpBound === '1') return;   // 이미 bind → 중복 방지
+      host.dataset.ubEpBound = '1';
+      (root || document).addEventListener('click', (e) => {
+        try {
+          // (a) 게이트 OFF → 즉시 반환, preventDefault 안 함(네이티브 modify() 실행).
+          if (!(state.ubSkin && state.ubEditPopup)) return;
+          const a = e.target && e.target.closest ? e.target.closest('a[href*="modify("]') : null;
+          if (!a) return;
+          // (b) 인자 파싱 실패 → 네이티브.
+          const args = parseModifyArgs(a.getAttribute('href'));
+          if (!args) return;
+          // (c) 실제 데이터 행이 아니면 → 네이티브.
+          const tr = a.closest('tr');
+          if (!tr) return;
+          // (d) 패널+iframe 생성. (e) 전부 성공한 뒤에만 preventDefault.
+          const url = buildEditPopupUrl(args);
+          if (!epOpenPanel(args, url)) return;   // 생성 실패 → 네이티브(preventDefault 안 함)
+          e.preventDefault();
+          e.stopPropagation();
+          epLog('가로챔 — modify', args.master, args.seq);
+        } catch (err) {
+          // 어떤 예외든 preventDefault 없이 빠져나가 네이티브 링크를 살린다.
+          epLog('클릭 처리 실패 → 네이티브 진행', err);
+        }
+      }, true);
+      epLog('intercept bound');
+    } catch (e) { epLog('bind 실패', e); }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
@@ -2985,6 +3212,7 @@
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
     initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
+    bindEditPopupIntercept(document);   // v3.8.0 작업B: [수정] 가로채기 — 게이트 OFF 여도 항상 idempotent bind(§5)
     initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
@@ -3037,6 +3265,7 @@
         mirrorPrefs();
         applyAll();
         if (on('ubThumbEdit')) bindThumbEdit(document);
+        bindEditPopupIntercept(document);   // v3.8.0 작업B: 팝업에서 켜면 reload 없이 즉시 intercept(idempotent)
       }
     });
   } catch (e) {}
