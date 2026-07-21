@@ -1,9 +1,9 @@
 {
-    "version":  "3.7.2",
+    "version":  "3.8.0",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "3be96145e3bec472bd06bd05e92a6f13981ef6a7a80fb188d0bbeed6c6ef2008"
+                      "sha256":  "f42413fed735e6447fbe8584061a627b4556f0b05e1ee539af4f6756d39b52c6"
                   },
                   {
                       "path":  "src/loader.js",
