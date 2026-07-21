@@ -67,10 +67,51 @@ test('scenario 2: submitted form reappearance fails without resubmission', () =>
   assert.equal(result.setSubmittedFor, undefined);
 });
 
-test('scenario 3: captcha on a login form fails immediately', () => {
+test('scenario 3: captcha on a login form triggers semi-auto fill (no submit)', () => {
   const result = decide(flow('toLogin'), probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }), 100);
+  assert.equal(result.action, 'fillCaptcha');
+  assert.equal(result.nextPhase, 'captchaWait');
+  assert.equal(result.setFilledCaptcha, true);
+});
+
+test('captchaWait: 자동입력 후 사용자가 캡차 푸는 동안 대기한다(마감 이내)', () => {
+  const result = decide(
+    flow('captchaWait', { filledCaptcha: true }),
+    probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }),
+    1000
+  );
+  assert.equal(result.action, 'wait');
+});
+
+test('captchaWait: 5분 phase 마감 지나면 captcha_timeout 으로 종료한다', () => {
+  const result = decide(
+    flow('captchaWait', { filledCaptcha: true }),
+    probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }),
+    DEADLINE.captchaWait + 1
+  );
   assert.equal(result.action, 'fail');
-  assert.equal(result.failureCode, 'captcha');
+  assert.equal(result.failureCode, 'captcha_timeout');
+});
+
+test('captchaWait 는 90초 flow 마감으로 죽지 않는다(startedAt 오래돼도 대기)', () => {
+  // startedAt 이 90초를 넘겨도 captchaWait phase 예산(5분) 안이면 계속 대기해야 한다.
+  // 폼이 잠깐 사라진 fall-through(빈 probe)로 flowExpired 면제 경로를 실제로 태운다.
+  const result = decide(
+    flow('captchaWait', { filledCaptcha: true, enteredAt: 2000, startedAt: 0 }),
+    probe(),
+    DEADLINE.flow + 3000
+  );
+  assert.equal(result.action, 'wait');
+});
+
+test('captchaWait: 사용자가 캡차 풀고 로그인 성공하면 succeed 한다(target_login_verified)', () => {
+  const result = decide(
+    flow('captchaWait', { filledCaptcha: true, targetLoginName: 'B' }),
+    probe({ hasLogout: true, loginName: 'B' }),
+    2000
+  );
+  assert.equal(result.action, 'succeed');
+  assert.equal(result.terminalReason, 'target_login_verified');
 });
 
 test('scenario 4: blank navigation reaches a phase deadline', () => {
@@ -166,14 +207,28 @@ test('scenario 8: unrelated host aborts instead of navigating blindly', () => {
   assert.equal(result.terminalReason, 'unrelated_host');
 });
 
-test('scenario 8: unrelated page during logout aborts instead of navigating blindly', () => {
+test('logout landing-independence: honsu114 비로그인 임의 페이지에서도 로그인으로 진행한다', () => {
+  // v3.6.x 화이트리스트 회귀 반전 — /mall/orders.ubs 는 예전엔 unrelated_page 로 죽었지만
+  // 이제 착지 경로 무관하게 로그인 페이지로 네비게이트한다(호스트 안전판만 유지).
   const result = decide(flow('loggingOut'), probe({
     url: 'https://www.honsu114.com/mall/orders.ubs',
-    path: '/mall/orders.ubs'
+    path: '/mall/orders.ubs',
+    hasLogout: false
   }), 100);
-  assert.equal(result.action, 'fail');
-  assert.equal(result.failureCode, 'ambiguous_page');
-  assert.equal(result.terminalReason, 'unrelated_page');
+  assert.equal(result.action, 'navigateLogin');
+  assert.equal(result.nextPhase, 'toLogin');
+});
+
+test('logout landing-independence: ERP(ubshop.biz) 착지에서도 로그인으로 진행한다', () => {
+  // ERP 탭에서 전환 시작 → 로그아웃이 ubshop.biz 로 떨어져도 로그인 페이지로 진행한다.
+  const result = decide(flow('loggingOut'), probe({
+    host: 'ubdstore.ubshop.biz',
+    url: 'https://ubdstore.ubshop.biz/some/where.do',
+    path: '/some/where.do',
+    hasLogout: false
+  }), 100);
+  assert.equal(result.action, 'navigateLogin');
+  assert.equal(result.nextPhase, 'toLogin');
 });
 
 // 회귀: v3.6.4(9a6df67)가 로그아웃 랜딩 화이트리스트를 도입하면서 실제 랜딩 경로를 빠뜨렸다.

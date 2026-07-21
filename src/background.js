@@ -357,6 +357,17 @@ function UB_FILL_LOGIN(userid, pw) {
   return { okId, okPw, via };
 }
 function UB_FOCUS_CAPTCHA() { const c = document.querySelector('input[name="sysUser.fcaptcha"]'); if (c) c.focus(); }
+// 반자동 로그인: id/pw 만 채우고 절대 제출하지 않는다(login()/버튼/form.submit 호출 없음).
+// 채운 뒤 캡차 입력칸으로 포커스를 옮겨 사용자가 바로 캡차를 풀 수 있게 한다.
+function UB_FILL_ONLY(userid, pw) {
+  const q = s => document.querySelector(s);
+  const set = (el, v) => { if (!el) return false; el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; };
+  const okId = set(q('input[name="sysUser.fuserid"]'), userid);
+  const okPw = set(q('input[name="sysUser.fpasswd"]'), pw);
+  const cap = q('input[name="sysUser.fcaptcha"]');
+  if (cap) cap.focus();
+  return { okId, okPw };
+}
 
 /* ---- exec / 상태 / 복호화 ---- */
 async function ubExec(tabId, func, args) {
@@ -438,6 +449,7 @@ function ubTransition(flow, decision, now) {
     flow.attempts[from] = (flow.attempts[from] || 0) + 1;
   }
   if (decision.setSubmittedFor) flow.submittedFor = decision.setSubmittedFor;
+  if (decision.setFilledCaptcha) flow.filledCaptcha = true;
   if (decision.nextPhase && decision.nextPhase !== from) {
     flow.phase = decision.nextPhase;
     flow.enteredAt = now;
@@ -537,6 +549,26 @@ async function ubApplyDecision(flow, probe, decision, now) {
     return;
   }
 
+  // 반자동 캡차: id/pw 만 자동입력(제출 없음)하고 캡차는 사용자가 푼다. flow 를 종료하지
+  // 않고 captchaWait 로 두어, 사용자가 캡차 풀고 로그인하면 성공을 관측하게 한다.
+  if (decision.action === 'fillCaptcha') {
+    const acc = await ubAccount(flow.accountId);
+    if (!acc) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'account_missing', now); return; }
+    let pw = '';
+    try {
+      try { pw = await ubDecrypt(acc); }
+      catch (_) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'decrypt_fail', now); return; }
+      if (_ubActiveFlowId !== flow.flowId) return;
+      ubTransition(flow, decision, now);   // → captchaWait, enteredAt=now, filledCaptcha=true(setFilledCaptcha)
+      flow.note = '아이디·비번 자동입력됨 — 캡차만 풀고 로그인 누르세요';
+      await ubSetFlow(flow);
+      if (_ubActiveFlowId !== flow.flowId) return;
+      ubArmWatchdog();
+      await ubExec(flow.tabId, UB_FILL_ONLY, [acc.userid, pw]);
+    } finally { pw = ''; }
+    return;
+  }
+
   if (_ubActiveFlowId !== flow.flowId) return;
   ubTransition(flow, decision, now);
   await ubSetFlow(flow);
@@ -614,7 +646,15 @@ try {
       const now = Date.now();
       if (_ubLastStep[tabId] && now - _ubLastStep[tabId] < 400) return;  // 중복 complete 디바운스
       _ubLastStep[tabId] = now;
-      ubStep(tabId, ubLoginFlow.flowId);
+      // 새 navigation 완료 → filledCaptcha 리셋. 새 로그인 폼은 다시 자동입력하되(→fillCaptcha),
+      // watchdog 재점검(같은 문서, navigation 아님)은 이 경로를 안 타 filledCaptcha 유지 → 대기.
+      // ubStep 이 storage 를 다시 읽으므로 set 콜백 안에서 호출해 순서를 보장한다.
+      if (ubLoginFlow.filledCaptcha) {
+        ubLoginFlow.filledCaptcha = false;
+        chrome.storage.local.set({ ubLoginFlow }, () => ubStep(tabId, ubLoginFlow.flowId));
+      } else {
+        ubStep(tabId, ubLoginFlow.flowId);
+      }
     });
   });
   chrome.alarms.onAlarm.addListener(alarm => {

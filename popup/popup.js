@@ -129,6 +129,7 @@
   const failureText = {
     login_reappeared: '로그인 실패 — 비밀번호 확인',
     captcha: '캡차 — 직접 입력',
+    captcha_timeout: '캡차 입력 시간 초과 — 다시 시도',
     nav_timeout: '시간 초과 — 다시 시도',
     probe_timeout: '시간 초과 — 다시 시도',
     ambiguous_page: '페이지 상태 불명',
@@ -141,17 +142,29 @@
     flow_deadline: '시간 초과 — 다시 시도',
     account_missing: '계정 정보를 찾을 수 없음'
   };
+  const STATUS_BASE = 'display:none;margin:0 0 8px;padding:8px 10px;border-radius:8px;font-size:11px;font-weight:700;line-height:1.4;';
+  const STATUS_FAIL = STATUS_BASE + 'background:#fff3f3;color:#b42318;border:1px solid #f0b4b4;';
+  const STATUS_INFO = STATUS_BASE + 'background:#eef8fb;color:#0b6b7a;border:1px solid #b6e3ec;';
   const statusEl = document.createElement('div');
   statusEl.setAttribute('role', 'status');
-  statusEl.style.cssText = 'display:none;margin:0 0 8px;padding:8px 10px;background:#fff3f3;color:#b42318;border:1px solid #f0b4b4;border-radius:8px;font-size:11px;font-weight:700;line-height:1.4;';
+  statusEl.style.cssText = STATUS_FAIL;
   listEl.parentNode.insertBefore(statusEl, listEl);
 
   async function renderFlowStatus() {
     try {
       const { ubLoginFlow } = await chrome.storage.local.get('ubLoginFlow');
-      const text = ubLoginFlow && !ubLoginFlow.active &&
+      if (!ubLoginFlow) return;
+      // 진행 중 캡차 반자동 — 아이디·비번은 자동입력됐고 사용자는 캡차만 풀면 된다.
+      if (ubLoginFlow.active && (ubLoginFlow.note || ubLoginFlow.phase === 'captchaWait')) {
+        statusEl.style.cssText = STATUS_INFO;
+        statusEl.textContent = ubLoginFlow.note || '아이디·비번은 자동입력됐어요. 캡차만 풀고 로그인을 누르세요.';
+        statusEl.style.display = 'block';
+        return;
+      }
+      const text = !ubLoginFlow.active &&
         (failureText[ubLoginFlow.lastFailureCode] || terminalText[ubLoginFlow.terminalReason]);
       if (!text) return;
+      statusEl.style.cssText = STATUS_FAIL;
       statusEl.textContent = text;
       statusEl.style.display = 'block';
     } catch (_) {}
