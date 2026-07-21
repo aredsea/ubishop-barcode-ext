@@ -1548,23 +1548,59 @@
         const row = rows[r];
         cols.forEach(i => {
           const td = row.cells[i];
-          if (!td || td.dataset.ubFw) return;
+          if (!td) return;
           const name = fwCellName(td);
-          const seq = name && map[name];
-          if (!seq) return;
-          td.dataset.ubFw = seq;
+          if (!name) return;
+          const seq = map[name];
           const host = td.querySelector('span.f_bold, b, strong') || td;
-          host.classList.add('ub-fw-name');
-          host.title = '매입처 정보 보기';
-          n++;
+          if (seq) {
+            if (td.dataset.ubFw) return;   // 이미 확정
+            td.dataset.ubFw = seq;
+            host.classList.add('ub-fw-name');   // 즉시밑줄로 이미 있을 수 있음(idempotent)
+            host.title = '매입처 정보 보기';
+            n++;
+          } else if (!td.dataset.ubFw && host.classList.contains('ub-fw-name')) {
+            // 즉시 밑줄됐으나 맵에서 해결 불가(동명·미등록) → 밑줄 회수(클릭해도 안 열려 오해 방지)
+            host.classList.remove('ub-fw-name'); host.title = '';
+          }
         });
       }
     });
     if (n) fwLog('매입처명 표시', n, '칸');
   }
+  // 진입 즉시(비동기 맵 대기 없이) 발주처명 칸을 밑줄 처리한다. 장식을 맵 로드에서 분리 —
+  //  seq 는 클릭 폴백이 즉시 해결하고, 맵이 로드되면 fwMarkNames 가 dataset.ubFw(빠른경로)를
+  //  달고 미등록·동명(해결 불가)인 칸의 밑줄은 회수한다. fwFactoryColsFor 로 컬럼만 보므로 sync.
+  function fwMarkColumnsNow() {
+    let n = 0;
+    document.querySelectorAll('table.t_list').forEach(t => {
+      const cols = fwFactoryColsFor(t);
+      if (!cols.length) return;
+      const rows = [...t.rows];
+      let hdr = 0;
+      for (let r = 0; r < rows.length; r++) {
+        if (cols.some(i => rows[r].cells[i] && isFactoryHeader(rows[r].cells[i].textContent || ''))) { hdr = r; break; }
+      }
+      for (let r = hdr + 1; r < rows.length; r++) {
+        const row = rows[r];
+        cols.forEach(i => {
+          const td = row.cells[i];
+          if (!td || td.dataset.ubFw) return;   // 이미 확정된 칸은 둔다
+          const name = fwCellName(td);
+          if (!name) return;
+          const host = td.querySelector('span.f_bold, b, strong') || td;
+          if (host.classList.contains('ub-fw-name')) return;   // 이미 밑줄
+          host.classList.add('ub-fw-name'); host.title = '매입처 정보 보기';
+          n++;
+        });
+      }
+    });
+    if (n) fwLog('발주처명 즉시 밑줄', n, '칸');
+  }
   function bindFactoryNames() {
     if (!on('ubFactoryInfo')) return;
     if (!/^\/jun\//.test(location.pathname)) return;   // 전표 화면에서만
+    fwMarkColumnsNow();   // 진입 즉시 밑줄(맵 대기 없음). seq 는 클릭 폴백/맵 로드가 해결.
     fwGetMap().then(map => { if (map && Object.keys(map).length) fwMarkNames(map); });
   }
   // ── 플로팅 정보창 ────────────────────────────────────────────────────────
