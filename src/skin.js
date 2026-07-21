@@ -923,6 +923,74 @@
     }
     return 'in-place';
   }
+  // ── 작업C 순수 헬퍼 (slice 1) ─────────────────────────────────────────────
+  //  본사확인 → 입고완료 자동화의 순수 판정부. DOM·쓰기·chrome.*·타이머 미접촉.
+  //  통합 슬라이스 전까지 의도적으로 미사용. C 는 되돌리기 어려운 라이브 쓰기(본사확인
+  //  =POST, 재고배정=쓰는 GET)라 모든 판정은 fail-closed 다 — 알 수 없거나 애매하면
+  //  '진행하지 않는다'로 떨어진다.
+  //  ⚠ 상태 판정은 canonical code EXACT match 다(spec §5). 괄호 절단·접두 일치는
+  //   화면 필터 membership 전용이라 여기(쓰기 권한 판정)에는 절대 쓰지 않는다.
+  //  대상 상태인가 = 정확히 주문완료(O--) 또는 본사확인(OS-) 두 가지뿐.
+  //  그 외·미지·빈값·null 은 전부 false. prefix 아님, exact.
+  function cTargetStatus(code) {
+    return code === 'O--' || code === 'OS-';
+  }
+  //  체크된 행들을 대상/제외로 가른다. targets 는 원본 행을 그대로 담고, excluded 는
+  //  { orderSeq, code, reason } 로 사유를 붙인다. 같은 orderSeq 가 둘 이상이면 dedupe
+  //  하지 말고 duplicate=true 로 알린다(spec §5·§10: 중복은 조용히 합치지 말고 중단).
+  //  호출부는 duplicate 면 fail-closed 로 중단한다.
+  function cClassifyChecked(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const REASON = new Map([
+      ['I--', '이미 입고완료'], ['OC-', '주문취소'], ['T--', '출고완료'],
+      ['TS-', '출고확인'], ['TE-', '출고오확인'], ['S--', '판매완료'], ['B--', '발주완료']
+    ]);
+    const seen = new Set();
+    let duplicate = false;
+    for (const r of list) {
+      const key = String(r && r.orderSeq != null ? r.orderSeq : '');
+      if (seen.has(key)) duplicate = true; else seen.add(key);
+    }
+    const targets = [];
+    const excluded = [];
+    for (const r of list) {
+      const code = r ? r.code : undefined;
+      if (cTargetStatus(code)) { targets.push(r); continue; }
+      excluded.push({ orderSeq: r ? r.orderSeq : undefined, code: code,
+                      reason: REASON.get(code) || '상태 불명' });
+    }
+    return { targets: targets, excluded: excluded, duplicate: duplicate };
+  }
+  //  재조회한 '현재' 상태(code) 기준 다음 단계(spec §4.3 step 1). O-- → standby,
+  //  OS- → assign(standby 생략), 그 외·미지 → abort. 매 쓰기 직전 재조회 값으로만 판단.
+  function cNextStep(currentCode) {
+    if (currentCode === 'O--') return 'standby';
+    if (currentCode === 'OS-') return 'assign';
+    return 'abort';
+  }
+  //  배정 팝업의 데이터 행(문서 순서 배열)에서 첫 행 바코드를 고른다(현행 수작업 관행).
+  //  후보 0건이면 null → 호출부 실패(spec §4.3 step 3). 첫 후보에 바코드가 없거나 빈
+  //  값이어도 null(빈 값이 쓰기로 흘러가지 않게). 바코드는 그대로 반환한다 — 이후 성공
+  //  판정이 이 값과 정확히 대조되므로 trim·대소문자 변형을 하지 않는다.
+  function cPickAssignBarcode(candidates) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    const first = candidates[0];
+    const bc = first == null ? null : first.barcode;
+    return (typeof bc === 'string' && bc !== '') ? bc : null;
+  }
+  //  쓰기(setCurrent) dispatch 후 한 건의 성공 3분기(spec §3.6·§4.3 step 5).
+  //  기준선은 'dispatch 했는가'. dispatch 전 실패(dispatched!==true)는 쓰기가 없었던
+  //  게 확실하므로 확정 실패('fail', 안전). dispatch 후에는 상태 I-- 이고 배정 바코드가
+  //  우리가 고른 바코드와 정확히 같을 때만 'success'. 그 외(이전 상태·다른 바코드·다른
+  //  상태·재조회 null/실패/타임아웃)는 전부 'uncertain' — 절대 'fail' 아니고, dispatch
+  //  후 non-success 는 자동 재시도 금지다(§3.6).
+  function cClassifyOutcome(input) {
+    if (!input || input.dispatched !== true) return 'fail';
+    const q = input.requery;
+    if (q && q.found === true && q.code === 'I--' &&
+        q.assignedBarcode === input.expectedBarcode) return 'success';
+    return 'uncertain';
+  }
   // ── 순수 헬퍼(DOM 비의존, 단위테스트 대상) ────────────────────────────────
   //  currentSetting('master','orderSeq','barcode','shop','client','orderDate')
   function parseCurrentSettingArgs(href) {
