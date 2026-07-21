@@ -1445,20 +1445,37 @@
     const first = [...td.childNodes].find(n => n.nodeType === 3 && (n.nodeValue || '').trim());
     return first ? first.nodeValue.replace(/\s+/g, ' ').trim() : '';
   }
+  //  table.t_list 의 매입처명 컬럼 인덱스. 마킹(장식)과 클릭(기능)이 '같은 기준'으로 컬럼을
+  //  찾도록 하는 단일 출처다. 헤더 판정은 fwMarkNames 와 동일 — 첫 매칭 헤더 행만, '매입처상품
+  //  코드'는 제외(isFactoryHeader). 클릭마다 재탐색하지 않도록 테이블에 캐시한다. 없으면 [].
+  //  ★헤더는 '첫 매칭 행'으로 한 번만 정한다. 매 행에서 다시 판정하면 상품명·상품코드에
+  //   '매입처'가 들어간 데이터 행을 헤더로 오인해 열 위치가 통째로 어긋난다(Codex 지적).
+  function fwFactoryColsFor(table) {
+    if (!table) return [];
+    if (table.dataset.ubFwCols != null) {
+      try { return JSON.parse(table.dataset.ubFwCols); } catch (_) { return []; }
+    }
+    const rows = [...table.rows];
+    let cols = [];
+    for (let r = 0; r < rows.length; r++) {
+      const cs = [...rows[r].cells].map(c => c.textContent || '');
+      const idxs = cs.map((c, i) => isFactoryHeader(c) ? i : -1).filter(i => i >= 0);
+      if (idxs.length) { cols = idxs; break; }
+    }
+    try { table.dataset.ubFwCols = JSON.stringify(cols); } catch (_) {}
+    return cols;
+  }
   function fwMarkNames(map) {
     let n = 0;
     document.querySelectorAll('table.t_list').forEach(t => {
-      // ★헤더는 '첫 매칭 행'으로 한 번만 정하고 그 아래 행만 처리한다.
-      //  매 행에서 다시 판정하면, 상품명·상품코드에 '매입처'가 들어간 데이터 행을 헤더로
-      //  오인해 열 위치가 통째로 어긋나고 무관한 칸에 링크가 걸린다(Codex 지적).
+      const cols = fwFactoryColsFor(t);   // ★컬럼 탐지 단일 출처(클릭 폴백과 동일 기준)
+      if (!cols.length) return;
       const rows = [...t.rows];
-      let cols = null, hdr = -1;
+      // 헤더 행 = 그 컬럼이 매입처 헤더로 잡히는 첫 행(= fwFactoryColsFor 이 잡은 행). 아래 행만 처리.
+      let hdr = 0;
       for (let r = 0; r < rows.length; r++) {
-        const cs = [...rows[r].cells].map(c => c.textContent || '');
-        const idxs = cs.map((c, i) => isFactoryHeader(c) ? i : -1).filter(i => i >= 0);
-        if (idxs.length) { cols = idxs; hdr = r; break; }
+        if (cols.some(i => rows[r].cells[i] && isFactoryHeader(rows[r].cells[i].textContent || ''))) { hdr = r; break; }
       }
-      if (!cols) return;
       for (let r = hdr + 1; r < rows.length; r++) {
         const row = rows[r];
         cols.forEach(i => {
@@ -1681,13 +1698,37 @@
     document.addEventListener('click', (e) => {
       try {
         if (!on('ubFactoryInfo')) return;   // 클릭 시점 킬스위치(초기화 때만 보면 끌 수 없다)
+        // 빠른 경로: 이미 마킹된 칸(dataset.ubFw). 비동기 마킹이 끝난 뒤의 클릭.
         const host = e.target && e.target.closest ? e.target.closest('.ub-fw-name') : null;
-        if (!host) return;
-        const td = host.closest('td');
-        const seq = td && td.dataset ? td.dataset.ubFw : '';
-        if (!seq) return;
+        if (host) {
+          const td = host.closest('td');
+          const seq = td && td.dataset ? td.dataset.ubFw : '';
+          if (seq) {
+            e.preventDefault(); e.stopPropagation();
+            fwShow(fwCellName(td), seq);
+            return;
+          }
+        }
+        // 폴백: 아직 마킹 전(비동기 fwGetMap→fwMarkNames 완료 전)이라도 첫 클릭에서 바로 연다.
+        //  마킹은 '점선 장식'일 뿐 기능을 게이팅하지 않는다 — 클릭 시점에 컬럼으로 판정한다.
+        const td = e.target && e.target.closest ? e.target.closest('td') : null;
+        if (!td) return;
+        const table = td.closest ? td.closest('table.t_list') : null;
+        if (!table) return;
+        const cols = fwFactoryColsFor(table);
+        if (!cols.length || cols.indexOf(td.cellIndex) < 0) return;   // 매입처 컬럼 칸이 아니면 무시
+        const name = fwCellName(td);
+        if (!name) return;
+        // 전표의 매입처명은 링크가 아니라 텍스트라 native 액션이 없다 → 낙관적 preventDefault 안전.
         e.preventDefault(); e.stopPropagation();
-        fwShow(fwCellName(td), seq);
+        fwGetMap().then(map => {
+          const seq = map && map[name];
+          if (!seq) return;   // ⚠ 동명 매입처(fwParseFactoryMap 에서 제외)·미등록 → 아무것도 안 함
+          td.dataset.ubFw = seq;
+          const h = td.querySelector('span.f_bold, b, strong') || td;
+          h.classList.add('ub-fw-name'); h.title = '매입처 정보 보기';   // 장식도 즉시 부여
+          fwShow(name, seq);   // ★fwShow 가 상세의 매입처명==클릭명 재검증(불일치 시 캐시 폐기)
+        });
       } catch (err) { fwLog('클릭 처리 실패', err); }
     }, true);
     // ESC 로 닫기
