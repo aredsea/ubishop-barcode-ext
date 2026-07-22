@@ -1,9 +1,9 @@
 {
-    "version":  "3.8.3",
+    "version":  "3.8.4",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "39aa85bf71260404dfbf8792372832a22e8231496892b5b9f588548ca35970f7"
+                      "sha256":  "ce9c6d12ac25b4741e714bef996c112ef35f11c81bccdfbbf1897a27d9e6bd3a"
                   },
                   {
                       "path":  "src/loader.js",
@@ -23,15 +23,15 @@
                   },
                   {
                       "path":  "src/skin.js",
-                      "sha256":  "f1bc5cff0c875bae07192eea78269df17cb919e55a6c14f675be49d7d8fbbeac"
+                      "sha256":  "719273c509adfe2f1c1b8629d69dd6a9456beef77de8bc561f6205b1e8317fc2"
                   },
                   {
                       "path":  "popup/popup.html",
-                      "sha256":  "bf4add52fa94aa13c36f27936ec0377c27020024e5701d2a2cb1aeaa0349bc54"
+                      "sha256":  "e0aeaea491170e47ae6433b10bcc7d67e8adcec9a0c67fa1ec160a575db58852"
                   },
                   {
                       "path":  "popup/popup.js",
-                      "sha256":  "3c7c2edc964a28f4906b255be4db45a5a09eb64813f8416c9de3484b4049e07f"
+                      "sha256":  "bc35415e38dfa378b91c48a30bdb82d41ca55522cae56177bc718d4ebbedac5a"
                   },
                   {
                       "path":  "rules/cache.json",
