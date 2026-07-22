@@ -1,9 +1,9 @@
 {
-    "version":  "3.8.2",
+    "version":  "3.8.3",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "ca2931efcc105aedd003b1e2d6546e934360e8ea76d922482a6491debf349108"
+                      "sha256":  "39aa85bf71260404dfbf8792372832a22e8231496892b5b9f588548ca35970f7"
                   },
                   {
                       "path":  "src/loader.js",
@@ -19,7 +19,7 @@
                   },
                   {
                       "path":  "src/background.js",
-                      "sha256":  "6c191e21bc58f408f140c80622d048fe580eb89f5abf867be53b6910afc57695"
+                      "sha256":  "e2844f6afdafde5652727c6f1d8cca1b3813367ad5d133dc288fb6f4f6090ce4"
                   },
                   {
                       "path":  "src/skin.js",
