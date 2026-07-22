@@ -67,51 +67,17 @@ test('scenario 2: submitted form reappearance fails without resubmission', () =>
   assert.equal(result.setSubmittedFor, undefined);
 });
 
-test('scenario 3: captcha on a login form triggers semi-auto fill (no submit)', () => {
-  const result = decide(flow('toLogin'), probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }), 100);
-  assert.equal(result.action, 'fillCaptcha');
-  assert.equal(result.nextPhase, 'captchaWait');
-  assert.equal(result.setFilledCaptcha, true);
-});
+test('scenario 3: a login form is filled whether or not a captcha is present', () => {
+  // 캡차는 더 이상 게이트가 아니다 — 올바른 자격증명이면 캡차가 안 뜨고, 뜨면 사용자가 푼다.
+  // 폼이 있으면 captcha 유무와 무관하게 fillLogin 으로 채우고 제출한다.
+  const withCaptcha = decide(flow('toLogin'), probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }), 100);
+  assert.equal(withCaptcha.action, 'fillLogin');
+  assert.equal(withCaptcha.nextPhase, 'submitted');
+  assert.equal(withCaptcha.setSubmittedFor, 'B');
 
-test('captchaWait: 자동입력 후 사용자가 캡차 푸는 동안 대기한다(마감 이내)', () => {
-  const result = decide(
-    flow('captchaWait', { filledCaptcha: true }),
-    probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }),
-    1000
-  );
-  assert.equal(result.action, 'wait');
-});
-
-test('captchaWait: 5분 phase 마감 지나면 captcha_timeout 으로 종료한다', () => {
-  const result = decide(
-    flow('captchaWait', { filledCaptcha: true }),
-    probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }),
-    DEADLINE.captchaWait + 1
-  );
-  assert.equal(result.action, 'fail');
-  assert.equal(result.failureCode, 'captcha_timeout');
-});
-
-test('captchaWait 는 90초 flow 마감으로 죽지 않는다(startedAt 오래돼도 대기)', () => {
-  // startedAt 이 90초를 넘겨도 captchaWait phase 예산(5분) 안이면 계속 대기해야 한다.
-  // 폼이 잠깐 사라진 fall-through(빈 probe)로 flowExpired 면제 경로를 실제로 태운다.
-  const result = decide(
-    flow('captchaWait', { filledCaptcha: true, enteredAt: 2000, startedAt: 0 }),
-    probe(),
-    DEADLINE.flow + 3000
-  );
-  assert.equal(result.action, 'wait');
-});
-
-test('captchaWait: 사용자가 캡차 풀고 로그인 성공하면 succeed 한다(target_login_verified)', () => {
-  const result = decide(
-    flow('captchaWait', { filledCaptcha: true, targetLoginName: 'B' }),
-    probe({ hasLogout: true, loginName: 'B' }),
-    2000
-  );
-  assert.equal(result.action, 'succeed');
-  assert.equal(result.terminalReason, 'target_login_verified');
+  const withoutCaptcha = decide(flow('toLogin'), probe({ path: '/mall/login.ubs', hasForm: true, captcha: false }), 100);
+  assert.equal(withoutCaptcha.action, 'fillLogin');
+  assert.equal(withoutCaptcha.nextPhase, 'submitted');
 });
 
 test('scenario 4: blank navigation reaches a phase deadline', () => {

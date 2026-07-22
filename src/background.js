@@ -334,8 +334,11 @@ function UB_PROBE() {
   // PMS 관리자 화면 등 표시 요소가 없으면 '' (비교 불가로 안전하게 일반 진행).
   const u = q('li.user') || q('.user');
   const loginName = u ? (u.textContent || '').replace(/\s*님\s*$/, '').replace(/\s+/g, ' ').trim() : '';
+  const hasForm = !!(pw && pw.form);
+  // 진단 — 로그인 페이지(폼 존재)에 도달했음을 F12 콘솔에 남긴다.
+  if (hasForm) { try { console.log('[UB][login] reached-login', { path: location.pathname }); } catch (e) {} }
   return { url: location.href, host: location.hostname, path: location.pathname,
-    hasForm: !!(pw && pw.form), hasLogout: !!logout, hasPms: onPms, pmsHref: pms ? pms.href : null, captcha: !!captcha, loginName, ambiguous: false };
+    hasForm, hasLogout: !!logout, hasPms: onPms, pmsHref: pms ? pms.href : null, captcha: !!captcha, loginName, ambiguous: false };
 }
 function UB_DO_LOGOUT() {
   try { if (typeof link === 'function') { link('logout'); return { via: 'link' }; } } catch (e) {}
@@ -348,29 +351,41 @@ function UB_DO_LOGOUT() {
 }
 function UB_FILL_LOGIN(userid, pw) {
   const q = s => document.querySelector(s);
-  const set = (el, v) => { if (!el) return false; el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; };
-  const okId = set(q('input[name="sysUser.fuserid"]'), userid);
-  const okPw = set(q('input[name="sysUser.fpasswd"]'), pw);
+  const idEl = q('input[name="sysUser.fuserid"]');
+  const pwEl = q('input[name="sysUser.fpasswd"]');
+  // Chrome 저장 비밀번호 자동완성이 우리 값을 이전 계정으로 되돌리는 걸 막는다:
+  //  ① 대상 input·form 의 autocomplete 를 끄고
+  //  ② 네이티브 value setter 로 값을 넣어(프레임워크/브라우저의 value 추적을 우회)
+  //  ③ input·change 를 버블로 발사해 페이지 로직이 값을 정상 인식하게 한다.
+  const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  const set = (el, v) => {
+    if (!el) return false;
+    try { el.setAttribute('autocomplete', 'off'); } catch (e) {}
+    try { nativeSet.call(el, v); } catch (e) { el.value = v; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  };
+  try { const f = (idEl && idEl.form) || (pwEl && pwEl.form); if (f) f.setAttribute('autocomplete', 'off'); } catch (e) {}
+  const okId = set(idEl, userid);
+  const okPw = set(pwEl, pw);
+  // 진단(비밀번호 값은 절대 로그하지 않는다 — 길이만). F12 로그인 페이지 콘솔에서 어느 계정으로 채웠는지 확인.
+  try { console.log('[UB][login] fill', { okId, okPw, useridPrefix: String(userid).slice(0, 4), pwLen: String(pw).length }); } catch (e) {}
+  // 제출 직전 아이디를 다시 못박는다 — 그 사이 자동완성이 값을 되돌렸을 수 있다.
+  if (idEl) {
+    try { nativeSet.call(idEl, userid); } catch (e) { idEl.value = userid; }
+    idEl.dispatchEvent(new Event('input', { bubbles: true }));
+    idEl.dispatchEvent(new Event('change', { bubbles: true }));
+  }
   let via = '';
   try { if (typeof login === 'function') { login(); via = 'login()'; } } catch (e) { via = 'err'; }
   if (via !== 'login()') {
     const btn = document.querySelector('a.btn_submit, [onclick*="login" i]');
     if (btn) { btn.click(); via += '|btn'; }
-    else { const f = q('input[name="sysUser.fpasswd"]') && q('input[name="sysUser.fpasswd"]').form; if (f) { try { f.submit(); via += '|submit'; } catch (e) {} } }
+    else { const f = pwEl && pwEl.form; if (f) { try { f.submit(); via += '|submit'; } catch (e) {} } }
   }
+  try { console.log('[UB][login] submit', { via, useridPrefix: String(userid).slice(0, 4) }); } catch (e) {}
   return { okId, okPw, via };
-}
-function UB_FOCUS_CAPTCHA() { const c = document.querySelector('input[name="sysUser.fcaptcha"]'); if (c) c.focus(); }
-// 반자동 로그인: id/pw 만 채우고 절대 제출하지 않는다(login()/버튼/form.submit 호출 없음).
-// 채운 뒤 캡차 입력칸으로 포커스를 옮겨 사용자가 바로 캡차를 풀 수 있게 한다.
-function UB_FILL_ONLY(userid, pw) {
-  const q = s => document.querySelector(s);
-  const set = (el, v) => { if (!el) return false; el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; };
-  const okId = set(q('input[name="sysUser.fuserid"]'), userid);
-  const okPw = set(q('input[name="sysUser.fpasswd"]'), pw);
-  const cap = q('input[name="sysUser.fcaptcha"]');
-  if (cap) cap.focus();
-  return { okId, okPw };
 }
 
 /* ---- exec / 상태 / 복호화 ---- */
@@ -415,7 +430,7 @@ async function ubDecrypt(acc) {
 }
 
 /* ---- 관측 기반 단계 진행 ---- */
-const _ubLastStep = {};
+const _ubStepTimer = {};
 const _ubStepInFlight = {};
 let _ubActiveFlowId = null;
 
@@ -453,7 +468,6 @@ function ubTransition(flow, decision, now) {
     flow.attempts[from] = (flow.attempts[from] || 0) + 1;
   }
   if (decision.setSubmittedFor) flow.submittedFor = decision.setSubmittedFor;
-  if (decision.setFilledCaptcha) flow.filledCaptcha = true;
   if (decision.nextPhase && decision.nextPhase !== from) {
     flow.phase = decision.nextPhase;
     flow.enteredAt = now;
@@ -526,7 +540,6 @@ async function ubApplyDecision(flow, probe, decision, now) {
     return;
   }
   if (decision.action === 'fail') {
-    if (decision.failureCode === 'captcha') await ubExec(flow.tabId, UB_FOCUS_CAPTCHA);
     if (_ubActiveFlowId !== flow.flowId) return;
     await ubTerminal(flow, 'failed', decision.failureCode, decision.terminalReason, now);
     return;
@@ -539,6 +552,8 @@ async function ubApplyDecision(flow, probe, decision, now) {
   if (decision.action === 'fillLogin') {
     const acc = await ubAccount(flow.accountId);
     if (!acc) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'account_missing', now); return; }
+    // 진단 — 채우려는 대상 계정이 팝업이 요청한 target 인지 확인(이전 계정 아님).
+    ubLog('target', { phase: flow.phase, requested: flow.accountId, useridPrefix: String(acc.userid).slice(0, 4) });
     let pw = '';
     try {
       try { pw = await ubDecrypt(acc); }
@@ -549,26 +564,6 @@ async function ubApplyDecision(flow, probe, decision, now) {
       if (_ubActiveFlowId !== flow.flowId) return;
       ubArmWatchdog();
       await ubExec(flow.tabId, UB_FILL_LOGIN, [acc.userid, pw]);
-    } finally { pw = ''; }
-    return;
-  }
-
-  // 반자동 캡차: id/pw 만 자동입력(제출 없음)하고 캡차는 사용자가 푼다. flow 를 종료하지
-  // 않고 captchaWait 로 두어, 사용자가 캡차 풀고 로그인하면 성공을 관측하게 한다.
-  if (decision.action === 'fillCaptcha') {
-    const acc = await ubAccount(flow.accountId);
-    if (!acc) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'account_missing', now); return; }
-    let pw = '';
-    try {
-      try { pw = await ubDecrypt(acc); }
-      catch (_) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'decrypt_fail', now); return; }
-      if (_ubActiveFlowId !== flow.flowId) return;
-      ubTransition(flow, decision, now);   // → captchaWait, enteredAt=now, filledCaptcha=true(setFilledCaptcha)
-      flow.note = '아이디·비번 자동입력됨 — 캡차만 풀고 로그인 누르세요';
-      await ubSetFlow(flow);
-      if (_ubActiveFlowId !== flow.flowId) return;
-      ubArmWatchdog();
-      await ubExec(flow.tabId, UB_FILL_ONLY, [acc.userid, pw]);
     } finally { pw = ''; }
     return;
   }
@@ -617,6 +612,8 @@ async function startSwitch(msg) {
   if (tabId == null) return { ok: false, error: 'no tab' };
   const acc = await ubAccount(msg.accountId);
   if (!acc) return { ok: false, error: 'account not found' };
+  // 진단 — 팝업이 요청한 accountId 가 어느 계정으로 해석됐는지 확인(전환 대상 = target).
+  ubLog('target', { requested: msg.accountId, useridPrefix: String(acc.userid).slice(0, 4), loginName: acc.loginName || null });
   const now = Date.now();
   const flow = {
     active: true,
@@ -645,21 +642,18 @@ async function startSwitch(msg) {
 try {
   chrome.tabs.onUpdated.addListener((tabId, info) => {
     if (info.status !== 'complete') return;
-    chrome.storage.local.get('ubLoginFlow', ({ ubLoginFlow }) => {
-      if (!ubLoginFlow || !ubLoginFlow.active || ubLoginFlow.tabId !== tabId) return;
-      const now = Date.now();
-      if (_ubLastStep[tabId] && now - _ubLastStep[tabId] < 400) return;  // 중복 complete 디바운스
-      _ubLastStep[tabId] = now;
-      // 새 navigation 완료 → filledCaptcha 리셋. 새 로그인 폼은 다시 자동입력하되(→fillCaptcha),
-      // watchdog 재점검(같은 문서, navigation 아님)은 이 경로를 안 타 filledCaptcha 유지 → 대기.
-      // ubStep 이 storage 를 다시 읽으므로 set 콜백 안에서 호출해 순서를 보장한다.
-      if (ubLoginFlow.filledCaptcha) {
-        ubLoginFlow.filledCaptcha = false;
-        chrome.storage.local.set({ ubLoginFlow }, () => ubStep(tabId, ubLoginFlow.flowId));
-      } else {
+    // 트레일링 디바운스 — 한 navigation 이 여러 complete(리다이렉트 체인)를 내면 '마지막'
+    // 것만 처리한다. 이전 리딩 디바운스는 중간 리다이렉트의 첫 complete 만 처리하고 실제
+    // 로그인 폼 페이지의 마지막 complete 를 400ms 창에서 버려, 자동입력이 안 걸렸다.
+    // setTimeout 이 유실돼도(SW 종료 등) 30초 watchdog 알람이 복구한다.
+    if (_ubStepTimer[tabId]) clearTimeout(_ubStepTimer[tabId]);
+    _ubStepTimer[tabId] = setTimeout(() => {
+      delete _ubStepTimer[tabId];
+      chrome.storage.local.get('ubLoginFlow', ({ ubLoginFlow }) => {
+        if (!ubLoginFlow || !ubLoginFlow.active || ubLoginFlow.tabId !== tabId) return;
         ubStep(tabId, ubLoginFlow.flowId);
-      }
-    });
+      });
+    }, 300);
   });
   chrome.alarms.onAlarm.addListener(alarm => {
     if (!alarm || alarm.name !== UB_WATCHDOG) return;

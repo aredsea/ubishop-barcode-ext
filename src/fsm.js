@@ -1,10 +1,9 @@
 const DEADLINE = Object.freeze({
   start: 15000,
-  loggingOut: 15000,
-  toLogin: 15000,
-  submitted: 10000,
+  loggingOut: 45000,
+  toLogin: 45000,
+  submitted: 45000,
   enteringPms: 15000,
-  captchaWait: 300000,
   flow: 90000,
   maxAttempts: 3
 });
@@ -64,9 +63,7 @@ function decide(flow, rawProbe, now) {
   const target = fsmNormName(flow.targetLoginName || flow.accountId);
   const observed = fsmNormName(probe.loginName);
   const submittedForTarget = !!flow.submittedFor && fsmNormName(flow.submittedFor) === accountId;
-  // captchaWait 는 사용자가 캡차를 직접 푸는 user-paced 단계라 90초 flow 마감에서 면제한다.
-  // 종료는 captchaWait 전용 phase 마감(DEADLINE.captchaWait)으로만 한다.
-  const flowExpired = phase !== 'captchaWait' && Number.isFinite(flow.startedAt) && now - flow.startedAt > DEADLINE.flow;
+  const flowExpired = Number.isFinite(flow.startedAt) && now - flow.startedAt > DEADLINE.flow;
 
   if (!probe.ambiguous && probe.host && !/(^|\.)(ubshop\.biz|honsu114\.com)$/i.test(probe.host)) {
     return fsmFail('ambiguous_page', 'unrelated_host');
@@ -78,13 +75,6 @@ function decide(flow, rawProbe, now) {
       : { action: 'wait' };
   }
 
-  // 로그인 폼에는 캡차가 항상 있다. 캡차를 절대 자동해결/우회하지 않는다(안전 규칙).
-  // 반자동: 아직 안 채웠으면 id/pw 자동입력(제출 없음)+캡차 포커스로 전이하고,
-  // 채운 뒤엔 사용자가 캡차를 푸는 동안 대기한다. 5분(captchaWait) 지나면 포기한다.
-  if (probe.hasForm && probe.captcha) {
-    if (!flow.filledCaptcha) return { action: 'fillCaptcha', nextPhase: 'captchaWait', setFilledCaptcha: true };
-    return expired ? fsmFail('captcha_timeout', 'captcha_user_timeout') : { action: 'wait' };
-  }
   if (phase === 'enteringPms' && probe.hasPms) {
     return { action: 'succeed', nextPhase: 'done', terminalReason: 'pms_observed' };
   }
@@ -111,11 +101,6 @@ function decide(flow, rawProbe, now) {
   }
 
   if (flowExpired) return fsmFail(phase === 'submitted' ? 'probe_timeout' : 'nav_timeout', 'flow_deadline');
-
-  // captchaWait 꼬리 — 주 경로는 위 캡차 분기(성공은 line ~83 에서 이미 처리). 폼이 잠깐
-  // 사라진 전이 상태 등 fall-through 를 여기서 잡아, captchaWait 중엔 절대 fillLogin(자동제출)
-  // 로 새지 않게 한다(fail-closed). 5분 phase 마감까지 대기 후 captcha_timeout.
-  if (phase === 'captchaWait') return expired ? fsmFail('captcha_timeout') : { action: 'wait' };
 
   if (probe.hasForm) {
     if (flow.submittedFor) return fsmFail('login_reappeared');
