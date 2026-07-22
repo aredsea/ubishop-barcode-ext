@@ -325,7 +325,11 @@ function UB_PROBE() {
   });
   const pms = q('a.pms') || q('a[href*="pamasLogin.do" i]');
   const onPms = /(^|\.)ubshop\.biz$/i.test(location.hostname);
-  const captcha = vis(q('iframe[src*="recaptcha"]')) || vis(q('.g-recaptcha')) || vis(q('input[name="sysUser.fcaptcha"]'));
+  // 사용자가 '직접 풀어야 하는' 캡차만 트리거한다: honsu114 텍스트 캡차(sysUser.fcaptcha)가
+  // 실제로 보이거나, reCAPTCHA 이미지 챌린지 팝업(api2/bframe)이 떠 있을 때. 항상 떠 있는
+  // invisible reCAPTCHA 배지/앵커는 로그인 클릭 시 자동 검증되므로 제외 — 이걸 캡차로
+  // 오인해 아이디·비번은 채워진 채 login.ubs 에서 반자동이 멈춰 있었다(사용자 실측).
+  const captcha = vis(q('input[name="sysUser.fcaptcha"]')) || vis(q('iframe[src*="recaptcha/api2/bframe" i]'));
   // 로그인된 홈의 현재 계정 표시(li.user "쇼핑몰 님" 등) → "님" 접미사·중복공백 제거.
   // PMS 관리자 화면 등 표시 요소가 없으면 '' (비교 불가로 안전하게 일반 진행).
   const u = q('li.user') || q('.user');
