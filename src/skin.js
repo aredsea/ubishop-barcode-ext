@@ -3403,11 +3403,22 @@
   const HQ_BTN_ID = 'ub-hq-btn';
   const HQ_STYLE_ID = 'ub-hq-style';
   const HQ_MODAL_ID = 'ub-hq-modal';
+  const HQ_STANDBY_CLS = 'ub-standby-btn';   // 네이티브 본사확인/취소 앵커에 입히는 D102 secondary 필
   const HQ_CSS = `
-    #${HQ_BTN_ID} { margin-left: 6px; padding: 3px 10px; border: 0; border-radius: 6px;
-      background: #35C5F0; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer;
-      font-family: inherit; vertical-align: middle; }
-    #${HQ_BTN_ID}:hover { background: #2bb5e0; }
+    /* 본사확인 버튼 그룹 — 우리 primary(#${HQ_BTN_ID}) + 네이티브 standby 앵커 2개를 한 벌로 통일 */
+    #${HQ_BTN_ID}, a.${HQ_STANDBY_CLS} {
+      display: inline-block; margin-left: 6px; padding: 4px 12px; border-radius: 8px;
+      font-family: 'Pretendard','Malgun Gothic',sans-serif; font-size: 12.5px; font-weight: 700;
+      line-height: 1.5; text-align: center; text-decoration: none; vertical-align: middle;
+      white-space: nowrap; box-sizing: border-box; cursor: pointer; }
+    #${HQ_BTN_ID} { border: 1px solid #35C5F0; background: #35C5F0; color: #fff; }
+    #${HQ_BTN_ID}:hover { background: #2bb5e0; border-color: #2bb5e0; }
+    a.${HQ_STANDBY_CLS}, a.${HQ_STANDBY_CLS}:visited,
+    html.ub-dark a.${HQ_STANDBY_CLS}, html.ub-dark a.${HQ_STANDBY_CLS}:visited {
+      border: 1px solid #bfe6f4 !important; background: #f7fbfd !important;
+      color: #0f8fb8 !important; text-decoration: none !important; }
+    a.${HQ_STANDBY_CLS}:hover, html.ub-dark a.${HQ_STANDBY_CLS}:hover {
+      background: #e8f6fc !important; border-color: #35C5F0 !important; color: #0b7ba0 !important; }
     .ub-hq-ov { position: fixed; inset: 0; z-index: 2147483647; background: rgba(15,23,42,.38);
       display: flex; align-items: center; justify-content: center; }
     .ub-hq-card { width: 440px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px);
@@ -3635,11 +3646,41 @@
       cShowApprovalDialog(cls);
     } catch (err) { cLog('클릭 처리 실패', err); }
   }
+  //  standby(form1,form3,'OS-','O--') → '본사확인' / (...,'O--','OS-') → '본사확인취소'.
+  //  첫 따옴표 인자(목표 상태)로 가린다. 알 수 없으면 null → 손대지 않는다.
+  function standbyLabel(href) {
+    const m = /standby\s*\(([^)]*)\)/.exec(href || '');
+    if (!m) return null;
+    const q = m[1].match(/'([^']*)'|"([^"]*)"/);
+    const target = q ? (q[1] != null ? q[1] : q[2]) : '';
+    if (target === 'OS-') return '본사확인';
+    if (target === 'O--') return '본사확인취소';
+    return null;
+  }
+  //  네이티브 본사확인/본사확인취소 앵커(TD.left 안, 라벨이 <img>)를 우리 버튼과 같은 D102 필로
+  //  통일한다. <img>→텍스트로 교체해 한 벌로 읽히게 하되, href/onclick(standby 동작)은 건드리지
+  //  않는다 — 스타일과 라벨만. 게이트: state.ubSkin(스킨모드). 클래스 유무로 idempotent.
+  function styleNativeStandbyButtons() {
+    try {
+      if (!state.ubSkin) return;                          // 스킨모드에서만
+      const anchors = document.querySelectorAll('a[href*="standby"]');
+      if (!anchors.length) return;
+      ensureHqStyle();
+      anchors.forEach(a => {
+        if (a.classList.contains(HQ_STANDBY_CLS)) return; // 이미 처리 → 중복 스타일 방지
+        const label = standbyLabel(a.getAttribute('href'));
+        if (!label) return;                               // 못 가리는 standby 는 손대지 않음
+        a.textContent = label;                            // <img> → 텍스트(href/onclick 유지)
+        a.classList.add(HQ_STANDBY_CLS);
+      });
+    } catch (e) { cLog('standby 버튼 스타일 실패', e); }
+  }
   //  standby 툴바(TD.left)에 [본사확인+입고완료] 버튼을 idempotent 하게 주입한다. 게이트 OFF 면
   //  숨긴다(§5: bind 는 항상, 발동은 클릭 시점). 목록 페이지에서만. 툴바가 없으면 주입 안 함.
   function injectHqConfirmButton() {
     try {
       if (!isOrderJunList()) return;
+      styleNativeStandbyButtons();   // 네이티브 본사확인/취소 앵커도 같은 D102 필로(스킨모드 게이트)
       let btn = document.getElementById(HQ_BTN_ID);
       const gated = !!(state.ubSkin && state.ubHqConfirm);
       if (!btn) {
@@ -3707,9 +3748,14 @@
       sessionStorage.setItem('ub_pref_autosync', (state.ubSkin && state.ubAutoSync) ? '1' : '0');
     } catch (_) {}
   }
+  // 상시 기능(always-on) — 팝업 토글에서 제외됨. 저장소에 예전 false 가 남아 있어도 매번 true 로
+  // 덮어써 항상 켠다. ubSkin 게이트(on())는 유지 → '스킨모드 안에서 항상 ON'.
+  const ALWAYS_ON = ['ubSidebar', 'ubPageSize', 'ubThumbEdit', 'ubFactoryInfo'];
+  function forceAlwaysOn() { ALWAYS_ON.forEach(k => { state[k] = true; }); }
   try {
     chrome.storage.local.get(D, d => {
       Object.assign(state, d || {});
+      forceAlwaysOn();   // 저장된 false 덮어써 상시 ON (mirrorPrefs 이 ub_pref_ps 읽기 전에)
       mirrorPrefs();
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
       else init();
@@ -3718,6 +3764,7 @@
       if (area !== 'local') return;
       let changed = false;
       Object.keys(D).forEach(k => { if (ch[k]) { state[k] = ch[k].newValue; changed = true; } });
+      forceAlwaysOn();   // 외부에서 false 로 바뀌어도 매번 상시 ON 유지
       if (changed) {
         mirrorPrefs();
         applyAll();
