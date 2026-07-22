@@ -87,7 +87,10 @@
     ubTabEach: {},                             // each 일 때 { input:'list', balju:'jun', ... }
     // v3.8.0 작업B 수정 팝업(slice 2a) — 기본 OFF. 패널 위치·크기는 매입처창(ubFw*)과 별도 키.
     ubEditPopup: false,
-    ubEpX: null, ubEpY: null, ubEpW: 900, ubEpH: 660
+    ubEpX: null, ubEpY: null, ubEpW: 900, ubEpH: 660,
+    // v3.8.x 작업C 본사확인+입고완료(slice C-2a) — 기본 OFF(§8: C 는 기본 OFF).
+    //  이 슬라이스는 읽기 전용(버튼+사전검증 승인창+fetchOrderRow). 쓰기 배선 없음.
+    ubHqConfirm: false
   };
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
@@ -990,6 +993,41 @@
     if (q && q.found === true && q.code === 'I--' &&
         q.assignedBarcode === input.expectedBarcode) return 'success';
     return 'uncertain';
+  }
+  // ── 작업C 사전검증(slice C-2a) 순수 헬퍼 ─────────────────────────────────
+  //  목록 상태 셀 텍스트 → canonical code(§5: label→code allowlist, EXACT). 이 값이 쓰기
+  //  권한 판정에 쓰이므로 절대 prefix·괄호절단 일치를 쓰지 않는다(그건 statusMatchesLabel 의
+  //  화면 필터 membership 전용이다). 셀은 '입고완료' 또는 '출고확인(240HTI)' 처럼 한글 라벨 +
+  //  선택적 (바코드) 형태다. 정확히 [한글 라벨 하나] + [괄호 그룹 0~1개] + [그 외 문자 없음]
+  //  만 인정하고, 앞뒤에 알 수 없는 접두·접미가 붙거나 미지 라벨이면 전부 fail-closed(null).
+  function cListStatusCode(cellText) {
+    const t = String(cellText == null ? '' : cellText).replace(/\s+/g, '');
+    const m = t.match(/^([가-힣]+)(?:\(([^()]*)\))?$/);
+    if (!m) return null;                       // 접두/접미가 알 수 없음 → fail-closed
+    const LABEL = new Map([
+      ['주문완료', 'O--'], ['주문취소', 'OC-'], ['본사확인', 'OS-'], ['발주완료', 'B--'],
+      ['입고완료', 'I--'], ['출고완료', 'T--'], ['출고확인', 'TS-'], ['출고오확인', 'TE-'],
+      ['판매완료', 'S--']
+    ]);
+    return LABEL.get(m[1]) || null;            // 미지 라벨 → fail-closed
+  }
+  //  상태 열 컬럼 인덱스를 헤더 텍스트 배열에서 찾는다(§5: 인덱스 하드코딩 금지, 헤더로 찾기).
+  //  공백 제거 후 정확히 '상태' 인 헤더 셀만 인정(부분일치 아님). 없으면 -1.
+  function cStatusColIndex(headerTexts) {
+    const list = Array.isArray(headerTexts) ? headerTexts : [];
+    for (let i = 0; i < list.length; i++) {
+      if (String(list[i] == null ? '' : list[i]).replace(/\s+/g, '') === '상태') return i;
+    }
+    return -1;
+  }
+  //  재조회 응답이 '전부'인지(§4.4: pageSize 500 은 전부의 증거가 아니다). 서버가 보고한 total
+  //  이 반환 행 수보다 크면 더 있다(true). total·shown 을 수치로 못 읽으면 완전성 미보장 →
+  //  fail-closed 로 true(그 행이 유일하다고 단정하지 못하게).
+  function cHasMore(total, shown) {
+    if (total == null || shown == null) return true;   // 값 없음 → 완전성 미보장(fail-closed)
+    const t = Number(total), s = Number(shown);
+    if (!isFinite(t) || !isFinite(s)) return true;     // Number(null)=0 함정 회피 위해 위에서 먼저 걸렀다
+    return t > s;
   }
   // ── 순수 헬퍼(DOM 비의존, 단위테스트 대상) ────────────────────────────────
   //  currentSetting('master','orderSeq','barcode','shop','client','orderDate')
@@ -3348,6 +3386,279 @@
     } catch (e) { epLog('bind 실패', e); }
   }
 
+  /* ==========================================================================
+   *  5.10) 작업C — 본사확인 → 입고완료 (slice C-2a: 버튼 + 사전검증 승인창 + 읽기전용 조회)
+   *
+   *  ⚠⚠ 이 슬라이스는 '쓰기 없음'이 증명 가능해야 한다(§4.3·§5). 이 블록이 하는 네트워크는
+   *    orderItemList.do 목록 조회(읽기) 하나뿐이고, 승인창의 [진행] 은 C-2b 를 붙이기 전까지
+   *    no-op 스텁이다. standby()·setCurrent·form.submit/requestSubmit·location 대입·
+   *    location.assign/replace·window.open·앵커 클릭 — 그 어느 것도 이 코드는 호출하지 않는다.
+   *
+   *  게이트: state.ubSkin && state.ubHqConfirm(기본 OFF). 버튼은 목록의 standby 툴바(TD.left)에
+   *  idempotent 하게 주입하고 게이트 OFF 면 숨긴다. 클릭 시점에도 게이트를 다시 본다
+   *  (§5: bind 는 항상, 발동은 클릭 시점 판정).
+   * ========================================================================== */
+  const C_TAG = '[UB][hqconfirm]';
+  const cLog = (...a) => { try { console.log(C_TAG, ...a); } catch (_) {} };
+  const HQ_BTN_ID = 'ub-hq-btn';
+  const HQ_STYLE_ID = 'ub-hq-style';
+  const HQ_MODAL_ID = 'ub-hq-modal';
+  const HQ_CSS = `
+    #${HQ_BTN_ID} { margin-left: 6px; padding: 3px 10px; border: 0; border-radius: 6px;
+      background: #35C5F0; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer;
+      font-family: inherit; vertical-align: middle; }
+    #${HQ_BTN_ID}:hover { background: #2bb5e0; }
+    .ub-hq-ov { position: fixed; inset: 0; z-index: 2147483647; background: rgba(15,23,42,.38);
+      display: flex; align-items: center; justify-content: center; }
+    .ub-hq-card { width: 440px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px);
+      overflow: auto; background: #fff; border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.28);
+      font-family: 'Pretendard','Malgun Gothic',sans-serif; color: #1b1b1b; }
+    .ub-hq-h { padding: 14px 18px; border-bottom: 1px solid #eef1f5; font-size: 14px; font-weight: 800; }
+    .ub-hq-b { padding: 16px 18px; font-size: 12.5px; line-height: 1.6; }
+    .ub-hq-sum { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+    .ub-hq-sum b { color: #0f8fb8; }
+    .ub-hq-ex { margin: 8px 0 0; padding: 8px 10px; background: #f7f9fc; border-radius: 8px;
+      max-height: 190px; overflow: auto; }
+    .ub-hq-ex ul { margin: 0; padding-left: 18px; }
+    .ub-hq-ex li { margin: 2px 0; color: #6b7280; }
+    .ub-hq-warn { padding: 10px 12px; background: #fff3f3; color: #b42318; border: 1px solid #f0b4b4;
+      border-radius: 8px; font-weight: 700; }
+    .ub-hq-note { margin-top: 10px; font-size: 11.5px; color: #0b6b7a; line-height: 1.5; }
+    .ub-hq-f { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px;
+      border-top: 1px solid #eef1f5; }
+    .ub-hq-btn2 { padding: 8px 16px; border: 0; border-radius: 8px; font-size: 12.5px;
+      font-weight: 700; cursor: pointer; font-family: inherit; }
+    .ub-hq-go { background: #35C5F0; color: #fff; }
+    .ub-hq-go:disabled { background: #c7e9f5; cursor: default; }
+    .ub-hq-cancel { background: #eef1f5; color: #374151; }
+  `;
+  function ensureHqStyle() {
+    if (document.getElementById(HQ_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = HQ_STYLE_ID; s.textContent = HQ_CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+  //  table 의 상태 열 인덱스를 헤더에서 찾는다(fwFactoryColsFor 규율: 첫 매칭 헤더 행만 확정,
+  //  클릭마다 재탐색하지 않게 테이블에 캐시). 순수 판정은 cStatusColIndex 가 한다. 없으면 -1.
+  function cStatusColFor(table) {
+    if (!table) return -1;
+    if (table.dataset.ubHqStatusCol != null) {
+      const n = parseInt(table.dataset.ubHqStatusCol, 10);
+      return isFinite(n) ? n : -1;
+    }
+    let idx = -1;
+    const rows = table.rows;
+    for (let r = 0; r < rows.length; r++) {
+      const i = cStatusColIndex([...rows[r].cells].map(c => c.textContent));
+      if (i >= 0) { idx = i; break; }
+    }
+    try { table.dataset.ubHqStatusCol = String(idx); } catch (_) {}
+    return idx;
+  }
+  //  한 행(tr)의 canonical 상태 코드. 헤더로 찾은 상태 열 셀 텍스트를 cListStatusCode 로 해석.
+  //  못 찾거나 해석 불가면 null → 호출부에서 '상태 불명' 으로 제외된다(fail-closed).
+  function cRowStatusCode(tr) {
+    try {
+      const idx = cStatusColFor(tr && tr.closest ? tr.closest('table') : null);
+      if (idx < 0) return null;
+      const td = tr.cells && tr.cells[idx];
+      return td ? cListStatusCode(td.textContent) : null;
+    } catch (_) { return null; }
+  }
+  //  현재 화면에서 체크된 행 → [{orderSeq, code}]. orderSeq 는 input[name=idx] value(이 페이지는
+  //  단일값, 콤마 없음이지만 방어적으로 첫 조각). code 는 헤더 기반 상태 열에서.
+  function cReadCheckedRows() {
+    const out = [];
+    try {
+      const boxes = document.querySelectorAll('input[name=idx]:checked');
+      for (const b of boxes) {
+        const orderSeq = String(b.value == null ? '' : b.value).split(',')[0].trim();
+        if (!orderSeq) continue;
+        const tr = b.closest ? b.closest('tr') : null;
+        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null });
+      }
+    } catch (e) { cLog('체크 행 읽기 실패', e); }
+    return out;
+  }
+  //  '총 : N 개' 개수(asgDecrementTotal 과 같은 셀렉터). 못 읽으면 NaN → cHasMore fail-closed.
+  function cReadTotalCount(doc) {
+    try {
+      const el = [...doc.querySelectorAll('span.f_bold')].find(s =>
+        /^\d+$/.test((s.textContent || '').trim()) &&
+        /총/.test(((s.previousElementSibling || {}).textContent) || ''));
+      return el ? parseInt(el.textContent, 10) : NaN;
+    } catch (_) { return NaN; }
+  }
+  //  ★읽기 전용 재조회(§4.4). 그 orderSeq 를 '그 주문의 하루'로 좁혀 목록을 다시 받아 상태를
+  //   확인한다. pickStatusCell 과 달리 a[href*="currentSetting"] 에 의존하지 않는다 — O-- 행에는
+  //   그 링크가 없기 때문. 상태 코드는 헤더 기반 상태 열 + cListStatusCode 로만 얻는다.
+  //   fetchStatusCell 의 좋은 성질을 이어받는다: 화면 필터 미상속 + 그 하루로 좁힘 + 타임아웃.
+  //   §10 에 따라 읽기 취소는 AbortController 로 실제 요청을 끊는다(네트워크 동시성 1).
+  //   ⚠ 절대 쓰지 않는다 — orderItemList.do 목록 조회(읽기, 서버 상태 불변) 하나뿐. 반환값의
+  //    어떤 필드도 거짓 'ok' 를 만들지 않는다: 중복·로그인만료·파싱실패는 found=false 또는 명시
+  //    플래그로 떨어진다. (통합 슬라이스 전까지 의도적으로 미사용 — C-2b 가 이 값을 쓴다.)
+  async function fetchOrderRow(orderSeq, orderDate) {
+    const wantSeq = String(orderSeq == null ? '' : orderSeq).trim();
+    const base = { found: false, orderSeq: wantSeq, code: null, text: '', assignedBarcode: '',
+                   orderDate: String(orderDate == null ? '' : orderDate),
+                   duplicate: false, hasMore: false, loginExpired: false };
+    if (!wantSeq) return base;
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('reqPage', '1');
+    p.set('pageSize', '500');
+    p.set('searchItemStatus', '');             // 화면 상태 필터를 물려받지 않는다(§4.4)
+    const d = oneDayParams(base.orderDate);
+    if (d) { p.set('searchDateType', 'a.orderDate'); Object.keys(d).forEach(k => p.set(k, d[k])); }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    let doc = null;
+    try {
+      const r = await fetch('/jun/orderitem/orderItemList.do?tcode=order_item', {
+        method: 'POST', credentials: 'include', cache: 'no-cache', signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: p.toString()
+      });
+      const buf = await r.arrayBuffer();
+      // skin.js 의 기존 ERP 디코드(postDoc, 543행)와 동일: UTF-8 우선, U+FFFD 과다면 EUC-KR.
+      let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+      doc = new DOMParser().parseFromString(html, 'text/html');
+    } catch (err) {
+      cLog('fetchOrderRow 재조회 실패/타임아웃 → found=false', (err && err.message) || err);
+      return base;                             // 실패는 조용한 found=false(fail-closed)
+    } finally {
+      clearTimeout(timer);
+    }
+    const boxes = [...doc.querySelectorAll('input[name=idx]')];
+    if (!boxes.length) {
+      // 목록 구조 부재 → 빈 결과 또는 로그인/오류. password 입력이 있으면 명시적 loginExpired.
+      const login = !!doc.querySelector('input[type=password]');
+      if (login) cLog('fetchOrderRow — 로그인 만료 추정(password 입력 존재)');
+      return Object.assign({}, base, { loginExpired: login });
+    }
+    const matches = boxes.filter(b => String(b.value == null ? '' : b.value).split(',')[0].trim() === wantSeq);
+    if (matches.length === 0) return base;                        // 응답에 그 주문 없음
+    if (matches.length > 1) {                                     // 중복 → fail-closed
+      cLog('fetchOrderRow — 중복 orderSeq', wantSeq, matches.length, '건');
+      return Object.assign({}, base, { duplicate: true, hasMore: cHasMore(cReadTotalCount(doc), boxes.length) });
+    }
+    const tr = matches[0].closest('tr');
+    const idx = cStatusColFor(tr ? tr.closest('table') : null);
+    const td = (tr && idx >= 0 && tr.cells) ? tr.cells[idx] : null;
+    const text = td ? (td.textContent || '').replace(/\s+/g, '') : '';
+    const code = cListStatusCode(text);
+    // 배정 바코드: currentSetting 링크 3번째 인자 우선(pickStatusCell 규약 — 표시문구가 바뀌어도
+    //  견디고 정확일치 가능), 없으면 상태셀 말미 괄호값 폴백.
+    let assignedBarcode = '';
+    const link = tr ? tr.querySelector('a[href*="currentSetting"]') : null;
+    if (link) { const a = parseCurrentSettingArgs(link.getAttribute('href')); if (a && a.barcode) assignedBarcode = a.barcode; }
+    if (!assignedBarcode) { const mb = text.match(/\(([^()]+)\)\s*$/); if (mb) assignedBarcode = mb[1]; }
+    return { found: true, orderSeq: wantSeq, code: code, text: text, assignedBarcode: assignedBarcode,
+             orderDate: base.orderDate, duplicate: false,
+             hasMore: cHasMore(cReadTotalCount(doc), boxes.length), loginExpired: false };
+  }
+  //  사전검증 승인창(§4.3). 총 N / 대상 K / 제외 M 과 제외 사유를 보여준다. 중복 주문번호면
+  //  [진행] 없이 '중단' 안내만. [진행] 은 C-2b 전까지 no-op 스텁 — 어떤 쓰기도 배선하지 않는다.
+  function cShowApprovalDialog(cls) {
+    try {
+      ensureHqStyle();
+      const prev = document.getElementById(HQ_MODAL_ID);
+      if (prev) prev.remove();
+      const targets = (cls && Array.isArray(cls.targets)) ? cls.targets : [];
+      const excluded = (cls && Array.isArray(cls.excluded)) ? cls.excluded : [];
+      const dup = !!(cls && cls.duplicate);
+      const total = targets.length + excluded.length;
+      const esc = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      const ov = document.createElement('div');
+      ov.id = HQ_MODAL_ID; ov.className = 'ub-hq-ov';
+      const card = document.createElement('div'); card.className = 'ub-hq-card';
+      const close = () => { try { ov.remove(); } catch (_) {} };
+
+      let bodyHtml = '';
+      if (total === 0) {
+        bodyHtml = '<div class="ub-hq-warn">선택된 항목이 없습니다.</div>';
+      } else if (dup) {
+        bodyHtml = '<div class="ub-hq-warn">중복 주문번호 — 중단</div>' +
+                   '<div class="ub-hq-note">같은 주문번호가 두 번 이상 선택되었습니다. 중복을 풀고 다시 시도하세요.</div>';
+      } else {
+        bodyHtml = '<div class="ub-hq-sum">총 ' + total + '건 중 대상 <b>' + targets.length +
+                   '건</b> / 제외 ' + excluded.length + '건</div>';
+        if (excluded.length) {
+          const items = excluded.map(x => '<li>' + esc(x.orderSeq) + ' — ' + esc(x.reason) +
+                        (x.code ? ' (' + esc(x.code) + ')' : '') + '</li>').join('');
+          bodyHtml += '<div class="ub-hq-ex"><ul>' + items + '</ul></div>';
+        }
+      }
+      card.innerHTML =
+        '<div class="ub-hq-h">본사확인 + 입고완료 — 사전검증</div>' +
+        '<div class="ub-hq-b">' + bodyHtml + '</div>' +
+        '<div class="ub-hq-f"></div>';
+      const foot = card.querySelector('.ub-hq-f');
+      const canProceed = total > 0 && !dup && targets.length > 0;
+      if (canProceed) {
+        const go = document.createElement('button');
+        go.className = 'ub-hq-btn2 ub-hq-go'; go.type = 'button'; go.textContent = '진행';
+        go.addEventListener('click', () => {
+          // ★C-2b 미구현 — 어떤 쓰기도 배선하지 않는다(no-op 스텁).
+          cLog('진행 클릭 — C-2b 미구현(no-op). 대상', targets.length, '건 (아무 것도 처리하지 않음)');
+          go.disabled = true;
+          const note = document.createElement('div');
+          note.className = 'ub-hq-note';
+          note.textContent = '다음 단계 준비중 (C-2b 미구현) — 아직 아무 것도 처리하지 않았습니다.';
+          const b = card.querySelector('.ub-hq-b'); if (b) b.appendChild(note);
+        });
+        foot.appendChild(go);
+      }
+      const cancel = document.createElement('button');
+      cancel.className = 'ub-hq-btn2 ub-hq-cancel'; cancel.type = 'button';
+      cancel.textContent = canProceed ? '취소' : '닫기';
+      cancel.addEventListener('click', close);
+      foot.appendChild(cancel);
+
+      ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+      card.addEventListener('click', (e) => e.stopPropagation());
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+    } catch (e) { cLog('승인창 표시 실패', e); }
+  }
+  //  클릭 핸들러(게이트 ON 시): 체크된 행을 분류해 승인창을 띄운다. 어떤 쓰기도 하지 않는다.
+  function onHqConfirmClick(e) {
+    try {
+      if (e && e.isTrusted === false) return;         // 페이지 스크립트의 .click() 차단(§3.2)
+      if (!(state.ubSkin && state.ubHqConfirm)) return;   // 게이트 OFF → 아무 것도 안 함
+      const rows = cReadCheckedRows();
+      const cls = cClassifyChecked(rows);              // C-1 헬퍼 재사용
+      cLog('사전검증 — 체크', rows.length, '대상', cls.targets.length, '제외', cls.excluded.length, 'dup', cls.duplicate);
+      cShowApprovalDialog(cls);
+    } catch (err) { cLog('클릭 처리 실패', err); }
+  }
+  //  standby 툴바(TD.left)에 [본사확인+입고완료] 버튼을 idempotent 하게 주입한다. 게이트 OFF 면
+  //  숨긴다(§5: bind 는 항상, 발동은 클릭 시점). 목록 페이지에서만. 툴바가 없으면 주입 안 함.
+  function injectHqConfirmButton() {
+    try {
+      if (!isOrderJunList()) return;
+      let btn = document.getElementById(HQ_BTN_ID);
+      const gated = !!(state.ubSkin && state.ubHqConfirm);
+      if (!btn) {
+        const anchor = document.querySelector('a[href*="standby"]');
+        const cell = anchor ? (anchor.closest('td') || anchor.parentNode) : document.querySelector('td.left');
+        if (!cell) return;                              // 툴바 없음 → 주입 안 함(fail-safe)
+        ensureHqStyle();
+        btn = document.createElement('button');
+        btn.id = HQ_BTN_ID; btn.type = 'button';
+        btn.textContent = '본사확인+입고완료';
+        btn.addEventListener('click', onHqConfirmClick);
+        if (anchor && anchor.parentNode) anchor.insertAdjacentElement('afterend', btn);
+        else cell.appendChild(btn);
+        cLog('버튼 주입');
+      }
+      btn.style.display = gated ? '' : 'none';          // 게이트 OFF → 숨김
+    } catch (e) { cLog('버튼 주입 실패', e); }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
@@ -3358,6 +3669,7 @@
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
     initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
     bindEditPopupIntercept(document);   // v3.8.0 작업B: [수정] 가로채기 — 게이트 OFF 여도 항상 idempotent bind(§5)
+    injectHqConfirmButton();   // v3.8.x 작업C(C-2a): 본사확인+입고완료 버튼 — 게이트 OFF 면 숨김(항상 idempotent 주입)
     initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
@@ -3411,6 +3723,7 @@
         applyAll();
         if (on('ubThumbEdit')) bindThumbEdit(document);
         bindEditPopupIntercept(document);   // v3.8.0 작업B: 팝업에서 켜면 reload 없이 즉시 intercept(idempotent)
+        injectHqConfirmButton();   // v3.8.x 작업C(C-2a): 팝업 토글 시 reload 없이 버튼 표시/숨김 반영(idempotent)
       }
     });
   } catch (e) {}
