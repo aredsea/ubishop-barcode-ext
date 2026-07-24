@@ -926,6 +926,83 @@
     }
     return 'in-place';
   }
+  // ── 작업B 순수 헬퍼 (slice 2b) ────────────────────────────────────────────
+  //  저장 감지·검증 배선(5.9)이 쓰는 판정부. DOM·네트워크·chrome.*·타이머 미접촉.
+  //  ⚠ 응답 본문의 문구·alert 을 읽는 판정은 하나도 없다(confirmOpdelivedReturn 의 msg 판정 주석 — 이 앱에서 문구 스캔은
+  //   항상 오탐이다). 경로는 exact path 로, 값은 서버가 돌려준 값과의 대조로만 정한다.
+
+  //  iframe 이 지금 어느 페이지에 있는가. pathname EXACT 매칭이다(§3.2 operation×경로 매트릭스).
+  //   'form' 편집폼(읽기) · 'save' 저장 엔드포인트(쓰기) · 'list' 목록 · 'other' 그 외.
+  //  ⚠ orderItemModifyForm.do(읽기)와 orderItemModify.do(쓰기)는 한 글자 차이다. prefix·부분
+  //   일치로 판정하면 둘이 섞인다 — 그래서 substring 이 아니라 pathname 전체 비교만 쓴다.
+  function epClassifyUrl(url) {
+    let p = '';
+    try { p = new URL(String(url == null ? '' : url), 'http://ubdstore.ubshop.biz/').pathname; }
+    catch (_) { return 'other'; }
+    if (p === '/jun/orderitem/orderItemModifyForm.do') return 'form';
+    if (p === '/jun/orderitem/orderItemModify.do') return 'save';
+    if (p === '/jun/orderitem/orderItemList.do') return 'list';
+    return 'other';
+  }
+  //  주문일 정규화 → yyyymmdd. 구분자만 허용하고(2026.07.24 / 2026-07-24 / 20260724) 숫자가
+  //  정확히 8자리가 아니면 전부 ''(시각이 붙은 셀·빈칸·미지 형식). '' 이면 '그 하루'로 좁힌
+  //  재조회를 할 수 없고, 호출부는 그 사실을 미확정으로 흘린다 — 틀린 날짜로 좁혀 '행 없음'을
+  //  얻고 그걸 결론처럼 쓰지 않는다(fail-closed).
+  function epNormalizeOrderDate(raw) {
+    const d = String(raw == null ? '' : raw).replace(/[^0-9]/g, '');
+    return /^\d{8}$/.test(d) ? d : '';
+  }
+  //  '주문일' 열 인덱스를 헤더 텍스트 배열에서 찾는다(cStatusColIndex 와 같은 규율: 인덱스
+  //  하드코딩 금지, 공백 제거 후 EXACT). 없거나 둘 이상이면 어느 열인지 확정할 수 없으므로 -1.
+  function epOrderDateColIndex(headerTexts) {
+    const list = Array.isArray(headerTexts) ? headerTexts : [];
+    let hit = -1;
+    for (let i = 0; i < list.length; i++) {
+      if (String(list[i] == null ? '' : list[i]).replace(/\s+/g, '') === '주문일') {
+        if (hit >= 0) return -1;                 // 동명 헤더 중복 → fail-closed
+        hit = i;
+      }
+    }
+    return hit;
+  }
+  //  제출한 폼 값 == 서버가 지금 돌려주는 폼 값인가(§4.2 step5 와 같은 대조 방식). 서버가 trim·
+  //  개행 정규화를 할 수 있으므로 양쪽 다 CRLF→LF + 앞뒤 공백 제거 후 비교한다. 스냅샷이 없거나
+  //  한쪽에서 못 읽은 필드가 있으면 '검증되지 않음'이라 false 다(fail-closed). false 는 실패가
+  //  아니라 미확정으로 흐른다(classifyModifySave).
+  function epFieldsMatch(expected, actual) {
+    if (!expected || !actual) return false;
+    const keys = Object.keys(expected);
+    if (keys.length === 0) return false;         // 스냅샷 없음 → 검증 불가
+    const norm = (v) => String(v == null ? '' : v).replace(/\r\n/g, '\n').trim();
+    for (const k of keys) {
+      if (expected[k] == null || actual[k] == null) return false;
+      if (norm(expected[k]) !== norm(actual[k])) return false;
+    }
+    return true;
+  }
+  //  수정한 값이 지금 걸린 검색조건에서 벗어나는가(§10: membership 이 바뀌면 제자리 교체가
+  //  아니라 목록 reload 다). 수정폼 필드와 검색조건이 '겹치는' 항목만 본다 — 실측 필드목록
+  //  기준으로 겹치는 것은 k / color / itemSize 세 개다(설계 §1 수정폼 필드 ↔ ASG_SEARCH_FIELDS).
+  //  걸린 조건이 없으면 그 행은 계속 목록에 속한다. 못 읽었으면 true(=목록 새로고침) — 낡은
+  //  행을 남기는 쪽이 더 위험하다.
+  function epMembershipChanged(searchValues, submitted) {
+    if (!searchValues || !submitted) return true;
+    const PAIRS = [['searchK', 'k'], ['searchColor', 'color'], ['searchItemSize', 'itemSize']];
+    for (const pair of PAIRS) {
+      const want = String(searchValues[pair[0]] == null ? '' : searchValues[pair[0]]).trim();
+      if (!want) continue;                       // 그 조건으로는 거르지 않는 중
+      const got = submitted[pair[1]];
+      if (got == null) return true;              // 비교 불가 → fail-closed
+      if (String(got).trim() !== want) return true;
+    }
+    return false;
+  }
+  //  정렬 기준이 바뀌면 행 위치가 달라져 제자리 교체가 틀린다(§10). 실측된 값은 seq(주문순번)
+  //  하나뿐이고(설계 §1 setCurrent URL 샘플의 searchSortType=seq) 수정폼은 orderSeq 를 바꾸지
+  //  못하므로, seq 정렬일 때만 위치가 보존된다고 본다. 빈값·미지 정렬은 전부 fail-closed.
+  function epSortMembershipChanged(sortType) {
+    return String(sortType == null ? '' : sortType).trim() !== 'seq';
+  }
   // ── 작업C 순수 헬퍼 (slice 1) ─────────────────────────────────────────────
   //  본사확인 → 입고완료 자동화의 순수 판정부. DOM·쓰기·chrome.*·타이머 미접촉.
   //  통합 슬라이스 전까지 의도적으로 미사용. C 는 되돌리기 어려운 라이브 쓰기(본사확인
@@ -3184,7 +3261,7 @@
   }
 
   /* ==========================================================================
-   *  5.9) 작업B — 수정 팝업 (slice 2a: 가로채기 + 플로팅 패널 + iframe)
+   *  5.9) 작업B — 수정 팝업 (slice 2a: 가로채기·패널·iframe / slice 2b: 저장 검증·행 갱신)
    *
    *  목록의 [수정](a[href*="modify("]) 클릭을 capture 단계에서 잡아, 화면 이동 대신
    *  매입처 정보창(ub-fw)과 '겉모습만 동일'한 플로팅 패널에 네이티브 수정폼
@@ -3194,15 +3271,41 @@
    *    (bindAssignIntercept 와 같은 규율 — skin.js:1006). 어느 단계든 실패하면 가로채지
    *    않고 네이티브 modify() 화면 이동을 그대로 흘려보낸다.
    *
-   *  ⚠ slice 2a 범위: 저장 감지·제출 가로채기·재조회·행 갱신은 하지 않는다(→ slice 2b).
-   *    사용자가 iframe 안 네이티브 폼에서 저장하면 네이티브 그대로 저장된다. 우리는 아직
-   *    그 결과를 검증하거나 목록 행을 갱신하지 않는다.
+   *  ★slice 2b 상태 머신(§4.1) — 쓰기는 전부 네이티브가 한다. 이 블록은 iframe 안에서
+   *    사용자가 직접 누른 저장을 '관찰'만 하고, 우리가 저장을 대신 실행하는 경로는 없다.
+   *
+   *      EDITING   편집폼 로드 → 크롬 숨김 + 제출 감시 장착
+   *        └ 제출 감지(submit 이벤트 | 쓰기 엔드포인트 도착) → SUBMITTED
+   *             └ 허용된 저장 경로인가 · 로그인/오류 화면이 아닌가
+   *             └ 서버 재조회 2종(편집폼 GET 으로 값 대조 + 목록에서 그 행 회수)
+   *             └ success  → 행 전체 교체(또는 목록 새로고침) 후 패널 닫기
+   *             └ 그 외    → 패널을 열어둔 채 사용자에게 표시. 자동 재시도 없음(§3.6)
+   *
+   *  ⚠ iframe navigation 은 저장 성공의 증거가 아니다 — 정상저장·검증실패·서버오류·로그인
+   *    리다이렉트·네이티브 JS 오류·사용자의 단순 내부이동이 전부 navigation 으로 보인다.
+   *    그래서 navigation 은 '제출이 있었나'까지만 정하고, 성공 여부는 전적으로 서버 재조회가
+   *    정한다. 응답 문구·alert 은 어느 판정에서도 읽지 않는다(confirmOpdelivedReturn 주석: 이 앱에서 문구 스캔은
+   *    항상 오탐이었다).
+   *  ⚠ 이 블록이 하는 네트워크는 GET orderItemModifyForm.do(읽기)와 orderItemList.do 조회
+   *    (읽기) 둘뿐이다. 쓰기 URL 은 AUTO_WRITE_MARKERS 로 런타임에서도 한 번 더 막는다.
    * ========================================================================== */
   const EP_TAG = '[UB][editpop]';
   const epLog = (...a) => { try { console.log(EP_TAG, ...a); } catch (_) {} };
   const EP_ID = 'ub-ep';
   const EP_STYLE_ID = 'ub-ep-style';
   const EP_LOAD_MS = 8000;   // iframe 로드 최대 대기 → 초과 시 폴백 버튼 노출
+  //  저장 검증(slice 2b) 상수. 전부 '읽기'의 반복 상한이다 — 쓰기 재시도가 아니다(§3.6).
+  const EP_VERIFY_TRIES = 3;      // 편집폼 재조회 시도 횟수(서버 반영 지연 대비)
+  const EP_VERIFY_GAP_MS = 700;   // 재조회 간격(resyncRow 와 같은 박자)
+  const EP_VERIFY_MAX_RUNS = 2;   // navigation 이 여러 번 나도 검증 자체는 최대 2회
+  //  값 대조 대상 필드(설계 §1 수정폼 실측 필드). 이름 allowlist 라 sKey 같은 재발급 토큰이
+  //  섞여 들어와 매번 불일치가 되는 일이 없다. 페이지에 없는 이름은 건너뛴다.
+  const EP_VERIFY_FIELDS = Object.freeze([
+    'shopRemark', 'remark', 'weight', 'k', 'color', 'itemSize',
+    'orderQty', 'orderPrice', 'orderPrice2',
+    'exdelivedyear', 'exdelivedmonth', 'exdelivedday',
+    'doc', 'diaColor', 'clarity', 'surface'
+  ]);
   // ub-fw(매입처 정보창) 룩을 그대로 재사용하고, iframe 바디·폴백 UI 용 최소 스타일만 덧붙인다.
   const EP_CSS = `
     .ub-ep .ub-ep-b { flex: 1; min-height: 0; display: flex; overflow: hidden; background: #fff; }
@@ -3210,7 +3313,14 @@
     .ub-ep .ub-ep-fb { margin: auto; text-align: center; padding: 24px 20px; font-size: 12px; color: #6b7280; line-height: 1.6; }
     .ub-ep .ub-ep-fb-btn { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 8px; background: #35C5F0; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; }
     .ub-ep .ub-ep-fb-btn:hover { background: #2bb5e0; }
+    .ub-ep .ub-ep-msg { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid #f0b4b4; background: #fff3f3; color: #b42318; font-size: 12px; line-height: 1.5; }
+    .ub-ep .ub-ep-msg span { flex: 1; min-width: 0; }
+    .ub-ep .ub-ep-msg-btn { flex: none; padding: 6px 12px; border: 0; border-radius: 8px; background: #35C5F0; color: #fff; font-size: 11.5px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .ub-ep .ub-ep-msg-btn:hover { background: #2bb5e0; }
   `;
+  //  패널 세대. 패널 엘리먼트는 재사용되므로(epEnsurePanel) '지금 이 패널의 주인이 누구인가'를
+  //  이 번호로 판별한다 — 검증이 도는 사이 사용자가 다른 행의 [수정] 을 열 수 있다.
+  let epGen = 0;
   function ensureEpStyle() {
     if (document.getElementById(EP_STYLE_ID)) return;
     const s = document.createElement('style');
@@ -3305,14 +3415,326 @@
     });
     return '/jun/orderitem/orderItemModifyForm.do?' + p.toString();
   }
+  // ── slice 2b: 값 읽기 (편집폼) ────────────────────────────────────────────
+  //  편집폼 문서에서 대조 대상 필드값을 읽는다. 라이브 iframe 문서와 DOMParser 로 파싱한
+  //  재조회 응답에 똑같이 쓴다 — 양쪽을 같은 규칙으로 읽어야 대조가 성립한다.
+  //  ⚠ form.elements 로 훑지 않는다. 이 사이트는 폼 중첩이 깨진 옛 HTML 이라 DOMParser 후
+  //   form.elements 로는 hidden 이 form1 밖으로 빠진다(OPDELIV_FIELDS 주석의 실측). 문서 전체에서 name 으로
+  //   찾는다. 동명 필드가 여럿이면 checkable(radio/checkbox) 일 때만 checked 값을 쓰고,
+  //   그 외에는 어느 것이 진짜인지 확정할 수 없으므로 null(=검증 불가, fail-closed).
+  function epReadFormValues(doc) {
+    try {
+      if (!doc || !doc.querySelectorAll) return null;
+      const out = {};
+      let seen = 0;
+      for (const n of EP_VERIFY_FIELDS) {
+        const els = [...doc.querySelectorAll('[name="' + n + '"]')];
+        if (!els.length) continue;               // 이 페이지에 없는 필드는 대조 대상이 아니다
+        let v = null;
+        if (els.length === 1) v = els[0].value;
+        else {
+          const ck = els.filter(e => /^(radio|checkbox)$/i.test(e.type || ''));
+          if (ck.length !== els.length) return null;
+          const hit = ck.find(e => e.checked);
+          v = hit ? hit.value : '';
+        }
+        out[n] = v == null ? '' : String(v);
+        seen++;
+      }
+      return seen ? out : null;
+    } catch (_) { return null; }
+  }
+  //  편집폼을 다시 GET 해서 지금 서버가 들고 있는 값을 읽는다(§4.2 step5 와 같은 대조 방식).
+  //  ⚠ 읽기 전용이다. 우리가 여는 URL 은 패널 iframe 이 이미 연 것과 같은 orderItemModifyForm.do
+  //   하나뿐이고, 만에 하나 쓰기 URL 이 흘러들면 AUTO_WRITE_MARKERS 가 런타임에서 끊는다
+  //   (…Modify.do 와 …ModifyForm.do 는 한 글자 차이다 — 실측 사고 이력).
+  async function epFetchFormValues(url) {
+    const u = String(url == null ? '' : url);
+    if (!u || AUTO_WRITE_MARKERS.test(u)) { epLog('쓰기/빈 URL → 재조회 차단', u); return null; }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const r = await fetch(u, { method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal });
+      const buf = await r.arrayBuffer();
+      // postDoc 과 같은 디코드: UTF-8 우선, U+FFFD 과다면 EUC-KR(사이트 인코딩이 섞여 있다).
+      let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+      if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+      return epReadFormValues(new DOMParser().parseFromString(html, 'text/html'));
+    } catch (err) {
+      epLog('편집폼 재조회 실패/타임아웃', (err && err.message) || err);
+      return null;                               // 못 읽음 = 검증 안 됨(미확정으로 흐른다)
+    } finally { clearTimeout(timer); }
+  }
+  //  로그인·오류 화면 판정. ⚠ 응답 문구는 읽지 않는다 — 구조만 본다(password 입력 존재).
+  //   fetchOrderRow 와 같은 기준. 문서를 아예 못 읽으면 판단이 성립하지 않으므로 true.
+  function epDocLooksLoginOrError(doc) {
+    try {
+      if (!doc || !doc.querySelector) return true;
+      return !!doc.querySelector('input[type=password]');
+    } catch (_) { return true; }
+  }
+  // ── slice 2b: 행 식별 ─────────────────────────────────────────────────────
+  //  그 행의 orderSeq. 목록이 실제로 쓰는 키(input[name=idx] 값)를 그대로 쓴다 — 재조회 응답에서
+  //  행을 찾을 때도 fetchOrderRow 가 같은 키로 맞추므로 출처를 하나로 통일해야 어긋나지 않는다.
+  function epRowOrderSeq(row) {
+    try {
+      const b = row && row.querySelector ? row.querySelector('input[name=idx]') : null;
+      return b ? String(b.value == null ? '' : b.value).split(',')[0].trim() : '';
+    } catch (_) { return ''; }
+  }
+  //  그 행의 주문일(yyyymmdd). 재조회를 '그 하루'로 좁히는 데 쓴다(§4.4). 두 경로를 순서대로 본다:
+  //   ①상태셀 currentSetting 링크의 6번째 인자(실측 계약) ②헤더로 찾은 '주문일' 열.
+  //  ⚠ ①은 주문완료(O--) 행에 없다(설계 §1). ②의 헤더 문구는 미실측이라, 못 찾으면 '' 로
+  //   떨어지고 재조회가 좁혀지지 않아 판정이 미확정으로 간다(fail-closed. 틀린 날짜로 좁혀
+  //   '행 없음'을 얻고 그걸 결론처럼 쓰는 것보다 안전하다).
+  function epOrderDateFromRow(row) {
+    try {
+      if (!row) return '';
+      const link = row.querySelector('a[href*="currentSetting"]');
+      if (link) {
+        const a = parseCurrentSettingArgs(link.getAttribute('href'));
+        const d = a ? epNormalizeOrderDate(a.orderDate) : '';
+        if (d) return d;
+      }
+      const table = row.closest ? row.closest('table') : null;
+      if (!table || !table.rows) return '';
+      // 헤더 행은 첫 매칭으로 한 번만 확정한다(§5: 매 행에서 재판정하면 데이터 행을 헤더로 오인).
+      let idx = -1;
+      for (let r = 0; r < table.rows.length && idx < 0; r++) {
+        idx = epOrderDateColIndex([...table.rows[r].cells].map(c => c.textContent));
+      }
+      const td = (idx >= 0 && row.cells) ? row.cells[idx] : null;
+      return td ? epNormalizeOrderDate(td.textContent) : '';
+    } catch (_) { return ''; }
+  }
+  //  편집폼 문서가 주문일을 싣고 있으면 그것도 쓴다(행에서 못 얻었을 때). 있다고 가정하지 않고
+  //  런타임에 확인만 한다 — 없거나 동명 다중이면 '' 로 둔다.
+  function epOrderDateFromForm(doc) {
+    try {
+      const els = doc && doc.querySelectorAll ? doc.querySelectorAll('[name="orderDate"]') : [];
+      return els.length === 1 ? epNormalizeOrderDate(els[0].value) : '';
+    } catch (_) { return ''; }
+  }
+  //  지금 화면에 걸린 검색조건(form1). buildAssignPopupUrl 과 같은 f.elements[n] 규약
+  //  (f[n] 은 동명 필드에서 조용히 누락된다 — buildAssignPopupUrl 주석). 못 읽으면 null → membership fail-closed.
+  function epSearchValues() {
+    try {
+      const f = document.forms['form1'];
+      if (!f) return null;
+      const out = {};
+      ASG_SEARCH_FIELDS.forEach((n) => {
+        const el = f.elements[n];
+        out[n] = (el && typeof el.value === 'string') ? el.value : '';
+      });
+      return out;
+    } catch (_) { return null; }
+  }
+  // ── slice 2b: 화면 반영 ───────────────────────────────────────────────────
+  //  서버가 렌더한 <tr> 문자열 → 이 문서의 tr 노드. table 컨텍스트에서 파싱해야 tr 이 살아남는다.
+  function epRowFromHtml(html) {
+    try {
+      const t = document.createElement('table');
+      t.innerHTML = String(html == null ? '' : html);
+      return t.querySelector('tr');
+    } catch (_) { return null; }
+  }
+  //  그 행을 서버가 방금 렌더한 <tr> 로 통째 교체한다. ⚠ resyncRow 를 쓰면 안 된다 — 그건 상태
+  //  셀만 갈아서 수량·중량·금액·인도예정일이 낡은 채 남는다(§4.1·설계 9절 6번).
+  //  ⚠ await 사이에 표가 다시 그려질 수 있으니 orderSeq 로 지금 다시 찾고 isConnected 를 본다(§5).
+  function epReplaceRow(orderSeq, rowHtml) {
+    try {
+      const tr = asgFindRow(orderSeq);
+      if (!tr || !tr.isConnected) { epLog('교체할 행을 찾지 못함', orderSeq); return false; }
+      const nu = epRowFromHtml(rowHtml);
+      if (!nu) { epLog('서버 행 HTML 파싱 실패', orderSeq); return false; }
+      tr.replaceWith(nu);
+      nu.classList.add('ub-ms-hl');
+      // 교체된 행은 새 노드다 → 확장의 행 장식을 다시 입힌다(§10 첫 항목). 클릭 가로채기
+      //  (배정·수정)는 document 위임이라 새 노드에도 그대로 걸린다. MutationObserver 도 같은
+      //  트리오를 부르지만(needThumb 분기) 콜백이 비동기라 여기서 동기로 한 번 더 부른다
+      //  — 셋 다 idempotent 다(attachThumb 의 dataset 가드 · td.dataset.ubFw 가드).
+      try { bindThumbEdit(document); ubHighlightPending(); bindFactoryNames(); }
+      catch (e) { epLog('행 장식 재적용 실패', e); }
+      return true;
+    } catch (e) { epLog('행 교체 실패', e); return false; }
+  }
+  //  ★'현재 검색조건으로 목록 새로고침' = 검색폼(form1) 재제출이다. location.reload() 가 아니다(§10).
+  //   이 목록의 결과 화면은 form1 제출로 도착한다(ensurePageSizeAtStart 의 referrer 가드가 같은
+  //   경로 referrer 를 '폼 제출로 온 검색결과'로 판정하는 근거) → reload 하면 재전송 확인창이
+  //   뜨거나 조건이 날아간다. form1 을 그대로 다시 내면 화면의 현재 조건이 그대로 전송된다
+  //   (loadVoucher·rotateRun 이 쓰는 것과 같은 네이티브 제출).
+  //   폼이 없으면 아무 것도 하지 않는다 — 조건을 잃는 이동은 하지 않는다.
+  function epReloadList() {
+    try {
+      const f = document.forms['form1'];
+      if (!f) { epLog('form1 없음 → 목록 새로고침 생략'); return false; }
+      f.submit();
+      return true;
+    } catch (e) { epLog('목록 새로고침 실패', e); return false; }
+  }
+  //  미확정·오류를 패널 안에 띄운다(§4.1: 패널을 열어둔 채 사용자에게 표시). 토스트만 쓰면
+  //  사용자가 놓친다. 자동 이동은 하지 않고 [목록 새로고침] 을 눌러 직접 확인하게 한다.
+  function epShowMsg(panel, text) {
+    try {
+      if (!panel || !panel.isConnected) { epLog(text); return; }
+      let box = panel.querySelector('.ub-ep-msg');
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'ub-ep-msg';
+        const rz = panel.querySelector('.ub-fw-rz');
+        if (rz) panel.insertBefore(box, rz); else panel.appendChild(box);
+      }
+      box.textContent = '';
+      const t = document.createElement('span');
+      t.textContent = text;
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'ub-ep-msg-btn'; btn.textContent = '목록 새로고침';
+      btn.addEventListener('click', () => { epReloadList(); });
+      box.appendChild(t); box.appendChild(btn);
+    } catch (e) { epLog('메시지 표시 실패', e); }
+  }
+  function epClosePanel(st) {
+    try { if (st && st.panel && st.panel.isConnected) st.panel.remove(); } catch (_) {}
+  }
+  // ── slice 2b: 상태 머신 ───────────────────────────────────────────────────
+  //  편집폼 문서에 제출 감시를 건다(문서마다 1회, idempotent).
+  //  ★두 경로를 다 잡아야 한다. 네이티브 저장이 submit 이벤트를 내는 경우와, 페이지 JS 가
+  //   form.submit() 을 부르는 경우다 — 후자는 submit 이벤트가 발생하지 않으므로 문서가 내려가기
+  //   직전(beforeunload)에 잡는다. 그 시점엔 DOM 이 아직 살아 있어 값을 읽을 수 있다.
+  //  ⚠ 장착 시점 스냅샷을 찍지 않는다. 편집 전 값을 들고 있으면 '저장 실패로 서버가 그대로'인
+  //   상황이 값 일치로 보여 거짓 성공이 된다. 스냅샷은 반드시 제출 시점 값이어야 한다.
+  function epWatchForm(st, frame, doc) {
+    try {
+      if (!doc || !doc.documentElement) return;
+      if (doc.documentElement.dataset.ubEpWatch === '1') return;
+      doc.documentElement.dataset.ubEpWatch = '1';
+      const snap = () => { const v = epReadFormValues(doc); if (v) st.snapshot = v; };
+      doc.addEventListener('submit', () => { st.dispatched = true; snap(); }, true);
+      try { frame.contentWindow.addEventListener('beforeunload', snap); } catch (_) {}
+      epLog('제출 감시 장착');
+    } catch (e) { epLog('제출 감시 장착 실패', e); }
+  }
+  //  이 작업(st)이 아직 지금 패널의 주인인가. 패널은 재사용되므로(epEnsurePanel) 사용자가 검증
+  //  도중 다른 행의 [수정] 을 누르면 세대가 바뀐다. 옛 작업이 남의 패널을 닫거나 남의 행을
+  //  갈아치우지 못하게 막는다 — orderSeq 만으로 작업을 식별하지 않는다는 규율과 같다(§5).
+  function epStale(st) {
+    try {
+      return !st || !st.panel || !st.panel.isConnected || st.panel.dataset.ubEpGen !== st.gen;
+    } catch (_) { return true; }
+  }
+  //  iframe 이 한 번 로드될 때마다 상태 머신을 한 칸 옮긴다(§4.1).
+  //   form  → 제출 전이면 EDITING(크롬 숨김 + 제출 감시 장착). 제출 뒤에 폼이 다시 떴다면
+  //           그건 '검증실패로 폼 유지'라 허용된 저장 경로가 아니다 → 그대로 검증부로 내려간다
+  //           (침묵하면 사용자는 아무 신호도 못 받고 행은 낡은 채 남는다).
+  //   save  → 저장 엔드포인트 도착 자체가 dispatch 증거다(POST 가 나간 뒤에만 이 URL 이 된다)
+  //   그 외 → 제출 신호가 있을 때만 SUBMITTED. 없으면 사용자의 단순 내부이동이므로 관여 안 함
+  //  ⚠ 여기서 st.snapshot 을 지우지 않는다. 스냅샷은 직전 beforeunload 에서 찍힌 '제출한 값'인데
+  //   새 문서가 뜰 때 지우면 그 증거가 사라져 무엇을 저장했는지 영영 대조할 수 없다.
+  function epOnFrameLoad(st, frame) {
+    try {
+      if (st.phase === 'DONE' || epStale(st)) return;
+      let doc = null, href = '';
+      try {
+        doc = frame.contentDocument;
+        href = (frame.contentWindow && frame.contentWindow.location && frame.contentWindow.location.href)
+               || (doc && doc.URL) || '';
+      } catch (e) { epLog('iframe 문서 접근 실패', e); }
+      const cls = epClassifyUrl(href);
+      if (cls === 'form') {
+        if (!st.orderDate) st.orderDate = epOrderDateFromForm(doc);
+        epHideChrome(doc);
+        epWatchForm(st, frame, doc);
+        if (!st.dispatched) { st.phase = 'EDITING'; return; }   // 아직 제출 전 = 편집 중
+      }
+      if (cls === 'save') st.dispatched = true;
+      if (!st.dispatched) { epLog('제출 신호 없는 이동 → 관여 안 함', cls); return; }
+      st.phase = 'SUBMITTED';
+      st.landed = cls;
+      st.isLoginOrError = epDocLooksLoginOrError(doc);
+      epVerifyAndApply(st).catch((e) => epLog('검증 예외', e));
+    } catch (e) { epLog('로드 처리 실패', e); }
+  }
+  //  §4.1 상태 머신의 검증부. 판정은 classifyModifySave(3분기)와 decideRowUpdateMode 가 한다
+  //  — 여기서 새로 판정하지 않는다.
+  //  ⚠ 이 함수가 반복하는 것은 '읽기'뿐이다. dispatch 이후의 non-success 는 자동 재시도 금지라
+  //   (§3.6) 미확정은 미확정으로 남기고 사용자에게 보여준다. 쓰기는 어느 분기에서도 하지 않는다.
+  async function epVerifyAndApply(st) {
+    if (st.verifying || st.phase === 'DONE' || epStale(st)) return;
+    st.verifying = true;
+    try {
+      if (++st.runs > EP_VERIFY_MAX_RUNS) { epLog('검증 시도 상한 초과 → 미확정 유지'); return; }
+      // ① 저장이 실제로 반영됐는가 = 제출한 값 vs 서버가 지금 주는 편집폼 값. 응답 문구는 안 읽는다.
+      let matched = false;
+      for (let i = 0; i < EP_VERIFY_TRIES && !matched; i++) {
+        if (i) await new Promise(r => setTimeout(r, EP_VERIFY_GAP_MS));
+        matched = epFieldsMatch(st.snapshot, await epFetchFormValues(st.formUrl));
+      }
+      // ② 목록에서 그 행을 통째로 받아온다(교체용 + 존재·유일성 확인). 값이 안 맞으면 생략한다
+      //    — 저장이 반영되지 않은 상태에서 화면만 새로 그릴 이유가 없다.
+      const row = matched ? await fetchOrderRow(st.orderSeq, st.orderDate) : null;
+      // await 사이에 사용자가 패널을 닫거나 다른 행의 수정을 열었을 수 있다 → 그러면 이 결과로
+      //  화면을 건드리지 않는다(남의 패널을 닫거나 남의 행을 갈아치우지 않는다).
+      if (epStale(st)) { epLog('패널이 바뀌었거나 닫혔다 → 화면 반영 생략'); return; }
+      const found = !!(row && row.found && !row.duplicate && !row.loginExpired && row.rowHtml);
+      const verdict = classifyModifySave({
+        dispatched: st.dispatched,
+        landedPathAllowed: (st.landed === 'save' || st.landed === 'list'),
+        isLoginOrError: st.isLoginOrError,
+        requery: { found: found, matchesExpected: matched }
+      });
+      epLog('판정', verdict, { dispatched: st.dispatched, landed: st.landed,
+                               matched: matched, found: found, orderSeq: st.orderSeq });
+      if (verdict !== 'success') {
+        epShowMsg(st.panel, matched
+          ? '저장은 확인됐지만 목록에서 그 행을 찾지 못했습니다 — 목록을 새로고침해 확인하세요.'
+          : '저장 결과를 확인하지 못했습니다 — 창을 닫지 않았습니다. 값을 직접 확인하세요.');
+        return;
+      }
+      // ③ 성공 — 제자리 교체인지 목록 새로고침인지 정한다(§10).
+      const sv = epSearchValues();
+      //  '그 하루'로 좁혀 조회했는데 찾았다 = 주문일이 그대로다. 좁히지 못했거나(날짜 미상) 못
+      //   찾았으면 주문일이 바뀌었을 수 있으므로 fail-closed 로 '바뀜' 취급 → 목록 새로고침.
+      const narrowed = /^\d{8}$/.test(String(st.orderDate || ''));
+      const mode = decideRowUpdateMode({
+        orderDateChanged: !(narrowed && found),
+        filterMembershipChanged: epMembershipChanged(sv, st.snapshot),
+        sortMembershipChanged: epSortMembershipChanged(sv ? sv.searchSortType : null)
+      });
+      st.phase = 'DONE';
+      epLog('행 갱신 모드', mode);
+      if (mode === 'in-place' && epReplaceRow(st.orderSeq, row.rowHtml)) {
+        epClosePanel(st);
+        asgToast('수정 반영됨');
+        return;
+      }
+      // 제자리 교체가 아니거나 실패 → 조용히 낡은 값을 두지 않는다. 현재 검색조건으로 재검색.
+      epClosePanel(st);
+      if (!epReloadList()) asgToast('수정 반영됨 — 목록을 새로고침하세요');
+    } finally { st.verifying = false; }
+  }
   // 패널을 열고 iframe 을 로드한다. 패널+iframe 이 DOM 에 성공적으로 붙으면 true 를 반환한다
   //  (호출자는 이 true 뒤에만 preventDefault 한다). 로드 실패/타임아웃이면 패널에
   //  [기존 화면으로 열기] 폴백을 띄운다 — 자동 이동보다 버튼을 우선한다(§4.1).
-  function epOpenPanel(args, url) {
+  function epOpenPanel(args, url, row) {
     const panel = epEnsurePanel();
     const body = panel.querySelector('.ub-ep-b');
     if (!body) return false;
     body.innerHTML = '';   // 같은 패널 재사용 시 이전 iframe/폴백 제거
+    const oldMsg = panel.querySelector('.ub-ep-msg');
+    if (oldMsg) oldMsg.remove();   // 이전 회차의 미확정 메시지도 함께 지운다
+    //  slice 2b 상태(§4.1). 패널 하나 = 편집 작업 하나. orderSeq 는 목록이 쓰는 키
+    //   (input[name=idx])를 1순위로 — 재조회에서 행을 찾을 때 같은 키로 맞춰야 한다.
+    const st = {
+      panel: panel, formUrl: url, gen: String(++epGen),
+      orderSeq: epRowOrderSeq(row) || String(args.seq == null ? '' : args.seq),
+      orderDate: epOrderDateFromRow(row),
+      phase: 'EDITING', dispatched: false, snapshot: null,
+      landed: 'other', isLoginOrError: false, verifying: false, runs: 0
+    };
+    panel.dataset.ubEpGen = st.gen;   // 같은 패널을 다시 쓰면 세대가 올라가 옛 작업이 무효가 된다
+    if (st.orderSeq !== String(args.seq == null ? '' : args.seq)) {
+      epLog('주의 — 행의 idx 와 modify() 인자가 다르다', st.orderSeq, 'vs', args.seq);
+    }
     const frame = document.createElement('iframe');
     frame.className = 'ub-ep-frame';
     frame.setAttribute('title', '수정');
@@ -3338,11 +3760,10 @@
     };
     const timer = setTimeout(() => showFallback('timeout'), EP_LOAD_MS);
     frame.addEventListener('load', () => {
-      if (settled) return;
-      // navigation 은 '저장 성공'의 증거가 아니지만(§4.1) slice 2a 는 저장 검증을 하지 않는다.
-      //  로드가 뜨면 크롬만 숨긴다. 로그인 리다이렉트면 form1 이 없어 epHideChrome 가 no-op.
-      settled = true; clearTimeout(timer);
-      epHideChrome(frame.contentDocument);
+      // settled 는 '로드 vs 폴백' 경쟁의 결말만 뜻한다. 첫 로드에서 폴백 타이머를 끄고,
+      //  그 뒤의 로드(=제출·이동)는 매번 상태 머신으로 넘긴다 — 여기서 return 하면 저장을 못 본다.
+      if (!settled) { settled = true; clearTimeout(timer); }
+      epOnFrameLoad(st, frame);
     });
     frame.addEventListener('error', () => { clearTimeout(timer); showFallback('error'); });
     frame.src = url;
@@ -3372,8 +3793,9 @@
           const tr = a.closest('tr');
           if (!tr) return;
           // (d) 패널+iframe 생성. (e) 전부 성공한 뒤에만 preventDefault.
+          //  행(tr)을 함께 넘긴다 — 저장 검증이 쓰는 orderSeq·주문일의 출처다(slice 2b).
           const url = buildEditPopupUrl(args);
-          if (!epOpenPanel(args, url)) return;   // 생성 실패 → 네이티브(preventDefault 안 함)
+          if (!epOpenPanel(args, url, tr)) return;   // 생성 실패 → 네이티브(preventDefault 안 함)
           e.preventDefault();
           e.stopPropagation();
           epLog('가로챔 — modify', args.master, args.seq);
@@ -3510,9 +3932,11 @@
   //    플래그로 떨어진다. (통합 슬라이스 전까지 의도적으로 미사용 — C-2b 가 이 값을 쓴다.)
   async function fetchOrderRow(orderSeq, orderDate) {
     const wantSeq = String(orderSeq == null ? '' : orderSeq).trim();
+    //  rowHtml = 서버가 방금 렌더한 그 <tr> 통째. 작업B 가 행을 통째로 갈아끼울 때 쓴다
+    //   (상태 셀만 갈면 수량·중량·금액·인도예정일이 낡은 채 남는다 — §4.1). 못 찾으면 ''.
     const base = { found: false, orderSeq: wantSeq, code: null, text: '', assignedBarcode: '',
                    orderDate: String(orderDate == null ? '' : orderDate),
-                   duplicate: false, hasMore: false, loginExpired: false };
+                   duplicate: false, hasMore: false, loginExpired: false, rowHtml: '' };
     if (!wantSeq) return base;
     const p = new URLSearchParams();
     p.set('tcode', 'order_item');
@@ -3567,7 +3991,8 @@
     if (!assignedBarcode) { const mb = text.match(/\(([^()]+)\)\s*$/); if (mb) assignedBarcode = mb[1]; }
     return { found: true, orderSeq: wantSeq, code: code, text: text, assignedBarcode: assignedBarcode,
              orderDate: base.orderDate, duplicate: false,
-             hasMore: cHasMore(cReadTotalCount(doc), boxes.length), loginExpired: false };
+             hasMore: cHasMore(cReadTotalCount(doc), boxes.length), loginExpired: false,
+             rowHtml: tr ? tr.outerHTML : '' };
   }
   //  사전검증 승인창(§4.3). 총 N / 대상 K / 제외 M 과 제외 사유를 보여준다. 중복 주문번호면
   //  [진행] 없이 '중단' 안내만. [진행] 은 C-2b 전까지 no-op 스텁 — 어떤 쓰기도 배선하지 않는다.
