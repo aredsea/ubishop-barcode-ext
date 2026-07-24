@@ -961,3 +961,297 @@ try {
     for (const [id, j] of ubAutoJobs) if (j.tabId === tabId) ubAutoEndJob(id, 'tab_closed');
   });
 } catch (_) {}
+
+/* =============================================================================
+ *  write-ahead 저널 + 계정 전역 writer lock (rev2.1 §3.7·§5)
+ *  스펙: docs/superpowers/specs/2026-07-20-orderitem-batch-design.md §3.7·§5·§3.6
+ *
+ *  ⚠ 이번 slice 는 API + 테스트까지다. 이 블록의 함수는 아무도 호출하지 않는다 —
+ *    실제 쓰기 operation(CALL_STANDBY·CALL_SET_CURRENT·SET_REMARK_AND_SUBMIT)을 붙일 때
+ *    A·C 가 사용한다. 위 Phase 0 스파이크·계정전환·캐시 동작은 이 블록과 무관하다.
+ *
+ *  ★핵심 불변식(§3.7) — "쓰기 dispatch 전에 저널을 먼저 남기고 그 기록을 await 한다"를
+ *    관용이 아니라 API 모양으로 강제한다. ubAutoDispatchNativeWrite 는 호출 시점에
+ *    storage 를 다시 읽어 해당 nonce 의 저널이 WRITE_DISPATCHING 이 아니면 writeFn 을
+ *    아예 부르지 않는다 — 호출자가 persistJournal 을 안 부르거나 await 을 빼먹었어도(즉
+ *    storage 에 실제로 반영되지 않았으면) dispatch 는 무조건 거부된다. 판단 기준은 항상
+ *    "storage 에 관측 가능한 상태"이지 호출자의 코드 순서에 대한 신뢰가 아니다.
+ *
+ *  ★계정 식별 — 새 개념을 만들지 않는다. 이 파일의 계정전환 오케스트레이터(313행~)가
+ *    이미 쓰는 것과 동일한 값·비교 규칙을 그대로 쓴다:
+ *      · 계정 키 = userid 문자열 (ubLoginFlow.accountId · ubAccounts[].userid 와 같은 종류)
+ *      · 비교는 ubNormName()(401행) — 공백 접기·소문자화 후 비교
+ *    "지금 실제로 로그인된 계정이 무엇인가"를 알아내는 것(라이브 probe 등)은 호출자(A·C)
+ *    몫이다. 아래 ubAutoCurrentAccountKey() 는 그 값을 얻는 가장 단순한 기존 경로
+ *    (ubLoginFlow.accountId)를 감싼 편의 함수일 뿐 — 새 저장소·새 식별 개념이 아니다.
+ *
+ *  ★lock 은 "계정 전역" 한 종류뿐이다(§5 3층 중 1층). 탭 로컬 lock·orderSeq lock 은
+ *    이번 범위 밖 — A·B·C 가 각자 얹는다.
+ *
+ *  저장 위치는 chrome.storage.session — 스펙 지정대로 SW 재시작엔 살아남고 브라우저
+ *  종료 시 사라진다. TTL 은 기존 job 관용을 그대로 재사용한다(idle 5분/hard 10분, 694~695행).
+ * ========================================================================== */
+
+const UB_AUTO_JOURNAL_KEY = 'ubAutoWriteJournal';   // chrome.storage.session: { [nonce]: entry }
+const UB_AUTO_LOCK_KEY = 'ubAutoWriterLock';        // chrome.storage.session: 단일 lock 객체 또는 없음
+const UB_AUTO_JOURNAL_STATES = Object.freeze(
+  ['PREPARED', 'WRITE_DISPATCHING', 'WRITE_DISPATCHED', 'VERIFIED_SUCCESS', 'NEEDS_REVIEW']);
+// pending = "아직 결론이 안 난 쓰기". writer lock 신규 발급을 막는 기준이자
+// §3.6 "dispatch 후 non-success 는 전부 재시도 금지"의 저장소 쪽 표현이다.
+const UB_AUTO_JOURNAL_PENDING_STATES = Object.freeze(
+  ['WRITE_DISPATCHING', 'WRITE_DISPATCHED', 'NEEDS_REVIEW']);
+
+/* ---- storage read-modify-write 직렬화 ----
+ *  chrome.storage.session 은 비동기라 get→set 사이에 다른 호출이 끼어들 수 있다.
+ *  MV3 SW 는 인스턴스가 하나뿐이므로(동시에 두 개가 뜨지 않는다), 이 파일 안의 모든
+ *  변형(mutate) 호출을 promise 체인 하나로 직렬화하면 진짜 락 없이도 "동시 요청 중
+ *  하나만 성공"을 정확히 지킬 수 있다 — 두 호출이 같은 tick 에 들어와도 각자의 임계구역
+ *  (get→판단→set)이 절대 겹치지 않는다.
+ *  ⚠ 재진입 금지: Inner 함수는 이 큐를 다시 타지 않는다(타면 자기 자신을 기다리는 데드락).
+ */
+let ubAutoStorageChain = Promise.resolve();
+function ubAutoSerialize(fn) {
+  const run = ubAutoStorageChain.then(fn, fn);
+  ubAutoStorageChain = run.then(() => {}, () => {});
+  return run;
+}
+
+/* ---- 저널: storage 원시 접근 ---- */
+async function ubAutoJournalStorageGet() {
+  const got = await chrome.storage.session.get(UB_AUTO_JOURNAL_KEY);
+  return (got && got[UB_AUTO_JOURNAL_KEY]) || {};
+}
+function ubAutoJournalStorageSet(map) {
+  return chrome.storage.session.set({ [UB_AUTO_JOURNAL_KEY]: map });
+}
+
+// nonce 없이는 저널할 수 없고(식별 불가 → fail closed), state 는 5개 값만 허용한다.
+// account·orderSeq·operation 도 필수 — 락·게이트가 이 값들로 비교하므로 비어 있으면
+// "계정 불명"과 똑같이 위험하다.
+function ubAutoValidateJournalEntry(entry) {
+  if (!entry || typeof entry !== 'object') return 'invalid_entry';
+  if (!entry.nonce || typeof entry.nonce !== 'string') return 'missing_nonce';
+  if (!UB_AUTO_JOURNAL_STATES.includes(entry.state)) return 'invalid_state';
+  if (!entry.account || typeof entry.account !== 'string') return 'missing_account';
+  if (entry.orderSeq == null || entry.orderSeq === '') return 'missing_orderSeq';
+  if (!entry.operation || typeof entry.operation !== 'string') return 'missing_operation';
+  return null;
+}
+
+// persist 는 항상 "완전한 다음 상태"를 받는다(부분 patch 가 아니다) — merge 는 이전 값
+// 보존용일 뿐, 호출자가 넘긴 필드가 항상 이긴다. createdAt 만 최초값을 지킨다.
+async function ubAutoJournalPersistInner(entry) {
+  const now = Date.now();
+  const bad = ubAutoValidateJournalEntry(entry);
+  if (bad) return { ok: false, error: bad };
+  const map = await ubAutoJournalStorageGet();
+  const prev = map[entry.nonce] || null;
+  const merged = Object.assign({}, prev, entry, {
+    createdAt: (prev && Number.isFinite(prev.createdAt)) ? prev.createdAt : now,
+    updatedAt: now
+  });
+  map[entry.nonce] = merged;
+  await ubAutoJournalStorageSet(map);
+  return { ok: true, entry: merged };
+}
+function ubAutoJournalPersist(entry) {
+  return ubAutoSerialize(() => ubAutoJournalPersistInner(entry));
+}
+
+async function ubAutoJournalGet(nonce) {
+  const map = await ubAutoJournalStorageGet();
+  return map[nonce] || null;
+}
+async function ubAutoJournalAll() {
+  const map = await ubAutoJournalStorageGet();
+  return Object.values(map);
+}
+// account/orderSeq 로 좁힌 "미해결" 저널 조회. 둘 다 생략하면 전역 전체를 본다
+// (writer lock 신규 발급 게이트가 이 형태로 쓴다).
+async function ubAutoJournalPendingEntries(filter) {
+  const all = await ubAutoJournalAll();
+  return all.filter(e => {
+    if (!UB_AUTO_JOURNAL_PENDING_STATES.includes(e.state)) return false;
+    if (filter && filter.account && ubNormName(e.account) !== ubNormName(filter.account)) return false;
+    if (filter && filter.orderSeq != null && String(e.orderSeq) !== String(filter.orderSeq)) return false;
+    return true;
+  });
+}
+
+// 화해(reconcile) — 서버 재조회 결과를 이 함수 하나로 기록한다. verified:true 만 성공,
+// 그 외(불일치·재조회 실패·타임아웃·계정변경 등)는 전부 NEEDS_REVIEW — §3.6 "dispatch 후
+// non-success 는 전부 미확정"을 여기서 강제한다(성공이 아니면 실패가 아니라 미확정이다).
+async function ubAutoJournalReconcileInner(nonce, outcome) {
+  const now = Date.now();
+  const map = await ubAutoJournalStorageGet();
+  const prev = map[nonce] || null;
+  if (!prev) return { ok: false, error: 'not_found' };
+  const verified = !!(outcome && outcome.verified === true);
+  const merged = Object.assign({}, prev, {
+    state: verified ? 'VERIFIED_SUCCESS' : 'NEEDS_REVIEW',
+    lastCheckResult: outcome || null,
+    lastCheckedAt: now,
+    updatedAt: now
+  });
+  map[nonce] = merged;
+  await ubAutoJournalStorageSet(map);
+  return { ok: true, entry: merged };
+}
+function ubAutoJournalReconcile(nonce, outcome) {
+  return ubAutoSerialize(() => ubAutoJournalReconcileInner(nonce, outcome));
+}
+
+// SW 재시작 복구(§3.7) — 서버를 재조회하지 않는다(그건 컨트롤러 몫). WRITE_DISPATCHING/
+// WRITE_DISPATCHED 로 남은 건은 전부 "쓰기를 시도했는지조차 지금은 알 수 없음"이므로
+// NEEDS_REVIEW 로 내린다. 이 함수는 chrome.scripting 을 절대 호출하지 않는다 —
+// "자동 재시도 절대 금지"의 실제 구현이 바로 이 부재(不在)다.
+async function ubAutoJournalRecoverOnStartup() {
+  const all = await ubAutoJournalAll();
+  const recovered = [];
+  for (const entry of all) {
+    if (entry.state === 'WRITE_DISPATCHING' || entry.state === 'WRITE_DISPATCHED') {
+      const r = await ubAutoJournalReconcile(entry.nonce,
+        { verified: false, reason: 'sw_restart', previousState: entry.state });
+      if (r.ok) { recovered.push(r.entry); ubAutoLog('저널 복구 NEEDS_REVIEW', entry.nonce, 'was', entry.state); }
+    }
+  }
+  return recovered;
+}
+
+/* ---- 계정 전역 writer lock ---- */
+// job TTL 과 같은 관용(694~695행 상수 재사용) — idle 은 lastRenewedAt, hard 는 acquiredAt 기준.
+function ubAutoWriterLockExpired(lock, now) {
+  if (!lock) return true;
+  return (now - lock.acquiredAt > UB_AUTO_HARD_TTL_MS) || (now - lock.lastRenewedAt > UB_AUTO_IDLE_TTL_MS);
+}
+async function ubAutoWriterLockStorageGet() {
+  const got = await chrome.storage.session.get(UB_AUTO_LOCK_KEY);
+  return (got && got[UB_AUTO_LOCK_KEY]) || null;
+}
+function ubAutoWriterLockStorageSet(lock) {
+  return chrome.storage.session.set({ [UB_AUTO_LOCK_KEY]: lock });
+}
+function ubAutoWriterLockStorageClear() {
+  return chrome.storage.session.remove(UB_AUTO_LOCK_KEY);
+}
+async function ubAutoWriterLockRead() {
+  const now = Date.now();
+  const lock = await ubAutoWriterLockStorageGet();
+  return { lock, expired: ubAutoWriterLockExpired(lock, now) };
+}
+// 소유자 동일성은 스펙 문구 그대로 tabId+documentId 로만 본다(jobId 는 참고용 메타데이터).
+function ubAutoLockOwnerMatches(lock, owner) {
+  return !!(lock && lock.owner && owner &&
+    lock.owner.tabId === owner.tabId && lock.owner.documentId === owner.documentId);
+}
+
+async function ubAutoAcquireWriterLockInner(req) {
+  const now = Date.now();
+  const account = req && req.account;
+  if (!account) return { ok: false, error: 'account_unknown' };
+  if (!req || req.tabId == null || !req.documentId) return { ok: false, error: 'owner_unknown' };
+  const lock = await ubAutoWriterLockStorageGet();
+  const expired = ubAutoWriterLockExpired(lock, now);
+  if (lock && !expired) {
+    if (ubAutoLockOwnerMatches(lock, req)) {
+      // 같은 소유자의 재요청 = 갱신(heartbeat). 계정까지 같아야 한다 — 같은 탭·문서인데
+      // 계정이 달라졌다는 건 뭔가 잘못됐다는 신호이므로 조용히 덮어쓰지 않고 거부한다.
+      if (ubNormName(lock.account) !== ubNormName(account)) {
+        return { ok: false, error: 'owner_account_mismatch' };
+      }
+      const renewed = Object.assign({}, lock, { lastRenewedAt: now });
+      await ubAutoWriterLockStorageSet(renewed);
+      return { ok: true, lock: renewed, renewed: true };
+    }
+    return { ok: false, error: 'lock_held', owner: lock.owner };
+  }
+  // 락이 없거나 만료 — 새로 발급하기 전에 미해결 저널부터 본다. 강제 해제(steal) 는 금지이고,
+  // pending 저널이 있으면 락이 비어 있어도(또는 막 만료됐어도) 신규 발급을 거부한다(fail closed).
+  const pending = await ubAutoJournalPendingEntries();
+  if (pending.length) return { ok: false, error: 'pending_journal', pending };
+  const fresh = {
+    owner: { jobId: req.jobId || null, tabId: req.tabId, documentId: req.documentId },
+    account,
+    acquiredAt: now,
+    lastRenewedAt: now
+  };
+  await ubAutoWriterLockStorageSet(fresh);
+  ubAutoLog('writer lock 발급', account, 'tab=' + req.tabId, lock ? '(만료 회수)' : '(신규)');
+  return { ok: true, lock: fresh, renewed: false, reclaimed: !!lock };
+}
+function ubAutoAcquireWriterLock(req) {
+  return ubAutoSerialize(() => ubAutoAcquireWriterLockInner(req));
+}
+
+async function ubAutoReleaseWriterLockInner(req) {
+  const lock = await ubAutoWriterLockStorageGet();
+  if (!lock) return { ok: true, released: false };
+  if (!ubAutoLockOwnerMatches(lock, req)) return { ok: false, error: 'not_owner' };
+  await ubAutoWriterLockStorageClear();
+  return { ok: true, released: true };
+}
+function ubAutoReleaseWriterLock(req) {
+  return ubAutoSerialize(() => ubAutoReleaseWriterLockInner(req));
+}
+
+// ubLoginFlow.accountId 를 그대로 반환한다 — 계정전환 오케스트레이터가 로그인 성공 시
+// 채워두는 바로 그 값(516행 ubUpgradeFlow · 621행 startSwitch). 새 저장소·새 개념 없음.
+// 한 번도 전환한 적 없으면 null(식별 불가) — 호출자는 이를 fail closed 로 다뤄야 한다.
+async function ubAutoCurrentAccountKey() {
+  const flow = await ubGetFlow();
+  return (flow && flow.accountId) || null;
+}
+
+/* ---- 쓰기 전 게이트 ----
+ *  §5: "계정·세션 변경: 모든 RPC 와 모든 네이티브 쓰기 직전에 즉시 거부."
+ *  두 단계로 나눈다 — 모든 RPC(읽기 포함)에 필요한 공통 관문과, 쓰기에만 추가되는 저널 확인.
+ */
+// 공통 관문 — lock 소유자 확인 + 계정 불변 확인만 한다(저널은 안 본다). READ_PAGE_FACTS 같은
+// 읽기 RPC 도 이 관문은 통과해야 하지만 저널 엔트리가 없어도 정상이다.
+async function ubAutoGuardAccount(req) {
+  const account = req && req.account;
+  if (!account) return { ok: false, error: 'account_unknown' };
+  const { lock, expired } = await ubAutoWriterLockRead();
+  if (!lock || expired) return { ok: false, error: 'lock_not_held' };
+  if (!ubAutoLockOwnerMatches(lock, req)) return { ok: false, error: 'lock_not_held' };
+  if (ubNormName(lock.account) !== ubNormName(account)) return { ok: false, error: 'account_changed' };
+  return { ok: true, lock };
+}
+// 네이티브 쓰기 전용 관문 — 공통 관문을 통과한 뒤 저널이 정확히 WRITE_DISPATCHING 인지까지
+// 확인한다. 이게 §3.7 핵심 불변식의 실제 게이트: 저널이 그 상태가 아니면 dispatch 는 없다.
+async function ubAutoGuardWrite(req) {
+  const base = await ubAutoGuardAccount(req);
+  if (!base.ok) return base;
+  const entry = req.nonce ? await ubAutoJournalGet(req.nonce) : null;
+  if (!entry || entry.state !== 'WRITE_DISPATCHING') return { ok: false, error: 'journal_not_ready' };
+  if (ubNormName(entry.account) !== ubNormName(req.account)) return { ok: false, error: 'account_changed' };
+  return { ok: true, lock: base.lock, entry };
+}
+
+// 저널+lock+계정 확인을 전부 통과해야만 writeFn 을 부른다. writeFn 실행 이후에는 성공이든
+// 실패(throw)든 반드시 WRITE_DISPATCHED 로 남긴다 — §3.6 의 기준선("dispatch 했는가")이
+// 바로 이 시점이고, 이후의 모든 non-success 는 재시도가 아니라 화해(reconcile) 대상이다.
+async function ubAutoDispatchNativeWrite(req, writeFn) {
+  const guard = await ubAutoGuardWrite(req);
+  if (!guard.ok) {
+    // 저널이 이미 WRITE_DISPATCHING 이던 건(=호출자 입장에서 "진행 중이던 쓰기")이 계정
+    // 변경으로 막혔다면 "확정 실패"가 아니라 "미확정" 이다 — 다른 탭에서 이미 네이티브
+    // 쓰기가 나갔을 가능성을 배제할 수 없다(§5).
+    if (guard.error === 'account_changed' && req && req.nonce) {
+      const entry = await ubAutoJournalGet(req.nonce);
+      if (entry && entry.state === 'WRITE_DISPATCHING') {
+        await ubAutoJournalReconcile(req.nonce, { verified: false, reason: 'account_changed_before_dispatch' });
+      }
+    }
+    return guard;
+  }
+  let result = null, error = null;
+  try { result = await writeFn(); }
+  catch (e) { error = String(e && e.message || e); }
+  await ubAutoJournalPersist(Object.assign({}, guard.entry, {
+    state: 'WRITE_DISPATCHED',
+    dispatchedAt: Number.isFinite(guard.entry.dispatchedAt) ? guard.entry.dispatchedAt : Date.now(),
+    lastCheckResult: error ? { dispatchError: error } : (guard.entry.lastCheckResult || null)
+  }));
+  return error ? { ok: false, error, dispatched: true } : { ok: true, result, dispatched: true };
+}
