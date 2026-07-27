@@ -3383,6 +3383,29 @@
           catch (_) {}
         }, 0);
       };
+      //  ★브라우저 기본 검증(required·pattern 등)이 막으면 submit 이벤트도 안 나고 클릭도
+      //   취소되지 않는다. 그때 브라우저가 실제로 내는 `invalid` 이벤트를 **관측만** 한다.
+      //  ⚠ checkValidity() 로 되묻지 않는다 — 그건 재평가라 invalid 이벤트를 한 번 더 일으켜
+      //   페이지 핸들러를 중복 실행시키고, 첫 이벤트에서 값이 보정되면 통과로 나와 차단을 놓친다.
+      //  (invalid 는 버블하지 않으므로 capture 로 받는다.)
+      document.addEventListener('invalid', (e) => {
+        try {
+          //  ⚠ form1 소속 컨트롤일 때만. 다른 폼의 검증 실패로 우리 저장 증거를 지우면,
+          //   진짜 POST 가 진행 중인데 마커가 사라져 자동 갱신·창 닫기를 놓친다.
+          //   (입력 49개가 DOM 상 form1 밖이라도 el.form 은 form1 을 가리킨다 — 실측)
+          const f = curForm();
+          if (!f || !e.target || e.target.form !== f) return;
+          epClearSubmitted(); epLog('기본 검증이 막음(invalid) → 증거 철회');
+        } catch (_) {}
+      }, true);
+      //  '취소'(목록으로 이동)는 저장하지 않겠다는 뜻이다 — 남아 있던 제출 증거를 버린다.
+      //  안 그러면 저장 시도가 검증에 막힌 뒤 취소를 눌렀을 때 목록 착지가 완료로 오인된다.
+      document.addEventListener('click', (e) => {
+        try {
+          const a = e.target && e.target.closest ? e.target.closest('a[href*="list("]') : null;
+          if (a) { epClearSubmitted(); epLog('취소(목록으로) → 제출 증거 철회'); }
+        } catch (_) {}
+      }, true);
       document.addEventListener('submit', (e) => {
         try {
           const f = curForm();
@@ -3395,7 +3418,7 @@
       document.addEventListener('click', (e) => {
         try {
           const t = e.target && e.target.closest
-            ? e.target.closest('input[type=submit],button[type=submit]') : null;
+            ? e.target.closest('input[type=submit],input[type=image],button[type=submit]') : null;
           if (!t) return;
           const f = curForm();
           if (!f || t.form !== f) return;             // form1 소속일 때만
@@ -3424,7 +3447,7 @@
     //   디자인은 숨김이 아니라 **스타일**로 낸다(카드 + 헤더).
     let hidden = 0;
     try {
-      const SUBMIT_SEL = 'input[type=submit],button[type=submit]';
+      const SUBMIT_SEL = 'input[type=submit],input[type=image],button[type=submit]';
       const BOUND_SEL = form.id ? '[form="' + form.id + '"]' : null;
       const ownsSubmit = (el) => {
         try {
@@ -3452,6 +3475,7 @@
         hidden++;
       });
     } catch (e) { epLog('화면 정리 실패(무해)', e); }
+    epUpgradeTitle();
     try { document.body.insertBefore(epHeader(orderSeq), document.body.firstChild); }
     catch (e) { epLog('헤더 표시 실패(무해)', e); }
     try { document.title = '주문 수정'; } catch (_) {}
@@ -3471,7 +3495,24 @@
       document.documentElement.classList.remove('ub-sidebar-docked');
     } catch (e) { epLog('도구 숨김 실패(무해)', e); }
   }
-  //  팝업 전용 스타일. ERP 페이지엔 D102 토큰이 없어 값은 리터럴로 쓴다(아쿠아 팔레트).
+  //  섹션 제목을 비트맵 gif → 진짜 글자로 바꾼다(D102 타이포 18px/700).
+  //  ★아는 파일명만 바꾸고 모르면 원본을 그대로 둔다 — 파일명으로 제목을 지어내면 다른 폼에서
+  //   엉뚱한 라벨이 붙는다. 모르는 건 손대지 않는 쪽이 맞다.
+  const EP_TITLE_BY_GIF = { 'title_order_item.gif': '상품주문' };
+  function epUpgradeTitle() {
+    try {
+      document.querySelectorAll('.f_title img').forEach((img) => {
+        const file = String(img.getAttribute('src') || '').split('/').pop();
+        const label = EP_TITLE_BY_GIF[file];
+        if (!label) { epLog('모르는 제목 이미지 — 그대로 둔다', file); return; }
+        const span = document.createElement('span');
+        span.className = 'ub-ep-title';
+        span.textContent = label;
+        img.replaceWith(span);
+      });
+    } catch (e) { epLog('제목 교체 실패(무해)', e); }
+  }
+  //  팝업 전용 스타일. D102 토큰을 :root 에 정의해 가져와 쓴다(아래 epInjectStyle 참조).
   function epInjectStyle() {
     try {
       if (document.getElementById('ub-ep-style')) return;
@@ -3481,10 +3522,18 @@
         // ⚠ 숨김은 CSS 가 아니라 인라인 style 로 한다(위 epDressPopup 참조) — 페이지가 나중에
         //   오류 문구를 띄우려고 display 를 바꾸면 그쪽이 이겨야 하기 때문이다.
         //  여백은 body 에 준다. 카드에 margin 을 주면 width:100% 인 표에서 가로로 넘친다.
-        "html{background:#f4f6f7 !important;}",
-        "body{background:#f4f6f7 !important;margin:0 !important;padding:12px !important;",
-        "font-family:'Pretendard','Malgun Gothic',sans-serif !important;color:#16232a !important;",
-        "box-sizing:border-box !important;}",
+        //  ★D102 디자인 시스템 토큰을 이 창으로 가져온다(DESIGN-SYSTEM.md v2 "Aqua").
+        //   ERP 페이지엔 토큰 스택이 없으니 여기서 한 번 정의하고 아래는 전부 var() 로 쓴다
+        //   — '색은 항상 시맨틱 토큰' 규칙을 남의 페이지에서도 지키는 방법이다.
+        ":root{--ub-canvas:#f4f6f7;--ub-surface:#fff;--ub-sunken:#f7f9fa;",
+        "--ub-hairline:#e3e8ee;--ub-hairline-2:#d3dbe3;",
+        "--ub-ink:#16232a;--ub-ink-2:#4a5760;--ub-ink-3:#8a949b;",
+        "--ub-brand:#4abcc7;--ub-accent:#0d8695;--ub-tint:rgba(74,188,199,.13);",
+        "--ub-navy:#123842;--ub-danger:#c4314b;--ub-r-sm:10px;--ub-r-md:14px;--ub-fast:.15s;}",
+        "html{background:var(--ub-canvas) !important;}",
+        "body{background:var(--ub-canvas) !important;margin:0 !important;padding:12px !important;",
+        "font-family:'Pretendard','Malgun Gothic',sans-serif !important;color:var(--ub-ink) !important;",
+        "box-sizing:border-box !important;-webkit-font-smoothing:antialiased;}",
         // 확장 자신의 UI — 요소와 **도킹 여백**까지. 사이드바가 다시 만들어져도 안 보이고
         //  body 가 밀리지도 않게 한다(_IS_POPUP 은 document_start 상수라 이 문서에선 안 바뀐다).
         "#ub-sidebar,#ub-sb-handle{display:none !important;}",
@@ -3493,25 +3542,92 @@
         "html.ub-sidebar-docked body{margin-left:0 !important;}",
         // 헤더 — 아뜰리에 오버레이와 같은 리듬(surface + hairline + 14px/750 제목)
         // body 에 12px 패딩을 줬으니 헤더는 음수 마진으로 폭을 꽉 채운다(full-bleed).
-        "#ub-ep-head{position:sticky;top:0;z-index:2147483000;background:#fff;",
-        "border-bottom:1px solid #e3e8ee;padding:12px 16px;margin:-12px -12px 12px;",
+        "#ub-ep-head{position:sticky;top:0;z-index:2147483000;background:var(--ub-surface);",
+        "border-bottom:1px solid var(--ub-hairline);padding:12px 16px;margin:-12px -12px 12px;",
         "display:flex;align-items:center;gap:9px;}",
-        "#ub-ep-head .t{font-size:14px;font-weight:750;letter-spacing:-.01em;color:#16232a;}",
-        "#ub-ep-head .seq{font-size:11px;font-weight:700;color:#0d8695;background:#e4f5f7;",
-        "border-radius:999px;padding:3px 9px;}",
-        "#ub-ep-head .hint{margin-left:auto;font-size:11px;font-weight:600;color:#8a949b;}",
+        "#ub-ep-head .t{font-size:14px;font-weight:750;letter-spacing:-.01em;color:var(--ub-ink);}",
+        "#ub-ep-head .seq{font-size:11px;font-weight:700;color:var(--ub-accent);background:var(--ub-tint);",
+        "border-radius:999px;padding:3px 9px;font-variant-numeric:tabular-nums;}",
+        "#ub-ep-head .hint{margin-left:auto;font-size:11px;font-weight:600;color:var(--ub-ink-3);}",
         // 폼 카드 — ⚠ display 는 건드리지 않는다. 원래 table/flex 인 블록에 block 을 씌우면
         //  formatting context 가 사라져 열 정렬·버튼 배치가 깨진다.
-        ".ub-ep-card{margin:0 !important;padding:14px !important;",
-        "background:#fff !important;border:1px solid #e3e8ee !important;border-radius:14px !important;",
+        //  ★width:100% — 호스트 표가 width="980" 고정이라(실측) 이걸 안 풀면 창을 줄여도
+        //   폼이 안 줄어들고 가로 스크롤이 생긴다.
+        ".ub-ep-card{margin:0 !important;padding:16px !important;",
+        "background:var(--ub-surface) !important;border:1px solid var(--ub-hairline) !important;",
+        "border-radius:var(--ub-r-md) !important;",
         //  ⚠ overflow 를 걸지 않는다. 한 축만 auto 로 줘도 다른 축이 계산상 auto 가 돼 카드가
         //   스크롤 컨테이너로 바뀌고, 내부의 absolute 달력·드롭다운이 잘린다. 넘치면 body 가 민다.
         "box-shadow:0 1px 2px rgba(18,56,66,.04) !important;box-sizing:border-box !important;",
-        "max-width:100% !important;}",
+        "width:100% !important;max-width:100% !important;}",
+        // 내부 표도 고정폭을 풀어 창을 따라가게 한다(t_tab/t_form 은 실측된 클래스)
+        ".ub-ep-card table{max-width:100% !important;}",
+        ".ub-ep-card .t_tab,.ub-ep-card .t_form,.ub-ep-card .t_form0{width:100% !important;}",
+        // ── 섹션 제목 ──
+        //  ⚠ 이 ERP 는 제목도 gif 이미지다(실측: title_order_item.gif 293×24). 그래서 img 를
+        //   무조건 숨기면 제목이 통째로 사라진다. **아는 제목만** 텍스트로 바꾸고(epUpgradeTitle)
+        //   모르면 원본 이미지를 그대로 둔다.
+        ".ub-ep-card .f_title{padding:0 0 12px !important;}",
+        ".ub-ep-title{display:inline-flex !important;align-items:center;gap:8px;",
+        "font-size:18px !important;font-weight:700 !important;letter-spacing:-.02em !important;",
+        "color:var(--ub-ink) !important;}",
+        ".ub-ep-title:before{content:'';display:inline-block;width:7px;height:7px;flex:none;",
+        "border-radius:50%;background:var(--ub-brand);}",
+        // ── 표 헤더(DESIGN-SYSTEM §4: 딥 틸-네이비 + 흰 글씨 700 + 자간 .03em + 가운데) ──
+        ".ub-ep-card .t_tab th,.ub-ep-card .t_tab thead td{background:var(--ub-navy) !important;",
+        "color:#fff !important;font-weight:700 !important;font-size:12px !important;",
+        "letter-spacing:.03em !important;text-align:center !important;vertical-align:middle !important;",
+        "padding:11px 10px !important;border:0 !important;}",
+        ".ub-ep-card .t_tab td{font-size:13px !important;color:var(--ub-ink) !important;",
+        "text-align:center !important;vertical-align:middle !important;padding:11px 10px !important;",
+        "border-bottom:1px solid var(--ub-hairline) !important;}",
+        ".ub-ep-card .bg_gray{background:var(--ub-sunken) !important;}",
+        ".ub-ep-card .blk_line{border-color:var(--ub-hairline) !important;}",
+        // ── 라벨/값 행 ──
+        ".ub-ep-card .t_form td,.ub-ep-card .t_form0 td{font-size:13px !important;",
+        "color:var(--ub-ink) !important;padding:7px 8px !important;vertical-align:middle !important;}",
+        // ── 입력(라운드 10 · hairline · focus 링) ──
+        //  구조(크기·모서리·간격)만 !important 로 고정한다.
+        ".ub-ep-card input[type=text],.ub-ep-card input[type=number],.ub-ep-card input[type=password],",
+        ".ub-ep-card select,.ub-ep-card textarea{font-family:inherit !important;font-size:14px !important;",
+        "border-radius:var(--ub-r-sm) !important;padding:8px 10px !important;",
+        "box-sizing:border-box !important;max-width:100% !important;",
+        "transition:border-color var(--ub-fast),box-shadow var(--ub-fast) !important;}",
+        //  ★색은 !important 로 걸지 않는다 — ERP 검증 스크립트가 인라인 style 로 오류 필드를
+        //   강조하면 **그쪽이 이겨야** 한다. 클래스 선택자 특이도만으로도 기본 스타일은 이긴다.
+        ".ub-ep-card input[type=text],.ub-ep-card input[type=number],.ub-ep-card input[type=password],",
+        ".ub-ep-card select,.ub-ep-card textarea{color:var(--ub-ink);background:var(--ub-surface);",
+        "border:1px solid var(--ub-hairline-2);outline:none;}",
+        ".ub-ep-card input[type=text]:focus,.ub-ep-card input[type=number]:focus,",
+        ".ub-ep-card input[type=password]:focus,.ub-ep-card select:focus,.ub-ep-card textarea:focus{",
+        "border-color:var(--ub-accent);box-shadow:0 0 0 3px var(--ub-tint);}",
+        ".ub-ep-card input[readonly],.ub-ep-card .input_gray_no{background:var(--ub-sunken);",
+        "color:var(--ub-ink-2);}",
+        ".ub-ep-card textarea{min-height:84px !important;resize:vertical !important;",
+        "line-height:1.5 !important;width:100% !important;}",
+        // 제품 사진 — 썸네일 라운드 12
+        ".ub-ep-card img[onclick*='imageView']{border-radius:12px !important;",
+        "border:1px solid var(--ub-hairline) !important;max-width:100% !important;height:auto !important;}",
+        // 붉은 안내 문구
+        ".ub-ep-card font[color='red']{color:var(--ub-danger) !important;font-size:12px !important;",
+        "font-weight:600 !important;}",
+        // ── 버튼(라벨이 gif 라 이미지 자체는 두고 상호작용만 다듬는다) ──
+        ".ub-ep-card input[type=image],.ub-ep-card a>img[src*='btn_']{cursor:pointer !important;",
+        "transition:opacity var(--ub-fast),transform var(--ub-fast) !important;}",
+        ".ub-ep-card input[type=image]:hover,.ub-ep-card a>img[src*='btn_']:hover{opacity:.82 !important;}",
+        ".ub-ep-card input[type=image]:active,.ub-ep-card a>img[src*='btn_']:active{",
+        "transform:translateY(1px) !important;}",
         // 안내 줄
         "#ub-ep-notice{position:fixed;left:0;right:0;bottom:0;z-index:2147483600;padding:11px 16px;",
         "background:#fff8e6;border-top:1px solid #f0dca8;color:#7a5b00;font-size:12.5px;font-weight:700;",
-        "font-family:'Pretendard','Malgun Gothic',sans-serif;}"
+        "font-family:'Pretendard','Malgun Gothic',sans-serif;}",
+        // ── 창이 좁아지면(창 크기 대응) ──
+        "@media (max-width:760px){body{padding:8px !important;}",
+        "#ub-ep-head{padding:10px 12px;margin:-8px -8px 10px;flex-wrap:wrap;gap:6px;}",
+        "#ub-ep-head .hint{margin-left:0;flex-basis:100%;}",
+        ".ub-ep-card{padding:12px !important;}",
+        ".ub-ep-card input[type=text],.ub-ep-card input[type=number],.ub-ep-card input[type=password],",
+        ".ub-ep-card select,.ub-ep-card textarea{font-size:16px !important;}}"
       ].join('');
       (document.head || document.documentElement).appendChild(s);
     } catch (e) { epLog('스타일 주입 실패(무해)', e); }
