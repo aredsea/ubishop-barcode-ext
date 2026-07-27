@@ -1181,6 +1181,132 @@
     if (!isFinite(t) || !isFinite(s)) return true;     // Number(null)=0 함정 회피 위해 위에서 먼저 걸렀다
     return t > s;
   }
+  // ── 작업C C-2b 순수 판정층 — 행 단위 상태머신 ─────────────────────────────
+  //  §4.3 의 건별 루프를 DOM·네트워크·쓰기·chrome.*·타이머 없이 '판정만' 하는 순수
+  //  함수로 뽑았다. 실제 읽기/쓰기는 전부 호출부(C-2b 통합 슬라이스) 몫이다.
+  //
+  //  ★현재 의도적으로 미사용이다. Phase 0(§6) 배관 검증이 통과해야 MAIN world RPC·
+  //   job 레지스트리·저널 배선을 붙인다. 이 블록에는 쓰기가 한 줄도 없다 —
+  //   standby()·setCurrent·form.submit/requestSubmit·location 대입·location.assign/
+  //   replace·window.open·앵커 클릭 그 어느 것도 부르지 않는다.
+  //
+  //  ⚠ 2026-07-27 교훈: "소스에 문자열이 있는지"만 보는 테스트는 조합 버그를 못 잡는다
+  //   (작업B 2차에서 실제로 회귀를 놓쳤다). 이 층은 tests/orderitem-c2b.test.js 가
+  //   전 분기를 **실제로 실행**해 고정한다.
+  //
+  //  전부 fail-closed 다 — 모르면 '진행하지 않는다'로 떨어진다.
+
+  //  fetchOrderRow 결과를 '쓰기 권한 판정에 써도 되는 관측인가'로 가른다(§4.4·§5).
+  //  ok=false 면 그 건은 쓰기 없이 중단이고, dispatch 전이므로 확정 실패(안전)다.
+  //  ⚠ hasMore 는 found 여도 중단이다. 응답이 잘렸다면 같은 orderSeq 가 뒤 페이지에
+  //   또 있어도 duplicate 를 검출하지 못한다 — "pageSize 500 은 전부의 증거가 아니다"(§4.4).
+  //   중복을 못 본 채 쓰면 엉뚱한 주문을 건드릴 수 있다.
+  function cRequeryUsable(row) {
+    if (!row || typeof row !== 'object') return { ok: false, reason: '재조회 결과 없음' };
+    if (row.loginExpired === true) return { ok: false, reason: '로그인 만료' };
+    if (row.duplicate === true) return { ok: false, reason: '중복 주문번호' };
+    if (row.found !== true) return { ok: false, reason: '주문을 찾지 못함' };
+    if (row.hasMore === true) return { ok: false, reason: '목록이 잘려 중복 확인 불가' };
+    if (typeof row.code !== 'string' || row.code === '') return { ok: false, reason: '상태 불명' };
+    return { ok: true, reason: '' };
+  }
+  //  standby 직전 마지막 안전장치(§4.3 step 2). 체크박스를 우리 손으로 정리한 뒤
+  //  화면에서 **다시 읽어** 정확히 그 한 건인지 확인한다.
+  //  ⚠ standby 는 체크된 집합 전체를 서버로 보낸다. 이 검사가 새면 의도하지 않은 주문이
+  //   본사확인으로 넘어가고, 그건 되돌리기 어려운 쓰기다. 하나라도 더 있거나·없거나·
+  //   다르면 false.
+  function cCheckedSetExact(checkedSeqs, wantSeq) {
+    const want = String(wantSeq == null ? '' : wantSeq).trim();
+    if (!want) return false;
+    if (!Array.isArray(checkedSeqs) || checkedSeqs.length !== 1) return false;
+    return String(checkedSeqs[0] == null ? '' : checkedSeqs[0]).trim() === want;
+  }
+  //  standby(본사확인) dispatch 후 3분기(§3.6·§4.3 step 2). 기준선은 cClassifyOutcome 과
+  //  같다 — dispatch 전 실패만 확정 실패고, dispatch 후 non-success 는 전부 미확정이며
+  //  자동 재시도 금지다. 성공 조건은 재조회 상태가 정확히 OS- 인 것 하나뿐이다
+  //  (이 단계에는 아직 배정 바코드가 없다).
+  //  ⚠ navigation 도착지로 판정하지 않는다 — 반드시 재조회 값으로만 본다(§4.3 step 2).
+  //  ⚠ duplicate·loginExpired 를 명시적으로 거른다. 지금의 fetchOrderRow 계약상 그 경우
+  //   found 는 false 라 사실 중복 검사지만, 계약이 나중에 바뀌어도 '성공' 으로 새지
+  //   않도록 여기서 다시 막는다(cClassifyOutcome 은 그 계약에 기대고 있다).
+  function cClassifyStandbyOutcome(input) {
+    if (!input || input.dispatched !== true) return 'fail';
+    const q = input.requery;
+    if (q && q.found === true && q.duplicate !== true && q.loginExpired !== true &&
+        q.code === 'OS-') return 'success';
+    return 'uncertain';
+  }
+  //  네이티브 쓰기 **직전** 즉시 게이트(§5). '다음 건 전'이 아니라 매 쓰기 직전이다 —
+  //  standby 성공 후 setCurrent 전에 다른 탭에서 계정이 바뀌는 순서가 실제로 가능하다.
+  //  §10 의 '취소'(= 지금 쓰기가 없을 때 다음 안전 경계에서 멈춤)도 여기서 걸린다.
+  //  계정을 문자열로 확정하지 못하면 비교 자체가 무의미하므로 거부한다(fail closed).
+  function cCanWrite(ctx) {
+    if (!ctx || typeof ctx !== 'object') return { ok: false, reason: '실행 컨텍스트 없음' };
+    if (ctx.gateOn !== true) return { ok: false, reason: '게이트 OFF' };
+    if (ctx.cancelled === true) return { ok: false, reason: '사용자 취소' };
+    if (ctx.controllerAlive !== true) return { ok: false, reason: '컨트롤러 상실' };
+    const now = ctx.account, was = ctx.accountAtStart;
+    if (typeof now !== 'string' || now === '' ||
+        typeof was !== 'string' || was === '') return { ok: false, reason: '계정 확인 불가' };
+    if (now !== was) return { ok: false, reason: '계정 변경됨' };
+    return { ok: true, reason: '' };
+  }
+  //  이 action 이 네이티브 쓰기인가. 호출부는 쓰기 action 을 실행하기 직전에 반드시
+  //  cCanWrite 를 다시 통과시켜야 한다(§5). 읽기 action 에는 요구하지 않는다.
+  function cIsWriteAction(action) {
+    return action === 'dispatchStandby' || action === 'dispatchSetCurrent';
+  }
+  //  ★행 단위 상태머신(§4.3). (현재 단계, 관측) → (다음 단계, 다음 행동)의 순수 reducer.
+  //  rev1 의 "전건 본사확인 후 전건 배정" 2단계 구조는 쓰지 않는다 — 한 건이 끝나야
+  //  다음 건이고, 그래서 되돌리기 어려운 상태가 불필요하게 넓어지지 않는다.
+  //
+  //    start        → requery                     (읽기)
+  //    precheck     obs.row        O-- → prepareStandby / OS- → loadAssignPopup / 그 외 → abort
+  //    standbyReady obs.checkedSeqs+orderSeq       → dispatchStandby (쓰기)
+  //    standbyDone  obs.dispatched+requery         → loadAssignPopup / abort / halt
+  //    assignReady  obs.candidates                 → dispatchSetCurrent (쓰기, barcode 확정)
+  //    assignDone   obs.dispatched+requery+expectedBarcode → refreshRow / abort / halt
+  //
+  //  abort = 쓰기가 없었던 것이 확실한 확정 실패(재시작 안전). halt = 미확정 —
+  //  절대 자동 재시도하지 않고 사용자 확인으로 넘긴다(§3.6). 둘 다 중단이지만 사용자에게
+  //  주는 의미가 정반대라 이름을 나눴다.
+  //  알 수 없는 단계는 전부 abort(fail closed).
+  function cRowNext(phase, obs) {
+    const o = (obs && typeof obs === 'object') ? obs : {};
+    if (phase === 'start') return { phase: 'precheck', action: 'requery', reason: '' };
+    if (phase === 'precheck') {
+      const u = cRequeryUsable(o.row);
+      if (!u.ok) return { phase: 'abort', action: 'abort', reason: u.reason };
+      const step = cNextStep(o.row.code);
+      if (step === 'standby') return { phase: 'standbyReady', action: 'prepareStandby', reason: '' };
+      if (step === 'assign') return { phase: 'assignReady', action: 'loadAssignPopup', reason: '' };
+      return { phase: 'abort', action: 'abort', reason: '대상 상태 아님(' + o.row.code + ')' };
+    }
+    if (phase === 'standbyReady') {
+      if (!cCheckedSetExact(o.checkedSeqs, o.orderSeq))
+        return { phase: 'abort', action: 'abort', reason: '체크 집합이 그 한 건이 아님' };
+      return { phase: 'standbyDone', action: 'dispatchStandby', reason: '' };
+    }
+    if (phase === 'standbyDone') {
+      const r = cClassifyStandbyOutcome(o);
+      if (r === 'success') return { phase: 'assignReady', action: 'loadAssignPopup', reason: '' };
+      if (r === 'fail') return { phase: 'abort', action: 'abort', reason: '본사확인 — 쓰기 전 중단' };
+      return { phase: 'halt', action: 'halt', reason: '본사확인 결과 미확정' };
+    }
+    if (phase === 'assignReady') {
+      const bc = cPickAssignBarcode(o.candidates);
+      if (bc == null) return { phase: 'abort', action: 'abort', reason: '배정 후보 없음' };
+      return { phase: 'assignDone', action: 'dispatchSetCurrent', reason: '', barcode: bc };
+    }
+    if (phase === 'assignDone') {
+      const r = cClassifyOutcome(o);
+      if (r === 'success') return { phase: 'done', action: 'refreshRow', reason: '' };
+      if (r === 'fail') return { phase: 'abort', action: 'abort', reason: '배정 — 쓰기 전 중단' };
+      return { phase: 'halt', action: 'halt', reason: '배정 결과 미확정' };
+    }
+    if (phase === 'done') return { phase: 'done', action: 'done', reason: '' };
+    return { phase: 'abort', action: 'abort', reason: '알 수 없는 단계' };
+  }
   // ── 순수 헬퍼(DOM 비의존, 단위테스트 대상) ────────────────────────────────
   //  currentSetting('master','orderSeq','barcode','shop','client','orderDate')
   function parseCurrentSettingArgs(href) {
