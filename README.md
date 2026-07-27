@@ -47,8 +47,12 @@ loader 로 못 받던 파일. **D102 인쇄 프로그램(ExtSync)** 이 `shell-f
 
 - **로직만 수정**: `app-files.json` version 올림 → `git push`.
 - **껍데기 수정**(skin.js 등): manifest `version` 올림(규칙: patch>9→minor) →
-  `pwsh build-shell-index.ps1`(shell-files.json 갱신) → `git push`. 프로그램이 감지·동기화 →
-  다음 재시작 시 반영. **재설치 불필요.**
+  `pwsh build-shell-index.ps1` **또는** `node build-shell-index.js`(출력 동일) →
+  `git push`. 프로그램이 감지·동기화 → 다음 재시작 시 반영. **재설치 불필요.**
+
+> ⚠ **껍데기를 고치고 버전 올림·인덱스 재생성을 빼먹으면 배포가 조용히 멈춘다.**
+> `shell-files.json` 해시가 디스크와 어긋나 ExtSync 가 내려보낼 판단을 못 한다
+> (2026-07-27: 이 실수로 안정경로가 v3.6.1 에 6릴리스간 멈춰 있었다).
 
 > manifest `key` 로 확장 ID(`kejfp…`)가 고정돼 폴더를 교체해도 계정·설정이 유지된다.
 > force-install crx 는 비도메인 Windows 에서 원천 불가라 폐기(레거시 update.xml/crx).
