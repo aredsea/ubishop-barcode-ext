@@ -127,7 +127,12 @@
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
 
-  try { console.log('[UB][skin] v3.6.1 loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
+  //  버전은 manifest 에서 읽는다 — 하드코딩하면 릴리스마다 손으로 고쳐야 하고, 실제로 v3.6.1 이
+  //   v3.8.8 까지 그대로 남아 배포 검증에서 '동기 실패' 로 오독될 뻔했다(2026-07-27).
+  const _SKIN_VER = (() => {
+    try { return 'v' + chrome.runtime.getManifest().version; } catch (_) { return '(버전미상)'; }
+  })();
+  try { console.log('[UB][skin] ' + _SKIN_VER + ' loaded', { isTop: window === window.top, path: location.pathname, popup: _IS_POPUP }); } catch (_) {}
 
   /* ==========================================================================
    *  pageSize redirect — document_start 시점에 IIFE로 즉시 결정.
