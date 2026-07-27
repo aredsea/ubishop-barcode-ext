@@ -3415,68 +3415,129 @@
     //   이렇게 하면 옛 주문 승계도, 같은 주문의 낡은 세대도 구조적으로 남을 수 없다.
     epClearSubmitted();
     epWatchSubmit(orderSeq);   // 저장을 눌렀다는 사실을 navigation 너머로 넘긴다
+    epSuppressOwnUi();         // D102 도구 사이드바는 이 창에 뜨지 않는다
+    epInjectStyle();
+    //  ★숨기는 것은 **폼보다 앞선 블록만**이다(ERP 헤더·메뉴는 위에 있다). 뒤쪽은 손대지 않는다.
+    //   네이티브 저장 진입점 마크업을 아직 실측하지 못해서, 저장 버튼이 `input[type=button]`+
+    //   onclick 이나 javascript: 링크로 **폼 뒤 블록**에 있을 수 있다. '남길 것만 남기고 다 숨기기'
+    //   로 하면 그걸 없애 **저장 자체를 못 하게** 된다. 서버 오류 문구도 폼 뒤에 오는 일이 많다.
+    //   디자인은 숨김이 아니라 **스타일**로 낸다(카드 + 헤더).
     let hidden = 0;
     try {
+      const SUBMIT_SEL = 'input[type=submit],button[type=submit]';
+      const BOUND_SEL = form.id ? '[form="' + form.id + '"]' : null;
+      const ownsSubmit = (el) => {
+        try {
+          const cands = [];
+          if (el.matches(SUBMIT_SEL)) cands.push(el);
+          cands.push(...el.querySelectorAll(SUBMIT_SEL));
+          return cands.some((c) => c.form === form);
+        } catch (_) { return false; }
+      };
       const kids = Array.from(document.body.children);
-      const formHost = kids.find((c) => c.contains(form));
-      const formAt = formHost ? kids.indexOf(formHost) : -1;
+      const formAt = kids.findIndex((c) => c.contains(form));
       kids.forEach((child, i) => {
-        if (!child || child.contains(form)) return;
+        if (!child || !child.classList) return;
+        if (child.contains(form)) { child.classList.add('ub-ep-card'); return; }
+        if (formAt >= 0 && i > formAt) return;          // 폼 뒤는 절대 건드리지 않는다
         const tag = child.tagName;
         if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK') return;
-        //  ★폼보다 **앞**에 있는 것만 숨긴다. 헤더·메뉴는 위에 있고, 저장 버튼이나 서버
-        //   오류 문구는 폼 뒤에 오는 일이 많다. 뒤까지 숨기면 저장 자체를 못 하게 된다.
-        if (formAt >= 0 && i > formAt) return;
-        //  form 바깥에 있어도 form="form1" 로 폼에 묶인 컨트롤은 저장 버튼일 수 있다(표준 HTML).
-        //  ⚠ querySelector 는 자기 자신을 안 본다 — 버튼이 body 직계 자식이면 놓친다. matches 병행.
-        //  ⚠ 다른 폼(검색 등)의 submit 버튼 때문에 헤더가 통째로 살아남지 않게, **form1 소속**
-        //   컨트롤일 때만 보호한다(el.form 이 우리 폼인지 확인).
-        const SUBMIT_SEL = 'input[type=submit],button[type=submit]';
-        const ownsSubmit = (el) => {
-          try {
-            const cands = [];
-            if (el.matches(SUBMIT_SEL)) cands.push(el);
-            cands.push(...el.querySelectorAll(SUBMIT_SEL));
-            return cands.some((c) => c.form === form);
-          } catch (_) { return false; }
-        };
-        const BOUND_SEL = form.id ? '[form="' + form.id + '"]' : null;
-        try { if (BOUND_SEL && (child.matches(BOUND_SEL) || child.querySelector(BOUND_SEL))) return; } catch (_) {}
-        if (ownsSubmit(child)) return;
+        let bound = false;
+        try { bound = !!(BOUND_SEL && (child.matches(BOUND_SEL) || child.querySelector(BOUND_SEL))); } catch (_) {}
+        if (bound || ownsSubmit(child)) return;         // form1 저장 컨트롤을 품었으면 보존
+        //  ★인라인 style 로 숨긴다(클래스 + !important 가 아니라). 페이지 스크립트가 나중에
+        //   `el.style.display='block'` 으로 검증 오류를 띄우면 **그 할당이 이겨야** 한다.
+        //   !important 클래스면 우리가 계속 이겨서 오류 문구가 영영 안 보인다.
         child.style.display = 'none';
         hidden++;
       });
-    } catch (e) { epLog('크롬 숨김 실패(무해)', e); }
-    try {
-      const s = document.createElement('style');
-      s.textContent =
-        'body{background:#f7f9fb !important;margin:0 !important;padding:12px !important;}' +
-        '#ub-ep-bar{position:sticky;top:0;z-index:2147483000;display:flex;align-items:center;gap:8px;' +
-        'padding:10px 14px;margin:-12px -12px 12px;background:#fff;border-bottom:1px solid #e3e8ee;' +
-        "font-family:'Pretendard','Malgun Gothic',sans-serif;font-size:13px;font-weight:700;color:#123842;}" +
-        '#ub-ep-bar .ub-ep-hint{font-weight:500;color:#6b7280;font-size:12px;}';
-      (document.head || document.documentElement).appendChild(s);
-      const bar = document.createElement('div');
-      bar.id = 'ub-ep-bar';
-      bar.appendChild(Object.assign(document.createElement('span'), { textContent: '주문 수정' }));
-      bar.appendChild(Object.assign(document.createElement('span'), {
-        className: 'ub-ep-hint', textContent: '저장하면 목록이 자동으로 갱신되고 이 창은 닫혀요'
-      }));
-      document.body.insertBefore(bar, document.body.firstChild);
-    } catch (e) { epLog('헤더 표시 실패(무해)', e); }
+    } catch (e) { epLog('화면 정리 실패(무해)', e); }
+    try { document.body.insertBefore(epHeader(orderSeq), document.body.firstChild); }
+    catch (e) { epLog('헤더 표시 실패(무해)', e); }
     try { document.title = '주문 수정'; } catch (_) {}
     epLog('팝업 화면 정리 — 숨긴 블록', hidden, '개');
+  }
+  //  이 창에서는 확장 자신의 UI(D102 도구 사이드바·핸들)를 띄우지 않는다.
+  //  ★확장이 이미 가진 팝업 억제 경로를 재사용한다 — sessionStorage 마커를 세우면
+  //   renderSidebar() 가 스스로 제거하고, 이 창의 다음 페이지부터는 document_start 에
+  //   _IS_POPUP 이 true 라 아예 만들지도 않는다(깜빡임 없음).
+  function epSuppressOwnUi() {
+    try { sessionStorage.setItem('ub_is_popup_window', '1'); } catch (_) {}
+    try {
+      ['ub-sidebar', 'ub-sb-handle'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      });
+      document.documentElement.classList.remove('ub-sidebar-docked');
+    } catch (e) { epLog('도구 숨김 실패(무해)', e); }
+  }
+  //  팝업 전용 스타일. ERP 페이지엔 D102 토큰이 없어 값은 리터럴로 쓴다(아쿠아 팔레트).
+  function epInjectStyle() {
+    try {
+      if (document.getElementById('ub-ep-style')) return;
+      const s = document.createElement('style');
+      s.id = 'ub-ep-style';
+      s.textContent = [
+        // ⚠ 숨김은 CSS 가 아니라 인라인 style 로 한다(위 epDressPopup 참조) — 페이지가 나중에
+        //   오류 문구를 띄우려고 display 를 바꾸면 그쪽이 이겨야 하기 때문이다.
+        //  여백은 body 에 준다. 카드에 margin 을 주면 width:100% 인 표에서 가로로 넘친다.
+        "html{background:#f4f6f7 !important;}",
+        "body{background:#f4f6f7 !important;margin:0 !important;padding:12px !important;",
+        "font-family:'Pretendard','Malgun Gothic',sans-serif !important;color:#16232a !important;",
+        "box-sizing:border-box !important;}",
+        // 확장 자신의 UI — 요소와 **도킹 여백**까지. 사이드바가 다시 만들어져도 안 보이고
+        //  body 가 밀리지도 않게 한다(_IS_POPUP 은 document_start 상수라 이 문서에선 안 바뀐다).
+        "#ub-sidebar,#ub-sb-handle{display:none !important;}",
+        //  ⚠ margin-left 만 되돌린다. 도킹 CSS 가 건드리는 건 margin 뿐이라 padding 까지 0 으로
+        //   만들면 위에서 준 body padding 이 깨져 헤더 음수 마진과 어긋나 왼쪽이 잘린다.
+        "html.ub-sidebar-docked body{margin-left:0 !important;}",
+        // 헤더 — 아뜰리에 오버레이와 같은 리듬(surface + hairline + 14px/750 제목)
+        // body 에 12px 패딩을 줬으니 헤더는 음수 마진으로 폭을 꽉 채운다(full-bleed).
+        "#ub-ep-head{position:sticky;top:0;z-index:2147483000;background:#fff;",
+        "border-bottom:1px solid #e3e8ee;padding:12px 16px;margin:-12px -12px 12px;",
+        "display:flex;align-items:center;gap:9px;}",
+        "#ub-ep-head .t{font-size:14px;font-weight:750;letter-spacing:-.01em;color:#16232a;}",
+        "#ub-ep-head .seq{font-size:11px;font-weight:700;color:#0d8695;background:#e4f5f7;",
+        "border-radius:999px;padding:3px 9px;}",
+        "#ub-ep-head .hint{margin-left:auto;font-size:11px;font-weight:600;color:#8a949b;}",
+        // 폼 카드 — ⚠ display 는 건드리지 않는다. 원래 table/flex 인 블록에 block 을 씌우면
+        //  formatting context 가 사라져 열 정렬·버튼 배치가 깨진다.
+        ".ub-ep-card{margin:0 !important;padding:14px !important;",
+        "background:#fff !important;border:1px solid #e3e8ee !important;border-radius:14px !important;",
+        //  ⚠ overflow 를 걸지 않는다. 한 축만 auto 로 줘도 다른 축이 계산상 auto 가 돼 카드가
+        //   스크롤 컨테이너로 바뀌고, 내부의 absolute 달력·드롭다운이 잘린다. 넘치면 body 가 민다.
+        "box-shadow:0 1px 2px rgba(18,56,66,.04) !important;box-sizing:border-box !important;",
+        "max-width:100% !important;}",
+        // 안내 줄
+        "#ub-ep-notice{position:fixed;left:0;right:0;bottom:0;z-index:2147483600;padding:11px 16px;",
+        "background:#fff8e6;border-top:1px solid #f0dca8;color:#7a5b00;font-size:12.5px;font-weight:700;",
+        "font-family:'Pretendard','Malgun Gothic',sans-serif;}"
+      ].join('');
+      (document.head || document.documentElement).appendChild(s);
+    } catch (e) { epLog('스타일 주입 실패(무해)', e); }
+  }
+  function epHeader(orderSeq) {
+    const head = document.createElement('div');
+    head.id = 'ub-ep-head';
+    const t = document.createElement('span'); t.className = 't'; t.textContent = '주문 수정';
+    head.appendChild(t);
+    if (orderSeq) {
+      const s = document.createElement('span'); s.className = 'seq'; s.textContent = 'No. ' + orderSeq;
+      head.appendChild(s);
+    }
+    const h = document.createElement('span'); h.className = 'hint';
+    h.textContent = '저장하면 목록이 갱신되고 이 창은 닫혀요';
+    head.appendChild(h);
+    return head;
   }
   //  팝업 창 안에 안내 한 줄을 띄운다(토스트는 이 창에 없다). 같은 문구는 한 번만.
   function epNotice(text) {
     try {
+      epInjectStyle();                 // 안내만 뜨는 경로(수정폼이 아닐 때)에서도 스타일이 필요하다
       let box = document.getElementById('ub-ep-notice');
       if (!box) {
         box = document.createElement('div');
         box.id = 'ub-ep-notice';
-        box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483600;padding:10px 14px;' +
-          "background:#fff3cd;border-top:1px solid #f0d68a;color:#7a5b00;font-size:13px;font-weight:700;" +
-          "font-family:'Pretendard','Malgun Gothic',sans-serif;";
         document.body.appendChild(box);
       }
       box.textContent = text;
