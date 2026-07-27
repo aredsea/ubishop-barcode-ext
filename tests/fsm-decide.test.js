@@ -67,17 +67,20 @@ test('scenario 2: submitted form reappearance fails without resubmission', () =>
   assert.equal(result.setSubmittedFor, undefined);
 });
 
-test('scenario 3: a login form is filled whether or not a captcha is present', () => {
-  // 캡차는 더 이상 게이트가 아니다 — 올바른 자격증명이면 캡차가 안 뜨고, 뜨면 사용자가 푼다.
-  // 폼이 있으면 captcha 유무와 무관하게 fillLogin 으로 채우고 제출한다.
+test('scenario 3: 보이는 캡차는 제출하지 않고 fail-closed, 없으면 fillLogin', () => {
+  // P1-1(공동검수 2026-07-22): 보이는 캡차는 자격증명 문제 신호다(사용자 모델: 캡차=비번오답).
+  // 채우지도 제출하지도 않고 captcha_present 로 안전 중단한다 — 무의미한 제출·락아웃 위험 제거.
+  // 반자동 캡차 UX(fillCaptcha/captchaWait)는 재도입하지 않는다(사용자 결정 유지).
   const withCaptcha = decide(flow('toLogin'), probe({ path: '/mall/login.ubs', hasForm: true, captcha: true }), 100);
-  assert.equal(withCaptcha.action, 'fillLogin');
-  assert.equal(withCaptcha.nextPhase, 'submitted');
-  assert.equal(withCaptcha.setSubmittedFor, 'B');
+  assert.equal(withCaptcha.action, 'fail');
+  assert.equal(withCaptcha.failureCode, 'captcha_present');
+  assert.notEqual(withCaptcha.action, 'fillLogin');
 
+  // 캡차 없음(정상 경로) — 폼이 있으면 fillLogin 으로 채우고 제출한다.
   const withoutCaptcha = decide(flow('toLogin'), probe({ path: '/mall/login.ubs', hasForm: true, captcha: false }), 100);
   assert.equal(withoutCaptcha.action, 'fillLogin');
   assert.equal(withoutCaptcha.nextPhase, 'submitted');
+  assert.equal(withoutCaptcha.setSubmittedFor, 'B');
 });
 
 test('scenario 4: blank navigation reaches a phase deadline', () => {

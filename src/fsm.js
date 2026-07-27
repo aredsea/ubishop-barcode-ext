@@ -104,6 +104,10 @@ function decide(flow, rawProbe, now) {
 
   if (probe.hasForm) {
     if (flow.submittedFor) return fsmFail('login_reappeared');
+    // P1-1(공동검수): 보이는 캡차(sysUser.fcaptcha / reCAPTCHA bframe)가 떠 있으면 채우지도
+    // 제출하지도 않고 fail-closed 한다. 사용자 모델상 캡차=자격증명 문제이므로 제출은 무의미하고
+    // 락아웃 위험만 있다. (반자동 캡차 UX 는 사용자 결정대로 재도입하지 않는다.)
+    if (probe.captcha) return fsmFail('captcha_present', 'captcha_present');
     return fsmWithAttemptCap(flow, {
       action: 'fillLogin',
       nextPhase: 'submitted',

@@ -353,39 +353,55 @@ function UB_FILL_LOGIN(userid, pw) {
   const q = s => document.querySelector(s);
   const idEl = q('input[name="sysUser.fuserid"]');
   const pwEl = q('input[name="sysUser.fpasswd"]');
-  // Chrome 저장 비밀번호 자동완성이 우리 값을 이전 계정으로 되돌리는 걸 막는다:
-  //  ① 대상 input·form 의 autocomplete 를 끄고
-  //  ② 네이티브 value setter 로 값을 넣어(프레임워크/브라우저의 value 추적을 우회)
-  //  ③ input·change 를 버블로 발사해 페이지 로직이 값을 정상 인식하게 한다.
   const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  const fire = (el) => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+  // 네이티브 value setter 로 값을 넣고(브라우저 value 추적 우회) input·change 를 버블로 발사(페이지 인식).
   const set = (el, v) => {
-    if (!el) return false;
     try { el.setAttribute('autocomplete', 'off'); } catch (e) {}
     try { nativeSet.call(el, v); } catch (e) { el.value = v; }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
+    fire(el);
   };
-  try { const f = (idEl && idEl.form) || (pwEl && pwEl.form); if (f) f.setAttribute('autocomplete', 'off'); } catch (e) {}
-  const okId = set(idEl, userid);
-  const okPw = set(pwEl, pw);
+  // P1-3(공동검수 2026-07-22): probe 의 hasForm 은 제네릭 input[type=password] 로도 true 지만, 여기선
+  //  정확명(sysUser.fuserid/fpasswd)만 다룬다. 정확명 두 필드가 없거나 서로 다른 form 이면 채우지도
+  //  제출하지도 않는다(fail-closed) — 크롬이 남긴 이전 자격증명이 엉뚱한 폼으로 제출되는 것 차단.
+  if (!idEl || !pwEl || !idEl.form || idEl.form !== pwEl.form) {
+    try { console.log('[UB][login] fill-abort(fields)', { hasId: !!idEl, hasPw: !!pwEl,
+      sameForm: !!(idEl && pwEl && idEl.form && idEl.form === pwEl.form) }); } catch (e) {}
+    return { okId: false, okPw: false, via: '', submitted: false, reason: 'fields_missing' };
+  }
+  // Chrome 저장 비밀번호 자동완성이 값을 이전 계정으로 되돌리는 걸 막는다: form autocomplete off + set.
+  try { idEl.form.setAttribute('autocomplete', 'off'); } catch (e) {}
+  set(idEl, userid);
+  set(pwEl, pw);
+  // P1-2(공동검수): 제출 직전 id·pw 를 '함께' 재확정한다(ID 만 재확정하면 자동완성이 되돌린 비번이
+  //  제출된다). 그리고 read-back 으로 실제 input 값이 대상과 일치하는지 검증한다.
+  try { nativeSet.call(idEl, userid); } catch (e) { idEl.value = userid; }
+  try { nativeSet.call(pwEl, pw); } catch (e) { pwEl.value = pw; }
+  fire(idEl); fire(pwEl);
+  const okId = idEl.value === userid;
+  const okPw = pwEl.value === pw;
   // 진단(비밀번호 값은 절대 로그하지 않는다 — 길이만). F12 로그인 페이지 콘솔에서 어느 계정으로 채웠는지 확인.
   try { console.log('[UB][login] fill', { okId, okPw, useridPrefix: String(userid).slice(0, 4), pwLen: String(pw).length }); } catch (e) {}
-  // 제출 직전 아이디를 다시 못박는다 — 그 사이 자동완성이 값을 되돌렸을 수 있다.
-  if (idEl) {
-    try { nativeSet.call(idEl, userid); } catch (e) { idEl.value = userid; }
-    idEl.dispatchEvent(new Event('input', { bubbles: true }));
-    idEl.dispatchEvent(new Event('change', { bubbles: true }));
+  // read-back 실패 → 어떤 제출 경로(login()/버튼/form.submit)도 호출하지 않는다(fail-closed). 자동완성이
+  //  되돌린 값으로 로그인해 엉뚱한 계정을 '성공'으로 학습(fsm bootstrap)하는 것까지 차단한다.
+  if (!okId || !okPw) {
+    try { console.log('[UB][login] submit-abort(readback)', { okId, okPw }); } catch (e) {}
+    return { okId, okPw, via: '', submitted: false, reason: 'readback_mismatch' };
   }
+  // ⚠ 잔여(미해결, 2026-07-22 공동검수 P1-2): login() 이 비동기(invisible reCAPTCHA 콜백 등)로 반환한
+  //  뒤 직접 form.submit() 하면, 그 사이 자동완성이 되돌린 값을 여기서 막지 못한다 — 직접 form.submit()
+  //  은 'submit' 이벤트를 발생시키지 않으므로 이벤트 리스너로는 못 잡는다(cache-intercept.js 참조).
+  //  실제 login() 의 최종 제출 기전(동기 form.submit / requestSubmit / AJAX)은 라이브 조사가 필요하다.
+  //  현재는 위 동기 read-back 으로 흔한 케이스만 닫았고, 진단 로그로 잔여 오작동을 관측한다.
   let via = '';
   try { if (typeof login === 'function') { login(); via = 'login()'; } } catch (e) { via = 'err'; }
   if (via !== 'login()') {
     const btn = document.querySelector('a.btn_submit, [onclick*="login" i]');
     if (btn) { btn.click(); via += '|btn'; }
-    else { const f = pwEl && pwEl.form; if (f) { try { f.submit(); via += '|submit'; } catch (e) {} } }
+    else { try { pwEl.form.submit(); via += '|submit'; } catch (e) {} }
   }
   try { console.log('[UB][login] submit', { via, useridPrefix: String(userid).slice(0, 4) }); } catch (e) {}
-  return { okId, okPw, via };
+  return { okId, okPw, via, submitted: true };
 }
 
 /* ---- exec / 상태 / 복호화 ---- */
