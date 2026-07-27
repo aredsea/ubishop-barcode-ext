@@ -947,13 +947,26 @@
     p.set('tradeJun', String(a.jun == null ? '' : a.jun));
     return p.toString();
   }
+  const EP_SAVE_PATH = '/jun/orderitem/orderItemModify.do';   // ⚠ Form 접미사 없음 = 저장(POST)
+  const EP_LIST_PATH = '/jun/orderitem/orderItemList.do';
   //  팝업 창이 지금 어디에 있느냐로 할 일을 정한다.
   //   'dress' = 수정폼 → 크롬 걷어내고 폼만 보여준다
-  //   'done'  = 그 외 → 저장하고 폼을 떠난 것으로 보고 목록 갱신·창 닫기
-  //  ⚠ 'done' 은 "저장에 성공했다" 가 아니라 "폼을 떠났다" 는 뜻이다. 목록을 서버에서
-  //   다시 받아 오므로, 저장이 안 됐으면 목록도 옛 값 그대로 보인다(거짓 성공 표시 없음).
-  function epPopupAction(pathname) {
-    return String(pathname == null ? '' : pathname) === EP_FORM_PATH ? 'dress' : 'done';
+  //   'done'  = 저장 결과로 **알려진** 착지 → 목록 갱신·창 닫기
+  //   'stay'  = 그 밖의 모든 곳 → 아무것도 하지 않고 창을 열어둔다
+  //  ★'수정폼이 아니면 전부 done' 은 위험하다 — 사용자가 폼 안에서 다른 데로 이동했거나
+  //   서버 오류·권한 화면에 착지했을 때도 창을 닫아버려, 저장 안 한 작업을 잃고 오류 내용을
+  //   못 보게 된다. 그래서 **아는 착지에서만** 닫는다(fail-closed).
+  //  ⚠ 'done' 은 "저장에 성공했다" 가 아니라 "저장 경로를 지나 떠났다" 는 뜻이다. 목록을
+  //   서버에서 다시 받아 오므로 저장이 안 됐으면 목록도 옛 값 그대로다(거짓 성공 표시 없음).
+  //  ★submitted = 이 창에서 **실제로 폼 제출이 일어났다**는 관측 신호. 경로만 보고 판정하면
+  //   사용자가 저장하지 않고 메뉴로 목록에 간 것도 '저장 완료' 로 오인해 창을 닫는다.
+  //   인과 증거 없이 완료로 치지 않는다.
+  function epPopupAction(pathname, submitted) {
+    const p = String(pathname == null ? '' : pathname);
+    if (p === EP_FORM_PATH) return 'dress';
+    if (submitted !== true) return 'stay';                    // 제출 신호 없음 → 관여하지 않는다
+    if (p === EP_SAVE_PATH || p === EP_LIST_PATH) return 'done';
+    return 'stay';
   }
   // ── 작업C 순수 헬퍼 (slice 1) ─────────────────────────────────────────────
   //  본사확인 → 입고완료 자동화의 순수 판정부. DOM·쓰기·chrome.*·타이머 미접촉.
@@ -3230,6 +3243,9 @@
    * ========================================================================== */
   const EP_TAG = '[UB][editpop]';
   const epLog = (...a) => { try { console.log(EP_TAG, ...a); } catch (_) {} };
+  //  이 팝업 창이 누구인지(주문키 + 세대). 신원조회 응답으로 채워지고, 완료를 알릴 때 되돌려
+  //  보내 그 사이 창이 다른 주문으로 재사용됐는지 background 가 판별하게 한다.
+  let epSelf = { orderSeq: '', gen: null };
 
   //  수정폼 URL — 네이티브 modify() 가 만드는 것과 **똑같이** 만든다(실측, 2026-07-27):
   //    ?tcode=order_item&seq=<seq>&tradeJun=<jun>   ← 파라미터는 이 셋이 전부다.
@@ -3271,17 +3287,38 @@
           const url = buildEditPopupUrl(args);
           e.preventDefault();
           e.stopPropagation();
-          chrome.runtime.sendMessage({ type: 'ubEpOpen', url: url, orderSeq: rowSeq }, (res) => {
-            const err = (chrome.runtime.lastError && chrome.runtime.lastError.message) ||
-                        (res && !res.ok && res.error);
-            if (err) {
-              epLog('창 열기 실패 → 네이티브 이동으로 복구', err);
-              try { asgToast('수정 창을 열지 못해 기존 화면으로 엽니다'); } catch (_) {}
-              try { location.href = url; } catch (_) {}
-              return;
-            }
-            epLog('수정 창 열림', rowSeq, res && res.reused ? '(기존 창 재사용)' : '');
-          });
+          //  ⚠ source:'ub' 는 필수다 — background 라우터 첫 줄이 msg.source !== 'ub' 면
+          //   즉시 반환한다(background.js:27). 빠뜨리면 응답이 없어 'message port closed'
+          //   로 실패하고, 그 폴백이 목록 탭을 이동시켜 마치 기능이 없는 것처럼 보인다(실측).
+          try {
+            chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpOpen', url: url, orderSeq: rowSeq }, (res) => {
+              //  ★두 실패를 구분한다.
+              //   ⓐ 응답 유실(lastError): 창이 떴는지 **모른다** → 자동 이동하면 같은 수정폼이
+              //     두 곳에 열려 중복 저장 위험 → 알리기만 하고 사용자가 다시 누르게 한다.
+              //   ⓑ background 가 명시적으로 실패를 답함(res.ok===false): 창이 없는 것이 **확정**
+              //     (레지스트리 실패 시 background 가 만든 창까지 닫는다) → 네이티브와 동등하게
+              //     이 탭을 이동시켜 복구한다. 안 그러면 새 기능이 원래 되던 것까지 막는다.
+              const lost = chrome.runtime.lastError && chrome.runtime.lastError.message;
+              if (lost) {
+                epLog('수정 창 응답 유실 — 결과 불명이라 자동 이동하지 않는다', lost);
+                try { asgToast('수정 창을 열지 못했어요. 다시 눌러 주세요'); } catch (_) {}
+                return;
+              }
+              if (!res || res.ok !== true) {
+                epLog('수정 창 열기 확정 실패 → 네이티브 이동으로 복구', res && res.error);
+                try { asgToast('수정 창을 열 수 없어 기존 화면으로 엽니다'); } catch (_) {}
+                try { location.href = url; } catch (_) {}
+                return;
+              }
+              epLog('수정 창 열림', rowSeq, res.reused ? '(기존 창 재사용)' : '');
+            });
+          } catch (sendErr) {
+            //  동기 throw = 확장 컨텍스트 무효(업데이트 후 새로고침 안 한 탭). 창이 뜰 수 없는
+            //  것이 확정이라 네이티브와 동등하게 이 탭을 이동시켜 복구한다 — 안 그러면 이미
+            //  preventDefault 한 뒤라 클릭이 통째로 죽는다.
+            epLog('메시지 전송 불가 → 네이티브 이동으로 복구', sendErr);
+            try { location.href = url; } catch (_) {}
+          }
         } catch (err) {
           epLog('클릭 처리 실패 → 네이티브 진행', err);   // preventDefault 전이면 네이티브가 산다
         }
@@ -3305,18 +3342,107 @@
   function epLooksLogin() {
     try { return !!document.querySelector('input[type=password]'); } catch (_) { return false; }
   }
+  //  제출 신호 — 이 **창**의 sessionStorage 에 남긴다. 창 안에서 페이지가 바뀌어도 살아남고
+  //  (같은 origin·같은 탭), 다른 탭·다른 창에는 안 보인다. 그래서 '이 수정 창에서 저장을
+  //  눌렀다' 는 사실을 navigation 너머로 옮길 수 있다.
+  const EP_SUBMIT_MARK = 'ub_ep_submitted';
+  //  ★마커는 boolean 이 아니라 **그 주문의 키**를 담는다. 창은 재사용되므로(같은 탭을 다른
+  //   주문 폼으로 이동) boolean 이면 주문 A 의 신호가 주문 B 로 승계돼, B 에서 저장하지 않고
+  //   목록으로 가도 완료로 오인한다. 주문키를 담으면 그 승계가 구조적으로 불가능하다.
+  function epSubmitMarkValid(mark, orderSeq) {
+    const m = String(mark == null ? '' : mark).trim();
+    const o = String(orderSeq == null ? '' : orderSeq).trim();
+    return !!m && !!o && m === o;
+  }
+  function epMarkSubmitted(orderSeq) {
+    try { if (orderSeq) sessionStorage.setItem(EP_SUBMIT_MARK, String(orderSeq)); } catch (_) {}
+  }
+  function epClearSubmitted() {
+    try { sessionStorage.removeItem(EP_SUBMIT_MARK); } catch (_) {}
+  }
+  function epWasSubmitted(orderSeq) {
+    try { return epSubmitMarkValid(sessionStorage.getItem(EP_SUBMIT_MARK), orderSeq); }
+    catch (_) { return false; }
+  }
+  //  수정폼에 제출 감시를 건다(문서당 1회).
+  //  ⚠ capture 로 잡으면 뒤이어 페이지 검증이 취소해도 마커가 남는다 → 다음 이동에서 완료로
+  //   오인한다. 그래서 마커를 세운 뒤 **다음 태스크에서 취소 여부를 보고 되돌린다**.
+  function epWatchSubmit(orderSeq) {
+    try {
+      if (!orderSeq) return;
+      if (document.documentElement.dataset.ubEpSubmitWatch === '1') return;
+      document.documentElement.dataset.ubEpSubmitWatch = '1';
+      //  ⚠ form 을 장착 시점에 붙잡지 않는다 — 페이지가 폼 노드를 갈아끼우면 낡은 참조로
+      //   정상 저장을 놓친다. 이벤트가 올 때마다 지금의 form1 을 찾는다.
+      const curForm = () => { try { return (document.forms && document.forms['form1']) || null; } catch (_) { return null; } };
+      //  취소되면 증거를 철회한다 — capture 로 잡은 시점엔 아직 취소 여부를 모른다.
+      const markThenVerify = (e) => {
+        epMarkSubmitted(orderSeq);
+        setTimeout(() => {
+          try { if (e.defaultPrevented) { epClearSubmitted(); epLog('제출이 취소됨 → 증거 철회'); } }
+          catch (_) {}
+        }, 0);
+      };
+      document.addEventListener('submit', (e) => {
+        try {
+          const f = curForm();
+          if (!f || e.target !== f) return;           // form1 의 제출일 때만(클릭 가드와 동일 규칙)
+          markThenVerify(e);
+        } catch (_) {}
+      }, true);
+      //  form.submit() 은 submit 이벤트를 내지 않는다 → form1 에 속한 저장 컨트롤 클릭도 본다.
+      //  ⚠ t.form 이 null 인 컨트롤(폼 밖 버튼)은 우리 폼 소속이 아니므로 인정하지 않는다.
+      document.addEventListener('click', (e) => {
+        try {
+          const t = e.target && e.target.closest
+            ? e.target.closest('input[type=submit],button[type=submit]') : null;
+          if (!t) return;
+          const f = curForm();
+          if (!f || t.form !== f) return;             // form1 소속일 때만
+          markThenVerify(e);                          // 클릭이 취소되면 마찬가지로 철회
+        } catch (_) {}
+      }, true);
+    } catch (e) { epLog('제출 감시 장착 실패', e); }
+  }
   //  ERP 헤더·메뉴를 걷어낸다. ★마크업을 추측하지 않는다 — body 직계 자식 중 수정폼을
   //   품지 않은 것만 숨긴다. 헤더·네비가 body 직계면 걷히고, 폼과 같은 컨테이너에 있으면
   //   그대로 남는다(효과가 없을 뿐 저장 버튼이 사라지지는 않는다 = fail-safe).
-  function epDressPopup() {
+  function epDressPopup(orderSeq) {
     const form = document.forms && document.forms['form1'];
     if (!form) { epLog('form1 없음 → 화면을 손대지 않는다'); return; }
+    //  ★수정폼이 보이고 있다 = 직전 제출은 폼을 벗어나지 못했다(검증 실패·재표시). 그러니
+    //   여기서 **증거를 무조건 소비한다**. 마커의 수명은 '제출 → 바로 다음 이동' 한 번뿐이다.
+    //   이렇게 하면 옛 주문 승계도, 같은 주문의 낡은 세대도 구조적으로 남을 수 없다.
+    epClearSubmitted();
+    epWatchSubmit(orderSeq);   // 저장을 눌렀다는 사실을 navigation 너머로 넘긴다
     let hidden = 0;
     try {
-      Array.from(document.body.children).forEach((child) => {
+      const kids = Array.from(document.body.children);
+      const formHost = kids.find((c) => c.contains(form));
+      const formAt = formHost ? kids.indexOf(formHost) : -1;
+      kids.forEach((child, i) => {
         if (!child || child.contains(form)) return;
         const tag = child.tagName;
         if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK') return;
+        //  ★폼보다 **앞**에 있는 것만 숨긴다. 헤더·메뉴는 위에 있고, 저장 버튼이나 서버
+        //   오류 문구는 폼 뒤에 오는 일이 많다. 뒤까지 숨기면 저장 자체를 못 하게 된다.
+        if (formAt >= 0 && i > formAt) return;
+        //  form 바깥에 있어도 form="form1" 로 폼에 묶인 컨트롤은 저장 버튼일 수 있다(표준 HTML).
+        //  ⚠ querySelector 는 자기 자신을 안 본다 — 버튼이 body 직계 자식이면 놓친다. matches 병행.
+        //  ⚠ 다른 폼(검색 등)의 submit 버튼 때문에 헤더가 통째로 살아남지 않게, **form1 소속**
+        //   컨트롤일 때만 보호한다(el.form 이 우리 폼인지 확인).
+        const SUBMIT_SEL = 'input[type=submit],button[type=submit]';
+        const ownsSubmit = (el) => {
+          try {
+            const cands = [];
+            if (el.matches(SUBMIT_SEL)) cands.push(el);
+            cands.push(...el.querySelectorAll(SUBMIT_SEL));
+            return cands.some((c) => c.form === form);
+          } catch (_) { return false; }
+        };
+        const BOUND_SEL = form.id ? '[form="' + form.id + '"]' : null;
+        try { if (BOUND_SEL && (child.matches(BOUND_SEL) || child.querySelector(BOUND_SEL))) return; } catch (_) {}
+        if (ownsSubmit(child)) return;
         child.style.display = 'none';
         hidden++;
       });
@@ -3341,13 +3467,54 @@
     try { document.title = '주문 수정'; } catch (_) {}
     epLog('팝업 화면 정리 — 숨긴 블록', hidden, '개');
   }
+  //  팝업 창 안에 안내 한 줄을 띄운다(토스트는 이 창에 없다). 같은 문구는 한 번만.
+  function epNotice(text) {
+    try {
+      let box = document.getElementById('ub-ep-notice');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'ub-ep-notice';
+        box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483600;padding:10px 14px;' +
+          "background:#fff3cd;border-top:1px solid #f0d68a;color:#7a5b00;font-size:13px;font-weight:700;" +
+          "font-family:'Pretendard','Malgun Gothic',sans-serif;";
+        document.body.appendChild(box);
+      }
+      box.textContent = text;
+      return box;
+    } catch (e) { epLog('안내 표시 실패', e); return null; }
+  }
+  //  ★수정폼을 떠났는데 저장으로 못 알아본 경우의 탈출구. 네이티브 저장 진입점이 어떤
+  //   마크업인지 아직 실측하지 못해(예: type=button + onclick 에서 form.submit()) 제출 신호를
+  //   놓칠 수 있다. 그때 창이 조용히 멈춰 있지 않게, 사용자가 직접 끝내는 버튼을 준다.
+  function epOfferFinish() {
+    try {
+      const box = epNotice('저장하셨다면 아래 버튼을 눌러 주세요. 목록을 새로고침하고 이 창을 닫아요.');
+      if (!box || box.querySelector('button')) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '목록 새로고침하고 닫기';
+      btn.style.cssText = 'margin-left:10px;padding:5px 12px;border:0;border-radius:6px;' +
+        'background:#123842;color:#fff;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;';
+      btn.addEventListener('click', () => {
+        btn.disabled = true;
+        chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpDone', orderSeq: epSelf.orderSeq, gen: epSelf.gen, reason:'manual' }, (res) => {
+          try {
+            if (res && res.ok) return;             // 창이 곧 닫힌다
+            btn.disabled = false;
+            epNotice('목록을 새로고치지 못했어요. 목록 창을 직접 새로고침해 주세요.');
+          } catch (_) {}
+        });
+      });
+      box.appendChild(btn);
+    } catch (e) { epLog('수동 완료 버튼 표시 실패', e); }
+  }
   //  팝업 창에서만 도는 진입점. 목록 탭에서도 호출되지만 isEditPopup=false 로 즉시 빠진다.
   //  ★신원 판단은 background 의 windowId 레지스트리다(URL 쿼리는 navigation 에서 사라진다).
   function initEditPopupWindow(attempt) {
     if (window !== window.top) return;   // ERP 자체 iframe 에서는 돌지 않는다
     const tries = attempt || 0;
     try {
-      chrome.runtime.sendMessage({ type: 'ubEpWhoAmI' }, (who) => {
+      chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpWhoAmI' }, (who) => {
         try {
           if (chrome.runtime.lastError) return;
           if (!who || !who.isEditPopup) {
@@ -3359,13 +3526,31 @@
             }
             return;
           }
-          const action = epPopupAction(location.pathname);
-          if (action === 'dress') { epDressPopup(); return; }
-          //  폼을 떠났다. 로그인 화면이면 세션이 끊긴 것이라 조용히 닫지 않는다.
+          const orderSeq = who.orderSeq;
+          epSelf = { orderSeq: orderSeq, gen: who.gen };   // 완료를 알릴 때 자기 신원을 싣는다
+          const submitted = epWasSubmitted(orderSeq);
+          const action = epPopupAction(location.pathname, submitted);
+          if (action === 'dress') { epDressPopup(orderSeq); return; }
+          if (action === 'stay') {   // 아는 착지가 아니거나 제출 증거가 없다 → 손대지 않는다
+            epLog('완료로 볼 근거가 없다 → 창을 그대로 둔다', location.pathname, 'submitted=' + submitted);
+            //  수정폼을 이미 떠난 상태라면 사용자가 직접 끝낼 수 있게 탈출구를 준다.
+            //  ⚠ 로그인 만료 화면에는 띄우지 않는다 — 저장한 적이 없는데 '저장하셨다면' 을
+            //   물으면 오해를 부른다.
+            if (location.pathname !== EP_FORM_PATH && !epLooksLogin()) epOfferFinish();
+            return;
+          }
+          //  저장 경로를 지나 떠났다. 로그인 화면이면 세션이 끊긴 것이라 조용히 닫지 않는다.
           if (epLooksLogin()) { epLog('로그인 화면 — 창을 닫지 않는다(세션 만료)'); return; }
           epLog('폼을 떠남 → 목록 갱신 요청', location.pathname);
-          chrome.runtime.sendMessage({ type: 'ubEpDone', reason: location.pathname }, () => {
-            try { if (chrome.runtime.lastError) { /* 창이 이미 닫혔을 수 있다 */ } } catch (_) {}
+          chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpDone', orderSeq: epSelf.orderSeq, gen: epSelf.gen, reason:location.pathname }, (res) => {
+            try {
+              if (res && res.ok) return;                     // 성공이면 이 창은 곧 닫힌다
+              //  실패든 응답 유실이든 **조용히 사라지지 않는다** — 창을 닫지 않고 알린다.
+              //  (응답이 유실됐는데 실제로는 성공해 창이 닫히는 중이면 이 안내는 보이지 않는다.)
+              const why = (chrome.runtime.lastError && chrome.runtime.lastError.message) || (res && res.error);
+              epLog('목록 갱신 확인 실패 — 창을 열어둔다', why);
+              epNotice('목록을 자동으로 새로고치지 못했어요. 목록 창을 직접 새로고침해 주세요.');
+            } catch (_) {}
           });
         } catch (e) { epLog('팝업 처리 실패', e); }
       });
@@ -3709,13 +3894,21 @@
     startObserver();
     // background → cacheProgress 메시지 수신
     try {
-      chrome.runtime.onMessage.addListener((msg) => {
+      chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         //  수정 팝업이 저장하고 닫힐 때 — 이 목록을 서버에서 다시 받아온다(읽기).
+        //  ★top frame + 주문전표 목록에서만 처리한다. skin.js 는 all_frames:true 라 ERP 자체
+        //   iframe(이 페이지에 10개)에서도 돌고, 거기서 form1.submit() 을 부르면 우리가 의도한
+        //   적 없는 폼이 제출된다. background 가 frameId:0 으로 보내지만 여기서도 막는다(이중).
         if (msg && msg.source === 'ub-bg' && msg.type === 'ubEpRefresh') {
+          if (window !== window.top || !isOrderJunList()) {
+            sendResponse({ ok: false, error: 'not_list_top' });
+            return false;
+          }
           epLog('수정 반영 → 목록 갱신', msg.orderSeq);
           try { asgToast('수정 내용을 불러옵니다'); } catch (_) {}
-          epReloadList();
-          return;
+          const ok = epReloadList();            // form1 재제출(검색조건 유지) — 읽기
+          sendResponse({ ok: ok });             // 갱신을 실제로 걸었는지 background 에 알린다
+          return false;
         }
         if (!msg || msg.source !== 'ub-bg' || msg.type !== 'cacheProgress') return;
         cacheJob.current = msg.current || 0;
