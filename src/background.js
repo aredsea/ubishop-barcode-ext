@@ -47,6 +47,133 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'ubAutoCreateJob')  { sendResponse(ubAutoCreateJob(msg, sender)); return false; }
   if (msg.type === 'ubAutoFrameReady') { ubAutoOnFrameReady(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
   if (msg.type === 'ubAutoEndJob')     { sendResponse(ubAutoEndJob(msg.jobId, 'controller_end', sender)); return false; }
+
+  // ---- 수정 팝업(작업B) ----
+  if (msg.type === 'ubEpOpen')   { ubEpOpen(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+  if (msg.type === 'ubEpWhoAmI') { ubEpWhoAmI(sender).then(sendResponse).catch(() => sendResponse({ isEditPopup:false })); return true; }
+  if (msg.type === 'ubEpDone')   { ubEpDone(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+});
+
+/* ==========================================================================
+ *  수정 팝업 — [수정] 을 별도 브라우저 창으로 (작업B)
+ *
+ *  왜 iframe 이 아니라 별도 창인가: iframe 은 X-Frame-Options·로드 성공 감지·프레임
+ *  가드가 전부 걸림돌이었다. 진짜 창은 네이티브 이동을 그대로 쓰므로 그 문제가 없다.
+ *  (항상-위 오버레이(Document PiP)는 보안 컨텍스트 전용인데 유비샵은 HTTP 라 불가.)
+ *
+ *  ★신원은 URL 이 아니라 windowId 로 판단한다. URL 쿼리는 첫 navigation 에서 사라지지만
+ *   (skin.js 의 ubasg 소실 사례) windowId 는 창이 살아 있는 한 안 바뀐다.
+ * ========================================================================== */
+const UB_EP_ORIGINS = ['http://ubdstore.ubshop.biz', 'https://ubdstore.ubshop.biz'];
+const UB_EP_FORM_PATH = '/jun/orderitem/orderItemModifyForm.do';   // ⚠ Form 접미사 = 읽기 폼
+const UB_EP_WIN_W = 980;
+const UB_EP_WIN_H = 820;
+const UB_EP_KEY = 'ubEpWindows';   // chrome.storage.session: { [windowId]: {openerTabId,tabId,orderSeq,createdAt} }
+const ubEpLog = (...a) => { try { console.log('[UB][editpop]', ...a); } catch (_) {} };
+
+//  ★레지스트리를 메모리에 두면 안 된다 — MV3 서비스워커는 30초 유휴면 종료된다.
+//   사용자가 수정폼을 채우는 동안엔 확장 이벤트가 없어 반드시 죽고, 그때 메모리 Map 은
+//   사라져 저장해도 창이 안 닫히고 목록도 안 갱신된다. session 저장소는 워커 재시작을
+//   견디고 브라우저를 닫으면 비워진다(저널·writer lock 과 같은 선택).
+async function ubEpAll() {
+  try { const o = await chrome.storage.session.get(UB_EP_KEY); return (o && o[UB_EP_KEY]) || {}; }
+  catch (_) { return {}; }
+}
+async function ubEpSet(map) {
+  try { await chrome.storage.session.set({ [UB_EP_KEY]: map }); } catch (_) {}
+}
+async function ubEpGet(winId) {
+  if (winId == null) return null;
+  const all = await ubEpAll();
+  return all[String(winId)] || null;
+}
+async function ubEpDelete(winId) {
+  const all = await ubEpAll();
+  if (!all[String(winId)]) return false;
+  delete all[String(winId)];
+  await ubEpSet(all);
+  return true;
+}
+
+//  열어줄 URL 인지 검사한다. 아무 URL 이나 창으로 띄우면 컨텐츠 스크립트가 임의 페이지를
+//  여는 통로가 된다 — origin 과 path 를 exact 로 본다(fail-closed).
+function ubEpUrlAllowed(url) {
+  try {
+    const u = new URL(String(url == null ? '' : url));
+    return UB_EP_ORIGINS.includes(u.origin) && u.pathname === UB_EP_FORM_PATH;
+  } catch (_) { return false; }
+}
+
+async function ubEpOpen(msg, sender) {
+  const tabId = sender && sender.tab && sender.tab.id;
+  if (tabId == null) return { ok: false, error: 'no_tab' };
+  if (sender.frameId !== 0) return { ok: false, error: 'not_top_frame' };
+  if (!ubEpUrlAllowed(msg && msg.url)) return { ok: false, error: 'url_not_allowed' };
+  const orderSeq = String((msg && msg.orderSeq) == null ? '' : msg.orderSeq).trim();
+  if (!orderSeq) return { ok: false, error: 'no_order_seq' };
+
+  // 같은 목록 탭에서 이미 열어둔 팝업이 있으면 새로 만들지 않고 그 창을 재사용한다
+  //  (창이 여러 개 쌓이면 어느 게 어느 주문인지 알 수 없다).
+  const all = await ubEpAll();
+  for (const [winIdStr, rec] of Object.entries(all)) {
+    if (rec.openerTabId !== tabId) continue;
+    const winId = Number(winIdStr);
+    try {
+      await chrome.tabs.update(rec.tabId, { url: msg.url });
+      await chrome.windows.update(winId, { focused: true });
+      rec.orderSeq = orderSeq;
+      all[winIdStr] = rec;
+      await ubEpSet(all);
+      ubEpLog('기존 창 재사용', winId, orderSeq);
+      return { ok: true, windowId: winId, reused: true };
+    } catch (_) {                       // 사용자가 이미 닫은 창 → 기록을 버리고 새로 만든다
+      delete all[winIdStr];
+      await ubEpSet(all);
+    }
+  }
+
+  const win = await chrome.windows.create({
+    url: msg.url, type: 'popup', width: UB_EP_WIN_W, height: UB_EP_WIN_H, focused: true
+  });
+  const popTab = win && win.tabs && win.tabs[0];
+  if (!win || popTab == null) return { ok: false, error: 'window_create_failed' };
+  //  ⚠ 창이 뜬 뒤에 기록해야 windowId 를 알 수 있다. 팝업 skin.js 는 DOMContentLoaded 에서
+  //   물어보므로(문서 파싱 뒤) 이 기록이 먼저 끝난다. 그래도 혹시 몰라 팝업 쪽에 재시도가 있다.
+  const fresh = await ubEpAll();
+  fresh[String(win.id)] = { openerTabId: tabId, tabId: popTab.id, orderSeq, createdAt: Date.now() };
+  await ubEpSet(fresh);
+  ubEpLog('창 생성', win.id, 'order=' + orderSeq);
+  return { ok: true, windowId: win.id, reused: false };
+}
+
+//  팝업 안의 skin.js 가 "나 수정 팝업이야?" 를 물을 때. windowId 로만 판단한다.
+async function ubEpWhoAmI(sender) {
+  const winId = sender && sender.tab && sender.tab.windowId;
+  const rec = await ubEpGet(winId);
+  if (!rec) return { isEditPopup: false };
+  return { isEditPopup: true, orderSeq: rec.orderSeq };
+}
+
+//  팝업이 "저장하고 폼을 떠났다" 고 알릴 때 — 목록 탭에 갱신을 시키고 창을 닫는다.
+//  ⚠ 여기서 쓰기를 하지 않는다. 목록 갱신은 읽기(검색 폼 재제출)뿐이다.
+async function ubEpDone(msg, sender) {
+  const winId = sender && sender.tab && sender.tab.windowId;
+  const rec = await ubEpGet(winId);
+  if (!rec) return { ok: false, error: 'not_edit_popup' };
+  await ubEpDelete(winId);
+  try {
+    await chrome.tabs.sendMessage(rec.openerTabId, {
+      source: 'ub-bg', type: 'ubEpRefresh', orderSeq: rec.orderSeq, reason: String((msg && msg.reason) || '')
+    });
+  } catch (e) { ubEpLog('목록 탭에 알리지 못함(닫혔을 수 있다)', e && e.message); }
+  try { await chrome.windows.remove(winId); } catch (_) {}
+  ubEpLog('완료 → 목록 갱신·창 닫기', winId, rec.orderSeq);
+  return { ok: true };
+}
+
+//  사용자가 팝업을 직접 닫으면 레지스트리에서도 지운다(안 지우면 재사용 분기가 죽은 창을 잡는다).
+chrome.windows.onRemoved.addListener((winId) => {
+  ubEpDelete(winId).then((had) => { if (had) ubEpLog('창 닫힘', winId); });
 });
 
 /* ---- transparent caching용 — ubdstore에서 단일 URL fetch ----
