@@ -3476,6 +3476,7 @@
       });
     } catch (e) { epLog('화면 정리 실패(무해)', e); }
     epUpgradeTitle();
+    epCompactForm();
     try { document.body.insertBefore(epHeader(orderSeq), document.body.firstChild); }
     catch (e) { epLog('헤더 표시 실패(무해)', e); }
     try { document.title = '주문 수정'; } catch (_) {}
@@ -3494,6 +3495,91 @@
       });
       document.documentElement.classList.remove('ub-sidebar-docked');
     } catch (e) { epLog('도구 숨김 실패(무해)', e); }
+  }
+  //  ★옵션 영역을 컴팩트하게 다시 배치한다.
+  //   실측: 품위·색상·사이즈·수량·주문가가 **한 표에 [라벨 143px][값 737px]** 로 한 줄씩 쌓여
+  //   있고, 값 칸 737px 안에 41~133px 컨트롤 하나가 들어가 600px 넘게 버려진다. 그래서 창이
+  //   쓸데없이 커지고 정작 자주 고치는 비고는 스크롤 아래로 밀린다.
+  //   → 그 표를 2열 그리드로 바꿔 짧은 옵션을 나란히 놓고, 비고는 한 줄 전체를 쓰게 한다.
+  //  ⚠ 레이아웃만 바꾼다. 이 폼의 컨트롤들은 애초에 DOM 상 form1 밖에 있고(중첩 깨짐)
+  //   el.form 으로 연결돼 있어, display 를 바꿔도 제출 대상은 그대로다(실측).
+  const EP_FULL_ROW = /비고|메모/;
+  const EP_OPT_LABELS = ['품위', '색상', '사이즈', '수량', '주문가'];
+  //  ★변환해도 되는 표인지 **확인하고** 판정한다.
+  //   '품위' 한 단어만 보고 붙이면 다른 주문 유형의 요약표를 잘못 갈아엎을 수 있다(검수 지적).
+  //   그래서 (1) 아는 옵션 라벨이 3개 이상이고 (2) 그리드로 못 옮기는 구조가 없을 때만 ok.
+  //   - rowspan 은 그리드에 대응물이 없다 → 어디에 있든 거부.
+  //   - 3칸 이상 행이 있으면 [라벨][값] 표가 아니다 → 거부.
+  //   - 2칸 행의 colspan 도 거부(칸 수와 실제 폭이 어긋난다). 1칸 구분선의 colspan 은 정상.
+  //   거부하면 아무것도 안 하고 ERP 원래 배치를 그대로 둔다(보기 나쁠 뿐 기능은 멀쩡).
+  function epClassifyForm(rows) {
+    if (!Array.isArray(rows) || !rows.length) return { ok: false, reason: 'empty' };
+    let known = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.rowspan) return { ok: false, reason: 'rowspan' };
+      if (r.cells > 2) return { ok: false, reason: 'cells' };
+      if (r.cells === 2 && r.colspan) return { ok: false, reason: 'colspan' };
+      if (EP_OPT_LABELS.indexOf(r.label) >= 0) known++;
+    }
+    if (known < 3) return { ok: false, reason: 'labels' };
+    //  한 줄 전체를 쓰는 행: 2칸이 아닌 구분선·안내 / 비고 / **컨트롤이 2개 이상인 행**.
+    //  마지막 조건이 필요한 이유 — 주문가처럼 입력이 둘인 행을 반 칸에 넣으면 줄바꿈된다(실측).
+    const kinds = rows.map((r) => (
+      r.cells !== 2 || EP_FULL_ROW.test(r.label) || r.textarea || r.controls >= 2
+    ) ? 'full' : 'half');
+    return { ok: true, kinds: kinds };
+  }
+  function epRowSpec(tr) {
+    const cells = tr.cells ? tr.cells.length : 0;
+    let colspan = false, rowspan = false;
+    for (let i = 0; i < cells; i++) {
+      if (tr.cells[i].colSpan > 1) colspan = true;
+      if (tr.cells[i].rowSpan > 1) rowspan = true;
+    }
+    return {
+      cells: cells,
+      label: (cells ? tr.cells[0].textContent : '').replace(/\s+/g, ''),
+      controls: tr.querySelectorAll('input:not([type=hidden]),select,textarea').length,
+      textarea: !!tr.querySelector('textarea'),
+      colspan: colspan,
+      rowspan: rowspan
+    };
+  }
+  function epCompactForm() {
+    try {
+      //  '품위' 행을 가진 표가 옵션 표 후보다(라벨로 찾는다 — 표에 클래스가 없다).
+      let target = null;
+      document.querySelectorAll('tr').forEach((tr) => {
+        if (target || !tr.cells || tr.cells.length !== 2) return;
+        const lab = (tr.cells[0].textContent || '').replace(/\s+/g, '');
+        if (lab === '품위') target = tr.closest('table');
+      });
+      if (!target) { epLog('옵션 표를 찾지 못했다 → 배치는 그대로 둔다'); return; }
+      //  table.rows 는 그 표 자신의 행만 준다(값 칸 안의 중첩 표 행은 안 섞인다).
+      const own = Array.from(target.rows);
+      const verdict = epClassifyForm(own.map(epRowSpec));
+      if (!verdict.ok) {
+        epLog('옵션 표로 확신할 수 없다(' + verdict.reason + ') → 배치는 그대로 둔다');
+        return;
+      }
+      target.classList.add('ub-ep-form');
+      let half = 0, full = 0;
+      own.forEach((tr, i) => {
+        //  ★행·칸을 클래스로 표시한다. CSS 를 자손 선택자로 쓰면 값 칸 **안의 중첩 표**까지
+        //   그리드로 갈아엎어 정렬이 깨진다(검수 지적). 우리가 분류한 것에만 스타일이 닿게 한다.
+        tr.classList.add('ub-ep-row');
+        if (tr.cells.length === 2) {
+          tr.cells[0].classList.add('ub-ep-lab');
+          tr.cells[1].classList.add('ub-ep-val');
+        } else {
+          tr.classList.add('ub-ep-solo');
+          if (tr.cells[0]) tr.cells[0].classList.add('ub-ep-val');
+        }
+        if (verdict.kinds[i] === 'full') { tr.classList.add('ub-ep-full'); full++; } else { half++; }
+      });
+      epLog('옵션 배치 압축 — 2열', half, '행 / 전체폭', full, '행');
+    } catch (e) { epLog('배치 압축 실패(무해)', e); }
   }
   //  섹션 제목을 비트맵 gif → 진짜 글자로 바꾼다(D102 타이포 18px/700).
   //  ★아는 파일명만 바꾸고 모르면 원본을 그대로 둔다 — 파일명으로 제목을 지어내면 다른 폼에서
@@ -3586,6 +3672,32 @@
         // ── 라벨/값 행 ──
         ".ub-ep-card .t_form td,.ub-ep-card .t_form0 td{font-size:13px !important;",
         "color:var(--ub-ink) !important;padding:7px 8px !important;vertical-align:middle !important;}",
+        // ── ★옵션 영역 2열 그리드(epCompactForm 이 검증 후 클래스를 붙인다) ──
+        //  표를 grid 로 바꾸고 tbody 는 display:contents 로 통과시켜 tr 들을 그리드 아이템으로.
+        //  ⚠ 선택자를 자손(.ub-ep-form tr)으로 쓰면 값 칸 **안의 중첩 표**까지 갈아엎는다.
+        //   그래서 우리가 분류하며 붙인 클래스(.ub-ep-row/.ub-ep-lab/.ub-ep-val)에만 건다.
+        ".ub-ep-form{display:grid !important;grid-template-columns:repeat(2,minmax(0,1fr)) !important;",
+        "gap:2px 22px !important;width:100% !important;}",
+        ".ub-ep-form>tbody,.ub-ep-form>thead,.ub-ep-form>tfoot{display:contents !important;}",
+        ".ub-ep-form tr.ub-ep-row{display:grid !important;",
+        "grid-template-columns:78px minmax(0,1fr) !important;align-items:center !important;",
+        "gap:10px !important;}",
+        //  라벨 없는 1칸 행(구분선 등)은 78px 칸에 갇히지 않게 한 칸으로.
+        ".ub-ep-form tr.ub-ep-solo{grid-template-columns:minmax(0,1fr) !important;}",
+        ".ub-ep-form tr.ub-ep-full{grid-column:1 / -1 !important;align-items:start !important;}",
+        ".ub-ep-form td.ub-ep-lab,.ub-ep-form td.ub-ep-val{display:block !important;",
+        "padding:5px 0 !important;border:0 !important;}",
+        //  ⚠ 라벨 칸에 width 속성이 박혀 있어(실측: 품위·색상 135px) 그대로 두면 78px 칸을
+        //   넘쳐 오른쪽 정렬된 글자가 값 컨트롤 뒤로 밀려 **안 보인다**. 칸에 맞춰 못 박는다.
+        ".ub-ep-form td.ub-ep-lab{width:100% !important;min-width:0 !important;",
+        "box-sizing:border-box !important;text-align:right !important;font-size:12px !important;",
+        "font-weight:600 !important;color:var(--ub-ink-2) !important;white-space:nowrap !important;}",
+        //  ★비고는 한눈에 보이게 크게 — 이 폼에서 가장 자주 고치는 칸이다.
+        ".ub-ep-form tr.ub-ep-full td.ub-ep-lab{padding-top:12px !important;}",
+        //  짧은 컨트롤이 값 칸을 다 먹지 않게(수량·주문가 등은 원래 133px).
+        //  직계 자식으로 한정 — 중첩 표 안의 입력까지 좁히지 않는다.
+        ".ub-ep-form tr.ub-ep-row:not(.ub-ep-full)>td.ub-ep-val>input[type=text]{",
+        "max-width:220px !important;}",
         // ── 입력(라운드 10 · hairline · focus 링) ──
         //  구조(크기·모서리·간격)만 !important 로 고정한다.
         ".ub-ep-card input[type=text],.ub-ep-card input[type=number],.ub-ep-card input[type=password],",
@@ -3603,11 +3715,14 @@
         "border-color:var(--ub-accent);box-shadow:0 0 0 3px var(--ub-tint);}",
         ".ub-ep-card input[readonly],.ub-ep-card .input_gray_no{background:var(--ub-sunken);",
         "color:var(--ub-ink-2);}",
-        ".ub-ep-card textarea{min-height:84px !important;resize:vertical !important;",
-        "line-height:1.5 !important;width:100% !important;}",
+        //  ★비고는 이 폼에서 가장 자주 고치는 칸이다 — 스크롤 없이 한눈에 보이게 크게 준다.
+        ".ub-ep-card textarea{min-height:112px !important;resize:vertical !important;",
+        "line-height:1.55 !important;width:100% !important;}",
         // 제품 사진 — 썸네일 라운드 12
+        //  상품 사진 — 원래 180px 칸을 차지해 위쪽이 커진다. 컴팩트하게 줄인다.
         ".ub-ep-card img[onclick*='imageView']{border-radius:12px !important;",
-        "border:1px solid var(--ub-hairline) !important;max-width:100% !important;height:auto !important;}",
+        "border:1px solid var(--ub-hairline) !important;width:112px !important;height:auto !important;",
+        "max-width:100% !important;}",
         // 붉은 안내 문구
         ".ub-ep-card font[color='red']{color:var(--ub-danger) !important;font-size:12px !important;",
         "font-weight:600 !important;}",
@@ -3622,6 +3737,10 @@
         "background:#fff8e6;border-top:1px solid #f0dca8;color:#7a5b00;font-size:12.5px;font-weight:700;",
         "font-family:'Pretendard','Malgun Gothic',sans-serif;}",
         // ── 창이 좁아지면(창 크기 대응) ──
+        //  ★2열을 끝까지 유지하면 반 칸이 60~80px 까지 줄어 컨트롤 자체가 못 쓰게 된다.
+        //   스크롤로 해결되지 않는 문제라 좁은 구간에서는 1열로 접는다.
+        "@media (max-width:620px){",
+        ".ub-ep-form{grid-template-columns:minmax(0,1fr) !important;}}",
         "@media (max-width:760px){body{padding:8px !important;}",
         "#ub-ep-head{padding:10px 12px;margin:-8px -8px 10px;flex-wrap:wrap;gap:6px;}",
         "#ub-ep-head .hint{margin-left:0;flex-basis:100%;}",

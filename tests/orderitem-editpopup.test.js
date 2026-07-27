@@ -39,11 +39,12 @@ function extractConst(src, name) {
   return 'const ' + name + ' = ' + m[1] + ';';
 }
 
-const NAMES = ['parseModifyArgs', 'epModifyRowMatches', 'epModifyQuery', 'epPopupAction', 'epSubmitMarkValid'];
+const NAMES = ['parseModifyArgs', 'epModifyRowMatches', 'epModifyQuery', 'epPopupAction',
+               'epSubmitMarkValid', 'epClassifyForm'];
 const sandbox = {};
 
 // eslint-disable-next-line no-new-func
-const CONSTS = ['EP_FORM_PATH', 'EP_SAVE_PATH', 'EP_LIST_PATH'];
+const CONSTS = ['EP_FORM_PATH', 'EP_SAVE_PATH', 'EP_LIST_PATH', 'EP_FULL_ROW', 'EP_OPT_LABELS'];
 new Function('exports',
   CONSTS.map(c => extractConst(SRC, c)).join('\n') + '\n' +
   NAMES.map(n => extractFn(SRC, n)).join('\n') + '\n' +
@@ -52,7 +53,75 @@ new Function('exports',
 )(sandbox);
 
 const { parseModifyArgs, epModifyRowMatches, epModifyQuery, epPopupAction,
-        epSubmitMarkValid, EP_FORM_PATH } = sandbox;
+        epSubmitMarkValid, epClassifyForm, EP_FORM_PATH } = sandbox;
+
+/* ── epClassifyForm — 옵션 표를 '확인하고' 변환하는가 ───────────────────────
+ *  '품위' 한 단어만 보고 표를 갈아엎으면 다른 주문 유형의 요약표를 망가뜨린다.
+ *  변환은 보기 좋으라고 하는 것이니, 조금이라도 이상하면 안 하는 쪽이 옳다.
+ */
+function row(label, opts) {
+  const o = opts || {};
+  return {
+    cells: o.cells === undefined ? 2 : o.cells,
+    label: label,
+    controls: o.controls === undefined ? 1 : o.controls,
+    textarea: !!o.textarea,
+    colspan: !!o.colspan,
+    rowspan: !!o.rowspan
+  };
+}
+const OPT_ROWS = [
+  row('', { cells: 1, controls: 0, colspan: true }),   // 구분선(1칸 colspan 은 정상)
+  row('품위'), row('색상'), row('사이즈'), row('수량'),
+  row('주문가', { controls: 2 })
+];
+
+test('아는 옵션 라벨이 3개 이상이면 변환한다', () => {
+  const v = epClassifyForm(OPT_ROWS);
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.kinds, ['full', 'half', 'half', 'half', 'half', 'full']);
+});
+
+test('라벨이 하나뿐인 남의 표는 거부한다 (품위만 있는 요약표)', () => {
+  const v = epClassifyForm([row('품위'), row('거래처'), row('담당자')]);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, 'labels');
+});
+
+test('rowspan 이 있으면 어디에 있든 거부한다', () => {
+  const rows = OPT_ROWS.slice();
+  rows[2] = row('색상', { rowspan: true });
+  assert.equal(epClassifyForm(rows).reason, 'rowspan');
+});
+
+test('3칸 이상 행이 있으면 라벨-값 표가 아니므로 거부한다', () => {
+  const rows = OPT_ROWS.concat([row('수량', { cells: 3 })]);
+  assert.equal(epClassifyForm(rows).reason, 'cells');
+});
+
+test('2칸 행의 colspan 은 거부한다 (칸 수와 실제 폭이 어긋난다)', () => {
+  const rows = OPT_ROWS.slice();
+  rows[1] = row('품위', { colspan: true });
+  assert.equal(epClassifyForm(rows).reason, 'colspan');
+});
+
+test('빈 표는 거부한다', () => {
+  assert.equal(epClassifyForm([]).reason, 'empty');
+  assert.equal(epClassifyForm(null).ok, false);
+});
+
+test('비고·메모와 textarea 행은 한 줄을 통째로 쓴다', () => {
+  const v = epClassifyForm(OPT_ROWS.concat([
+    row('주문비고', { textarea: true }), row('발주비고', { textarea: true }), row('메모')
+  ]));
+  assert.deepEqual(v.kinds.slice(-3), ['full', 'full', 'full']);
+});
+
+test('컨트롤이 2개 이상인 행은 반 칸에 넣지 않는다 (줄바꿈 방지)', () => {
+  const v = epClassifyForm(OPT_ROWS);
+  assert.equal(v.kinds[5], 'full');           // 주문가 = 입력 2개
+  assert.equal(v.kinds[4], 'half');           // 수량 = 입력 1개
+});
 
 /* ── epSubmitMarkValid — 제출 증거가 다른 주문으로 승계되지 않는가 ────────── */
 

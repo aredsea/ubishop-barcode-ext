@@ -66,8 +66,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
  * ========================================================================== */
 const UB_EP_ORIGINS = ['http://ubdstore.ubshop.biz', 'https://ubdstore.ubshop.biz'];
 const UB_EP_FORM_PATH = '/jun/orderitem/orderItemModifyForm.do';   // ⚠ Form 접미사 = 읽기 폼
-const UB_EP_WIN_W = 980;
-const UB_EP_WIN_H = 820;
+//  옵션을 2열로 압축했으니 창도 그만큼 줄인다(전엔 980×820 이라 오른쪽이 통째로 비었다).
+const UB_EP_WIN_W = 860;
+const UB_EP_WIN_H = 780;
 const UB_EP_KEY = 'ubEpWindows';   // chrome.storage.session: { [windowId]: {openerTabId,tabId,orderSeq,createdAt} }
 const ubEpLog = (...a) => { try { console.log('[UB][editpop]', ...a); } catch (_) {} };
 
