@@ -913,20 +913,39 @@
   // ── 작업B 순수 헬퍼 — 수정 팝업(별도 창) ──────────────────────────────────
   //  DOM·네트워크·chrome.* 미접촉. 판정은 전부 fail-closed 다.
   const EP_FORM_PATH = '/jun/orderitem/orderItemModifyForm.do';   // ⚠ Form 접미사 = 읽기 폼
-  //  목록의 [수정] 앵커: <a href="javascript:modify('<master>','<seq>')">.
-  //  형식이 조금이라도 다르면 null → 가로채지 않고 네이티브로 흘린다.
+  //  목록의 [수정] 앵커: <a href="javascript:modify('<seq>','<jun>')">.
+  //  ★2026-07-27 라이브 실측(네이티브 modify 원본):
+  //     function modify(seq, jun) { location = ".../orderItemModifyForm.do?tcode=order_item
+  //                                             &seq=<seq>&tradeJun=<jun>" }
+  //   즉 **첫 인자가 seq(행 키), 둘째가 jun(전표 묶음)** 이다. 옛 구현은 첫 인자를 master,
+  //   둘째를 seq 로 거꾸로 이름 붙이고 URL 파라미터도 지어냈다(master/orderSeq — 존재하지
+  //   않는 이름) — 그래서 애초에 열릴 수 없는 주소를 만들고 있었다. 이름을 실측에 맞춘다.
   function parseModifyArgs(href) {
     const m = String(href == null ? '' : href).match(
       /^\s*(?:javascript\s*:\s*)?modify\s*\(\s*(['"])([^'"]*)\1\s*,\s*(['"])([^'"]*)\3\s*\)\s*;?\s*$/
     );
-    return m ? { master: m[2], seq: m[4] } : null;
+    return m ? { seq: m[2], jun: m[4] } : null;
   }
-  //  행의 실제 키(input[name=idx])와 modify() 인자가 둘 다 있고 정확히 같을 때만 가로챈다.
-  //  하나라도 없거나 다르면 어느 주문의 수정인지 확정할 수 없다 → 네이티브 이동(§4.1·§5).
-  function epModifyRowMatches(rowOrderSeq, argSeq) {
-    const row = String(rowOrderSeq == null ? '' : rowOrderSeq).trim();
+  //  행의 실제 키(input[name=idx])와 modify() 의 **첫 인자(seq)** 가 둘 다 있고 정확히 같을
+  //  때만 가로챈다. 하나라도 없거나 다르면 어느 주문인지 확정할 수 없다 → 네이티브 이동.
+  //  ⚠ 둘째 인자(jun)와 비교하면 안 된다 — jun 은 같은 전표의 여러 행이 **공유**한다
+  //   (실측: 6행 중 4행이 같은 jun). 그걸로 비교하면 항상 불일치라 기능이 통째로 죽는다.
+  function epModifyRowMatches(rowKey, argSeq) {
+    const row = String(rowKey == null ? '' : rowKey).trim();
     const arg = String(argSeq == null ? '' : argSeq).trim();
     return !!row && !!arg && row === arg;
+  }
+  //  수정폼 쿼리 — 네이티브 modify() 가 만드는 것과 **똑같이**(실측 2026-07-27):
+  //    tcode=order_item&seq=<seq>&tradeJun=<jun>   ← 이 셋이 전부다.
+  //  ⚠ 검색조건 24종을 덧붙이지 않는다. 네이티브가 안 보내는 값을 우리가 보내면 서버가
+  //   어떻게 해석하는지 알 수 없다 — '쓰기를 재현하지 말고 네이티브를 따른다' 는 원칙.
+  function epModifyQuery(args) {
+    const a = args || {};
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('seq', String(a.seq == null ? '' : a.seq));
+    p.set('tradeJun', String(a.jun == null ? '' : a.jun));
+    return p.toString();
   }
   //  팝업 창이 지금 어디에 있느냐로 할 일을 정한다.
   //   'dress' = 수정폼 → 크롬 걷어내고 폼만 보여준다
@@ -3212,20 +3231,12 @@
   const EP_TAG = '[UB][editpop]';
   const epLog = (...a) => { try { console.log(EP_TAG, ...a); } catch (_) {} };
 
-  //  수정폼 URL. 네이티브 modify() 와 같은 검색 파라미터를 실어 보낸다.
-  //  ⚠ f.elements[n] 을 쓴다 — f[n] 은 동명 필드가 있으면 조용히 누락된다(skin.js 의 기존 규율).
+  //  수정폼 URL — 네이티브 modify() 가 만드는 것과 **똑같이** 만든다(실측, 2026-07-27):
+  //    ?tcode=order_item&seq=<seq>&tradeJun=<jun>   ← 파라미터는 이 셋이 전부다.
+  //  검색조건 24종을 덧붙이지 않는다. 네이티브가 안 보내는 걸 우리가 보내면 서버가 어떻게
+  //  해석하는지 알 수 없다 — 쓰기를 재현하지 말고 네이티브를 그대로 따른다는 이 저장소 원칙.
   function buildEditPopupUrl(args) {
-    const p = new URLSearchParams();
-    p.set('tcode', 'order_item');
-    p.set('master', args.master);
-    p.set('orderSeq', args.seq);
-    p.set('reqPage', '1');
-    const f = document.forms['form1'];
-    if (f) ASG_SEARCH_FIELDS.forEach((n) => {
-      const el = f.elements[n];
-      if (el && typeof el.value === 'string') p.set(n, el.value);
-    });
-    return location.origin + EP_FORM_PATH + '?' + p.toString();
+    return location.origin + EP_FORM_PATH + '?' + epModifyQuery(args);
   }
   //  행의 주문키. 목록이 체크박스에 싣는 값(input[name=idx])이 1순위다.
   function epRowOrderSeq(row) {
@@ -3252,7 +3263,7 @@
           const tr = a.closest('tr');
           const rowSeq = epRowOrderSeq(tr);
           if (!epModifyRowMatches(rowSeq, args.seq)) {         // 행 불일치·누락 → 네이티브
-            epLog('행 idx 와 modify() 인자 불일치/누락 → 네이티브 진행', rowSeq, 'vs', args.seq);
+            epLog('행 idx 와 modify() 첫 인자(seq) 불일치/누락 → 네이티브 진행', rowSeq, 'vs', args.seq);
             return;
           }
           //  여기까지 동기적으로 확인됐으면 가로챈다. 창 열기는 비동기라, 실패하면

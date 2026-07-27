@@ -36,7 +36,7 @@ function extractConst(src, name) {
   return 'const ' + name + ' = ' + m[1] + ';';
 }
 
-const NAMES = ['parseModifyArgs', 'epModifyRowMatches', 'epPopupAction'];
+const NAMES = ['parseModifyArgs', 'epModifyRowMatches', 'epModifyQuery', 'epPopupAction'];
 const sandbox = {};
 
 // eslint-disable-next-line no-new-func
@@ -47,16 +47,54 @@ new Function('exports',
   'exports.EP_FORM_PATH = EP_FORM_PATH;'
 )(sandbox);
 
-const { parseModifyArgs, epModifyRowMatches, epPopupAction, EP_FORM_PATH } = sandbox;
+const { parseModifyArgs, epModifyRowMatches, epModifyQuery, epPopupAction, EP_FORM_PATH } = sandbox;
+
+/* ── epModifyQuery — 네이티브 modify() 와 같은 주소를 만드는가 ────────────── */
+
+test('★수정폼 쿼리가 네이티브와 정확히 같다 — tcode·seq·tradeJun 셋뿐', () => {
+  // 실측: function modify(seq, jun) → ...ModifyForm.do?tcode=order_item&seq=<seq>&tradeJun=<jun>
+  const args = parseModifyArgs("javascript:modify('387898','140546');");
+  assert.equal(epModifyQuery(args), 'tcode=order_item&seq=387898&tradeJun=140546');
+});
+
+test('★존재하지 않는 파라미터를 지어내지 않는다 (옛 구현이 master·orderSeq 를 보냈다)', () => {
+  const q = epModifyQuery({ seq: 'a', jun: 'b' });
+  assert.ok(!/master=/.test(q), 'master 는 네이티브에 없는 이름이다');
+  assert.ok(!/orderSeq=/.test(q), 'orderSeq 는 네이티브에 없는 이름이다');
+  assert.ok(!/searchWord|syear|pageSize|reqPage/.test(q), '검색조건은 네이티브가 안 보낸다');
+  assert.equal(q.split('&').length, 3, '파라미터는 정확히 3개');
+});
+
+test('빈 인자도 형태를 지키고, 값은 URL 인코딩된다', () => {
+  assert.equal(epModifyQuery({}), 'tcode=order_item&seq=&tradeJun=');
+  assert.equal(epModifyQuery(null), 'tcode=order_item&seq=&tradeJun=');
+  assert.equal(epModifyQuery({ seq: 'a b', jun: 'c&d' }), 'tcode=order_item&seq=a+b&tradeJun=c%26d');
+});
 
 /* ── parseModifyArgs — 목록의 [수정] 앵커 인자 파싱 ──────────────────────── */
 
-test('modify() 인자를 파싱한다 — 홑따옴표·쌍따옴표·javascript: 접두·세미콜론', () => {
-  // 실측된 형태(2026-07-27 라이브 DevTools): javascript:modify('387897','140540...')
-  assert.deepEqual(parseModifyArgs("javascript:modify('387897','1405401')"), { master: '387897', seq: '1405401' });
-  assert.deepEqual(parseModifyArgs("modify('a','b')"), { master: 'a', seq: 'b' });
-  assert.deepEqual(parseModifyArgs('javascript:modify("a","b");'), { master: 'a', seq: 'b' });
-  assert.deepEqual(parseModifyArgs("  javascript : modify( 'a' , 'b' ) ; "), { master: 'a', seq: 'b' });
+test('modify() 인자를 파싱한다 — 첫 인자가 seq(행 키), 둘째가 jun(전표 묶음)', () => {
+  // ★2026-07-27 라이브 실측 — 네이티브 원본이 function modify(seq, jun) 이다.
+  //  옛 구현은 첫 인자를 master 로 부르고 URL 도 master/orderSeq 로 지어냈다(존재하지 않는 이름).
+  assert.deepEqual(parseModifyArgs("javascript:modify('387898','140546');"), { seq: '387898', jun: '140546' });
+  assert.deepEqual(parseModifyArgs("modify('a','b')"), { seq: 'a', jun: 'b' });
+  assert.deepEqual(parseModifyArgs('javascript:modify("a","b");'), { seq: 'a', jun: 'b' });
+  assert.deepEqual(parseModifyArgs("  javascript : modify( 'a' , 'b' ) ; "), { seq: 'a', jun: 'b' });
+});
+
+test('★행 키는 첫 인자다 — 실측 6행에서 idx === 첫 인자, idx !== 둘째 인자', () => {
+  // 라이브 실측 표본(같은 jun 을 여러 행이 공유한다):
+  const rows = [
+    { idx: '387898', seq: '387898', jun: '140546' },
+    { idx: '387897', seq: '387897', jun: '140546' },
+    { idx: '387896', seq: '387896', jun: '140546' },
+    { idx: '387894', seq: '387894', jun: '140545' },
+  ];
+  for (const r of rows) {
+    assert.equal(epModifyRowMatches(r.idx, r.seq), true, r.idx + ' 는 첫 인자와 같아야 한다');
+    // ⚠ 둘째 인자로 비교하면 전부 불일치 → 가로채기가 통째로 죽는다(이 버그로 기능이 안 됐다).
+    assert.equal(epModifyRowMatches(r.idx, r.jun), false, r.idx + ' 는 둘째 인자와 달라야 한다');
+  }
 });
 
 test('modify() 가 아니거나 형식이 어긋나면 null — 가로채지 않고 네이티브로 흘린다', () => {
