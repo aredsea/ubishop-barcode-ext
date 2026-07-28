@@ -1097,6 +1097,107 @@
   }
   //  바코드 비교용 정규화. 화면값과 서버값이 '다른가'만 보면 되므로 이거면 충분하다.
   const asgNorm = (s) => String(s == null ? '' : s).trim().toUpperCase();
+  // ── 작업C 배치 실행(slice C-2b) 순수 헬퍼 ─────────────────────────────
+  //  DOM·네트워크·chrome.* 미접촉. 단위테스트 대상. 모든 판정은 fail-closed.
+  //  sKey 추출: 서버가 인라인 <script> 에 박는 15자리 타임스탬프(yyMMddHHmmssSSS).
+  //  hidden input 이 아니라 URL 쿼리 안에 리터럴로 있다. 매 standby 직전에 fresh GET 으로 새로 받는다.
+  function cExtractSKey(html) {
+    const m = String(html == null ? '' : html).match(/[?&]sKey=(\d{14,16})(?!\d)/);
+    return m ? m[1] : null;
+  }
+  //  후보 페이지(orderItemPopCurrentSettingModifyForm.do)에서 setCurrent 바코드를 파싱.
+  //  문서 순서(=입고일자 순)대로 반환. 첫 행 채택은 cPickAssignBarcode 의 몫.
+  function cParseCandidateRows(html) {
+    const results = [];
+    const re = /setCurrent\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+    let m;
+    while ((m = re.exec(String(html == null ? '' : html))) !== null) {
+      results.push({ barcode: m[1] });
+    }
+    return results;
+  }
+  //  standby URL 조립(본사확인 = status1='OS-', status2='O--').
+  //  searchFields = {reqPage, pageSize, ...} — 호출부가 form1.elements 에서 읽어 넘긴다.
+  //  sKey 가 없으면 null → 호출부 실패(fail-closed).
+  function cBuildStandbyUrl(sKey, searchFields) {
+    if (!sKey) return null;
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('status1', 'OS-');
+    p.set('status2', 'O--');
+    p.set('sKey', sKey);
+    if (searchFields) {
+      const keys = Object.keys(searchFields);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (!p.has(k)) p.set(k, String(searchFields[k] == null ? '' : searchFields[k]));
+      }
+    }
+    return '/jun/orderitem/orderItemStandby.do?' + p.toString();
+  }
+  //  후보 조회 URL(3-1 Form). master 있음 — 후보 목록을 받는다(읽기).
+  function cBuildCandidateFormUrl(master, orderSeq, shop, client, orderDate, searchFields) {
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('master', String(master == null ? '' : master));
+    p.set('orderSeq', String(orderSeq == null ? '' : orderSeq));
+    p.set('barcode', '');
+    p.set('shop', String(shop == null ? '' : shop));
+    p.set('client', String(client == null ? '' : client));
+    p.set('orderDate', String(orderDate == null ? '' : orderDate));
+    p.set('reqPage', '1');
+    if (searchFields) {
+      const keys = Object.keys(searchFields);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (!p.has(k)) p.set(k, String(searchFields[k] == null ? '' : searchFields[k]));
+      }
+    }
+    return '/jun/orderitem/orderItemPopCurrentSettingModifyForm.do?' + p.toString();
+  }
+  //  배정 실행 URL(3-2 Modify). ⚠⚠ master 파라미터가 없다(실측 확인).
+  //  ⚠⚠ 이 GET 자체가 쓰기다 — 조회 목적으로 부르지 마라.
+  function cBuildAssignUrl(barcode, orderSeq, shop, client, orderDate, searchFields) {
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('barcode', String(barcode == null ? '' : barcode));
+    p.set('orderSeq', String(orderSeq == null ? '' : orderSeq));
+    p.set('shop', String(shop == null ? '' : shop));
+    p.set('client', String(client == null ? '' : client));
+    p.set('orderDate', String(orderDate == null ? '' : orderDate));
+    p.set('reqPage', '1');
+    if (searchFields) {
+      const keys = Object.keys(searchFields);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (!p.has(k)) p.set(k, String(searchFields[k] == null ? '' : searchFields[k]));
+      }
+    }
+    return '/jun/orderitem/orderItemPopCurrentSettingModify.do?' + p.toString();
+  }
+  //  주문일 열 인덱스를 헤더 텍스트 배열에서 찾는다. 공백 제거 후 '주문일' 을 포함하는
+  //  셀(실측: '주문일 주문장번호' — 합쳐진 셀). 없으면 -1.
+  function cOrderDateColIndex(headerTexts) {
+    const list = Array.isArray(headerTexts) ? headerTexts : [];
+    for (let i = 0; i < list.length; i++) {
+      if (String(list[i] == null ? '' : list[i]).replace(/\s+/g, '').indexOf('주문일') >= 0) return i;
+    }
+    return -1;
+  }
+  //  주문일 셀 텍스트 → yyyymmdd. 셀은 '26-07-27 0000002XW5' 형태(주문일+장번호 합쳐짐).
+  //  첫 \d{2}-\d{2}-\d{2} 를 뽑아 '20' + yymmdd. 실패하면 '' (fail-closed).
+  function cParseRowOrderDate(cellText) {
+    const m = String(cellText == null ? '' : cellText).match(/(\d{2})-(\d{2})-(\d{2})/);
+    if (!m) return '';
+    return '20' + m[1] + m[2] + m[3];
+  }
+  //  fetchOrderRow 가 반환한 rowHtml 에서 currentSetting 인자 추출.
+  //  O-- 행에는 이 앵커가 없다 → null. OS-/I-- 행에만 존재한다.
+  function cExtractRowArgs(rowHtml) {
+    const s = String(rowHtml == null ? '' : rowHtml);
+    const m = s.match(/currentSetting\s*\([^)]*\)/);
+    return m ? parseCurrentSettingArgs(m[0]) : null;
+  }
   // 지금 걸린 상태 필터에 이 행이 여전히 맞는가. 안 맞으면 목록에서 빠지는 게 맞다
   //  (본사확인 필터로 보다가 입고완료된 건 / 입고완료 필터로 보다가 취소된 건).
   //  상태 필터가 없으면 그 건은 목록에 계속 속하므로 제자리 갱신한다.
@@ -3854,12 +3955,13 @@
   }
 
   /* ==========================================================================
-   *  5.10) 작업C — 본사확인 → 입고완료 (slice C-2a: 버튼 + 사전검증 승인창 + 읽기전용 조회)
+   *  5.10) 작업C — 본사확인 → 입고완료
+   *   slice C-2a: 버튼 + 사전검증 승인창 + 읽기전용 조회(fetchOrderRow)
+   *   slice C-2b: [진행] 클릭 → standby(POST) + 재고배정(GET=쓰기) 순차 실행
    *
-   *  ⚠⚠ 이 슬라이스는 '쓰기 없음'이 증명 가능해야 한다(§4.3·§5). 이 블록이 하는 네트워크는
-   *    orderItemList.do 목록 조회(읽기) 하나뿐이고, 승인창의 [진행] 은 C-2b 를 붙이기 전까지
-   *    no-op 스텁이다. standby()·setCurrent·form.submit/requestSubmit·location 대입·
-   *    location.assign/replace·window.open·앵커 클릭 — 그 어느 것도 이 코드는 호출하지 않는다.
+   *  C-2a(읽기)는 orderItemList.do 목록 조회 하나뿐이다.
+   *  C-2b(쓰기)는 standby POST + setCurrent 상당 GET 을 fetch(credentials:'include') 로
+   *    재현한다. 순차 처리·busy 플래그·첫 실패 중단 — 회전입고(§5.6) 패턴.
    *
    *  게이트: state.ubSkin && state.ubHqConfirm(기본 OFF). 버튼은 목록의 standby 툴바(TD.left)에
    *  idempotent 하게 주입하고 게이트 OFF 면 숨긴다. 클릭 시점에도 게이트를 다시 본다
@@ -3933,6 +4035,22 @@
     try { table.dataset.ubHqStatusCol = String(idx); } catch (_) {}
     return idx;
   }
+  //  table 의 주문일 열 인덱스를 헤더에서 찾는다(cStatusColFor 와 동일 규율).
+  function cOrderDateColFor(table) {
+    if (!table) return -1;
+    if (table.dataset.ubHqDateCol != null) {
+      const n = parseInt(table.dataset.ubHqDateCol, 10);
+      return isFinite(n) ? n : -1;
+    }
+    let idx = -1;
+    const rows = table.rows;
+    for (let r = 0; r < rows.length; r++) {
+      const i = cOrderDateColIndex([...rows[r].cells].map(c => c.textContent));
+      if (i >= 0) { idx = i; break; }
+    }
+    try { table.dataset.ubHqDateCol = String(idx); } catch (_) {}
+    return idx;
+  }
   //  한 행(tr)의 canonical 상태 코드. 헤더로 찾은 상태 열 셀 텍스트를 cListStatusCode 로 해석.
   //  못 찾거나 해석 불가면 null → 호출부에서 '상태 불명' 으로 제외된다(fail-closed).
   function cRowStatusCode(tr) {
@@ -3943,8 +4061,8 @@
       return td ? cListStatusCode(td.textContent) : null;
     } catch (_) { return null; }
   }
-  //  현재 화면에서 체크된 행 → [{orderSeq, code}]. orderSeq 는 input[name=idx] value(이 페이지는
-  //  단일값, 콤마 없음이지만 방어적으로 첫 조각). code 는 헤더 기반 상태 열에서.
+  //  현재 화면에서 체크된 행 → [{orderSeq, code, orderDate}]. orderSeq 는 input[name=idx]
+  //  value. code 는 헤더 기반 상태 열. orderDate 는 주문일 열에서 cParseRowOrderDate 로 추출.
   function cReadCheckedRows() {
     const out = [];
     try {
@@ -3953,7 +4071,16 @@
         const orderSeq = String(b.value == null ? '' : b.value).split(',')[0].trim();
         if (!orderSeq) continue;
         const tr = b.closest ? b.closest('tr') : null;
-        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null });
+        let orderDate = '';
+        if (tr) {
+          try {
+            const di = cOrderDateColFor(tr.closest('table'));
+            if (di >= 0 && tr.cells && tr.cells[di]) {
+              orderDate = cParseRowOrderDate(tr.cells[di].textContent);
+            }
+          } catch (_) {}
+        }
+        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null, orderDate: orderDate });
       }
     } catch (e) { cLog('체크 행 읽기 실패', e); }
     return out;
@@ -4018,7 +4145,7 @@
       return Object.assign({}, base, { loginExpired: login });
     }
     const matches = boxes.filter(b => String(b.value == null ? '' : b.value).split(',')[0].trim() === wantSeq);
-    if (matches.length === 0) return base;                        // 응답에 그 주문 없음
+    if (matches.length === 0) return Object.assign({}, base, { hasMore: cHasMore(cReadTotalCount(doc), boxes.length) });
     if (matches.length > 1) {                                     // 중복 → fail-closed
       cLog('fetchOrderRow — 중복 orderSeq', wantSeq, matches.length, '건');
       return Object.assign({}, base, { duplicate: true, hasMore: cHasMore(cReadTotalCount(doc), boxes.length) });
@@ -4039,8 +4166,262 @@
              hasMore: cHasMore(cReadTotalCount(doc), boxes.length), loginExpired: false,
              rowHtml: tr ? tr.outerHTML : '' };
   }
+  // ── 작업C 배치 실행(slice C-2b) — DOM 의존 실행부 ─────────────────────
+  //  순차 처리, busy 플래그, 첫 실패 중단 — 회전입고(5.6) 패턴을 그대로 따른다.
+  //  모든 쓰기(standby POST, assign GET)는 fetch(credentials:'include') 이다.
+  //  form.submit/location 대입은 쓰지 않는다(ISOLATED world 에서 불가).
+  function cReadSearchFields() {
+    const result = {};
+    try {
+      const f = document.forms['form1'];
+      if (!f) return result;
+      result.reqPage = '1';
+      for (let i = 0; i < ASG_SEARCH_FIELDS.length; i++) {
+        const n = ASG_SEARCH_FIELDS[i];
+        const el = f.elements[n]; // ⚠ f[n] 아님 — 동명 필드에서 조용히 undefined
+        if (el && typeof el.value === 'string') result[n] = el.value;
+      }
+    } catch (_) {}
+    return result;
+  }
+  //  목록 페이지를 fresh GET 해서 인라인 스크립트에서 sKey 를 뽑는다.
+  //  재사용 금지 — 매 standby 직전에 새로 받는다.
+  async function cFetchSKey() {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+      try {
+        const r = await fetch('/jun/orderitem/orderItemList.do?tcode=order_item', {
+          method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal
+        });
+        const buf = await r.arrayBuffer();
+        let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+        return cExtractSKey(html);
+      } finally { clearTimeout(timer); }
+    } catch (e) {
+      cLog('sKey 추출 실패', e);
+      return null;
+    }
+  }
+  //  standby POST — 주문완료(O--)→본사확인(OS-).
+  async function cDoStandby(orderSeq, sKey, searchFields) {
+    try {
+      const url = cBuildStandbyUrl(sKey, searchFields);
+      if (!url) return { ok: false, msg: 'sKey 없음' };
+      const body = new URLSearchParams();
+      body.set('idx', String(orderSeq));
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+      try {
+        await fetch(url, {
+          method: 'POST', credentials: 'include', cache: 'no-cache', signal: ctrl.signal,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+          body: body.toString()
+        });
+      } finally { clearTimeout(timer); }
+      return { ok: true };
+    } catch (e) {
+      cLog('standby 실패', e);
+      return { ok: false, msg: (e && e.message) || String(e) };
+    }
+  }
+  //  후보 조회 — 배정 가능한 재고 바코드 목록. ⚠ 응답은 EUC-KR.
+  //  반환: {ok, candidates, reason}. ok:false 면 네트워크/로그인 문제(진짜 0건과 구분).
+  async function cFetchCandidates(master, orderSeq, shop, client, orderDate, searchFields) {
+    try {
+      const url = cBuildCandidateFormUrl(master, orderSeq, shop, client, orderDate, searchFields);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+      try {
+        const r = await fetch(url, {
+          method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal
+        });
+        const buf = await r.arrayBuffer();
+        let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+        // 로그인 만료 감지
+        if (html.indexOf('type="password"') >= 0 || html.indexOf("type='password'") >= 0) {
+          return { ok: false, candidates: [], reason: '로그인 만료' };
+        }
+        return { ok: true, candidates: cParseCandidateRows(html) };
+      } finally { clearTimeout(timer); }
+    } catch (e) {
+      cLog('후보 조회 실패', e);
+      return { ok: false, candidates: [], reason: '후보 조회 실패(네트워크/타임아웃)' };
+    }
+  }
+  //  배정 실행. ⚠⚠ 이 GET 자체가 쓰기다 — 조회 목적으로 부르지 마라.
+  async function cDoAssign(barcode, orderSeq, shop, client, orderDate, searchFields) {
+    try {
+      const url = cBuildAssignUrl(barcode, orderSeq, shop, client, orderDate, searchFields);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+      try {
+        await fetch(url, {
+          method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal
+        });
+      } finally { clearTimeout(timer); }
+      return { ok: true };
+    } catch (e) {
+      cLog('배정 실행 실패', e);
+      return { ok: false, msg: (e && e.message) || String(e) };
+    }
+  }
+  //  성공한 행의 화면 갱신. rowHtml 이 있으면 행 전체 교체, 없으면 상태 셀만.
+  //  §5.5: 중단하더라도 이미 처리된 건까지는 화면을 갱신한다.
+  function cUpdateRow(orderSeq, rowInfo) {
+    try {
+      const input = document.querySelector('input[name=idx][value="' + orderSeq + '"]');
+      if (!input) return;
+      const tr = input.closest('tr');
+      if (!tr) return;
+      if (rowInfo && rowInfo.rowHtml) {
+        const temp = document.createElement('tbody');
+        temp.innerHTML = rowInfo.rowHtml;
+        const newTr = temp.querySelector('tr');
+        if (newTr) {
+          tr.replaceWith(newTr);
+          try { bindThumbEdit(newTr); } catch (_) {}
+          try { bindEditPopupIntercept(newTr); } catch (_) {}
+          return;
+        }
+      }
+      const idx = cStatusColFor(tr.closest('table'));
+      if (idx >= 0 && tr.cells && tr.cells[idx]) {
+        tr.cells[idx].textContent = rowInfo ? rowInfo.text : '';
+      }
+    } catch (e) { cLog('행 갱신 실패', e); }
+  }
+  //  배치 실행 오케스트레이터. 순차 처리, 첫 실패/미확정에서 중단.
+  //  progress(msg): 승인창 안 진행 표시. isAborted(): 사용자 중단 요청 여부.
+  let cBatchBusy = false;
+  async function cRunHqBatch(targets, progress, isAborted) {
+    if (cBatchBusy) return { success: 0, failed: [], uncertain: [], processed: 0, total: 0 };
+    cBatchBusy = true;
+    const results = { success: 0, failed: [], uncertain: [], processed: 0, total: targets.length };
+    let i = 0;
+    try {
+      for (i = 0; i < targets.length; i++) {
+        const t = targets[i];
+        const orderSeq = t.orderSeq;
+        // ★게이트 재확인(§5.7): 실행 중 게이트가 꺼지면 현재 건을 마치고 중단
+        if (!(state.ubSkin && state.ubHqConfirm)) {
+          cLog('게이트 해제 → 중단'); break;
+        }
+        // ★중단 요청 확인(다음 안전 경계)
+        if (isAborted && isAborted()) {
+          cLog('사용자 중단 요청 → 중단'); break;
+        }
+        results.processed++;
+        const orderDate = t.orderDate || '';
+        // ── 0) 주문일 필수(P1: 날짜 없으면 서버가 0건 반환) ─────────────
+        if (!orderDate) {
+          results.failed.push({ orderSeq: orderSeq, reason: '주문일 파싱 실패' });
+          break;
+        }
+        // ── 1) 현재 상태 재조회(매 쓰기 직전, §5.2) ─────────────────────
+        progress((i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · 상태 확인');
+        let currentRow = await fetchOrderRow(orderSeq, orderDate);
+        if (!currentRow.found) {
+          results.failed.push({ orderSeq: orderSeq, reason: currentRow.hasMore ? '재조회 실패(결과 잘림 — 조건을 좁혀라)' : '재조회 실패(행 없음)' });
+          break;
+        }
+        if (currentRow.loginExpired) {
+          results.failed.push({ orderSeq: orderSeq, reason: '로그인 만료' });
+          break;
+        }
+        if (currentRow.duplicate) {
+          results.failed.push({ orderSeq: orderSeq, reason: '중복 orderSeq(재조회)' });
+          break;
+        }
+        const step = cNextStep(currentRow.code);
+        if (step === 'abort') {
+          results.failed.push({ orderSeq: orderSeq, reason: '상태 부적합: ' + (currentRow.text || currentRow.code || '불명') });
+          break;
+        }
+        // ── 2) standby (주문완료 → 본사확인) ─────────────────────────────
+        if (step === 'standby') {
+          progress((i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · 본사확인 처리');
+          const sKey = await cFetchSKey();
+          if (!sKey) {
+            results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' });
+            break;
+          }
+          const sf = cReadSearchFields();
+          await cDoStandby(orderSeq, sKey, sf);
+          // dispatch 후 — 재조회로만 판정(§5.4)
+          progress((i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · 확인');
+          let verifyOK = false;
+          const dl = Date.now() + ASG_VERIFY_MS;
+          while (Date.now() < dl) {
+            currentRow = await fetchOrderRow(orderSeq, orderDate);
+            if (currentRow.found && currentRow.code === 'OS-') { verifyOK = true; break; }
+            await new Promise(function(r) { setTimeout(r, 1500); });
+          }
+          if (!verifyOK) {
+            results.uncertain.push({ orderSeq: orderSeq, reason: '본사확인 미확정 — 수동 확인 필요' });
+            if (currentRow && currentRow.found) cUpdateRow(orderSeq, currentRow);
+            break;
+          }
+        }
+        // ── 3) assign (본사확인 → 입고완료) ──────────────────────────────
+        // OS- rowHtml 에서 currentSetting 인자 추출
+        if (!currentRow.found || currentRow.code !== 'OS-') {
+          currentRow = await fetchOrderRow(orderSeq, orderDate);
+        }
+        const args = cExtractRowArgs(currentRow.rowHtml);
+        if (!args) {
+          results.failed.push({ orderSeq: orderSeq, reason: '배정 정보(currentSetting) 없음' });
+          break;
+        }
+        // 3-1) 후보 조회
+        progress((i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · 재고 후보 조회');
+        const sf2 = cReadSearchFields();
+        const cRes = await cFetchCandidates(args.master, orderSeq, args.shop, args.client, args.orderDate, sf2);
+        if (!cRes.ok) {
+          results.failed.push({ orderSeq: orderSeq, reason: cRes.reason || '후보 조회 실패' });
+          break;
+        }
+        const pickedBarcode = cPickAssignBarcode(cRes.candidates);
+        if (!pickedBarcode) {
+          results.failed.push({ orderSeq: orderSeq, reason: '재고 후보 없음' });
+          break;
+        }
+        // 3-2) 배정 실행 (⚠⚠ 이 GET 이 쓰기다!)
+        progress((i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · 배정 실행');
+        await cDoAssign(pickedBarcode, orderSeq, args.shop, args.client, args.orderDate, sf2);
+        // ── 4) 성공 판정(§3.6): I-- AND 바코드 일치 ─────────────────────
+        progress((i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · 확인');
+        let vRow = null;
+        const dl2 = Date.now() + ASG_VERIFY_MS;
+        while (Date.now() < dl2) {
+          vRow = await fetchOrderRow(orderSeq, args.orderDate || orderDate);
+          if (vRow && vRow.found && vRow.code === 'I--' && vRow.assignedBarcode === pickedBarcode) break;
+          await new Promise(function(r) { setTimeout(r, 1500); });
+        }
+        const outcome = cClassifyOutcome({ dispatched: true, expectedBarcode: pickedBarcode, requery: vRow });
+        if (outcome === 'success') {
+          results.success++;
+          cUpdateRow(orderSeq, vRow);
+        } else if (outcome === 'uncertain') {
+          results.uncertain.push({ orderSeq: orderSeq, reason: '배정 미확정 — 수동 확인 필요', barcode: pickedBarcode });
+          if (vRow && vRow.found) cUpdateRow(orderSeq, vRow);
+          break;
+        } else {
+          results.failed.push({ orderSeq: orderSeq, reason: '배정 실패' });
+          break;
+        }
+      }
+    } catch (e) {
+      cLog('배치 실행 오류', e);
+    } finally {
+      cBatchBusy = false;
+    }
+    return results;
+  }
   //  사전검증 승인창(§4.3). 총 N / 대상 K / 제외 M 과 제외 사유를 보여준다. 중복 주문번호면
-  //  [진행] 없이 '중단' 안내만. [진행] 은 C-2b 전까지 no-op 스텁 — 어떤 쓰기도 배선하지 않는다.
+  //  [진행] 없이 '중단' 안내만. [진행] 은 cRunHqBatch 로 배치 실행한다.
   function cShowApprovalDialog(cls) {
     try {
       ensureHqStyle();
@@ -4082,14 +4463,34 @@
       if (canProceed) {
         const go = document.createElement('button');
         go.className = 'ub-hq-btn2 ub-hq-go'; go.type = 'button'; go.textContent = '진행';
-        go.addEventListener('click', () => {
-          // ★C-2b 미구현 — 어떤 쓰기도 배선하지 않는다(no-op 스텁).
-          cLog('진행 클릭 — C-2b 미구현(no-op). 대상', targets.length, '건 (아무 것도 처리하지 않음)');
+        go.addEventListener('click', async () => {
+          if (cBatchBusy) return;
           go.disabled = true;
+          let abortReq = false;
+          // 닫기 버튼을 '중단' 으로 전환(다음 안전 경계에서 멈춤)
+          const cancelBtn = foot.querySelector('.ub-hq-cancel');
+          if (cancelBtn) { cancelBtn.textContent = '중단'; cancelBtn.onclick = () => { abortReq = true; }; }
           const note = document.createElement('div');
           note.className = 'ub-hq-note';
-          note.textContent = '다음 단계 준비중 (C-2b 미구현) — 아직 아무 것도 처리하지 않았습니다.';
+          note.textContent = '준비 중...';
           const b = card.querySelector('.ub-hq-b'); if (b) b.appendChild(note);
+          const progress = (msg) => { note.textContent = msg; };
+          const results = await cRunHqBatch(targets, progress, () => abortReq);
+          // 요약 표시
+          const lines = [];
+          if (results.success > 0) lines.push('성공 ' + results.success + '건');
+          if (results.failed.length > 0) {
+            const f = results.failed[0];
+            lines.push('실패 1건: ' + f.orderSeq + ' — ' + f.reason);
+          }
+          if (results.uncertain.length > 0) {
+            const u = results.uncertain[0];
+            lines.push('미확정 1건: ' + u.orderSeq + ' — ' + u.reason);
+          }
+          const remaining = results.total - results.processed;
+          if (remaining > 0) lines.push('미처리 ' + remaining + '건');
+          note.textContent = lines.join(' / ') || '처리 완료';
+          if (cancelBtn) { cancelBtn.textContent = '닫기'; cancelBtn.onclick = close; }
         });
         foot.appendChild(go);
       }
