@@ -1,5 +1,5 @@
 /* =============================================================================
- *  orderitem-editpopup.test.js — 작업B 수정 팝업(별도 브라우저 창) 순수 헬퍼 단위테스트.
+ *  orderitem-editpopup.test.js — 작업B 수정 팝업(목록 위 플로팅 패널) 순수 헬퍼 단위테스트.
  *
  *  skin.js 는 content script IIFE 라 require 할 수 없다.
  *  → 소스에서 DOM 비의존 선언만 이름으로 추출해 샌드박스에서 **실제로 실행**한다
@@ -164,29 +164,196 @@ test('빈 인자도 형태를 지키고, 값은 URL 인코딩된다', () => {
   assert.equal(epModifyQuery({ seq: 'a b', jun: 'c&d' }), 'tcode=order_item&seq=a+b&tradeJun=c%26d');
 });
 
-/* ── background 라우터 계약 — source:'ub' 누락은 침묵 실패다 ──────────────── */
+/* ── v3.9.9 페이지 내 패널 계약 — 별도 창·background 경유가 사라졌는가 ────── */
 
-test("★모든 ubEp 메시지에 source:'ub' 가 있다 — 없으면 라우터가 즉시 반환한다", () => {
-  // background.js 첫 줄: if (!msg || msg.source !== 'ub') return;
-  // 이걸 빠뜨리면 응답이 없어 'message port closed' 로 실패하고, 폴백이 목록 탭을
-  // 이동시켜 마치 기능이 아예 없는 것처럼 보인다(2026-07-27 라이브에서 실제로 겪었다).
+test('★수정 팝업이 background 를 전혀 거치지 않는다 (별도 창 경로 제거)', () => {
+  // 사장님 지시(2026-07-28): 매입처 정보창처럼 페이지 안에 떠야 한다. 창을 따로 띄우면
+  // 목록에서 시선이 끊긴다. 그래서 windowId 레지스트리·SW 왕복이 통째로 필요 없어졌다.
   const BG = fs.readFileSync(path.join(__dirname, '..', 'src', 'background.js'), 'utf8');
-  assert.match(BG, /msg\.source\s*!==\s*'ub'/, '라우터 가드가 사라졌다면 이 테스트를 갱신해야 한다');
-
-  const calls = SRC.match(/chrome\.runtime\.sendMessage\(\s*\{[^}]*\}/g) || [];
-  const epCalls = calls.filter(c => /type:\s*'ubEp/.test(c));
-  assert.ok(epCalls.length >= 3, 'ubEp 메시지가 3개 이상이어야 한다 (열기·신원조회·완료), 실제 ' + epCalls.length);
-  for (const c of epCalls) {
-    const type = (/type:\s*'(ubEp\w+)'/.exec(c) || [])[1];
-    assert.match(c, /source:\s*'ub'/, type + " 메시지에 source:'ub' 가 없다");
-  }
+  assert.doesNotMatch(BG, /ubEp/, 'background 에 수정 팝업 잔재가 남아 있다');
+  assert.doesNotMatch(SRC, /type:\s*'ubEp/, 'skin 에 background 로 보내는 수정 팝업 메시지가 남아 있다');
 });
 
-test('background 가 세 ubEp 타입을 모두 라우팅한다', () => {
-  const BG = fs.readFileSync(path.join(__dirname, '..', 'src', 'background.js'), 'utf8');
-  for (const t of ['ubEpOpen', 'ubEpWhoAmI', 'ubEpDone']) {
-    assert.match(BG, new RegExp("msg\\.type === '" + t + "'"), t + ' 라우팅이 없다');
-  }
+test("★신원 dataset 을 src 보다 **먼저** 심는다 — 순서가 뒤집히면 자식이 자기를 못 알아본다", () => {
+  // 자식은 document_start 에 frameElement.dataset.ubEpSeq 를 읽어 사이드바를 억제하고
+  // 폼을 꾸민다. src 를 먼저 주면 그 시점에 dataset 이 비어 있어 날것의 ERP 페이지가 뜬다.
+  const fn = extractFn(SRC, 'epOpenPanel');
+  const iSeq = fn.indexOf('ubEpSeq');
+  const iSrc = fn.indexOf('fr.src');
+  assert.ok(iSeq >= 0 && iSrc >= 0, 'epOpenPanel 이 dataset·src 를 둘 다 다뤄야 한다');
+  assert.ok(iSeq < iSrc, 'dataset.ubEpSeq 지정이 fr.src 대입보다 앞서야 한다');
+});
+
+test('★프레임 안에서 sessionStorage 팝업 마커를 세우지 않는다 (부모 목록의 도구가 사라진다)', () => {
+  // iframe 은 부모 목록과 **같은 탭·같은 origin** 이라 sessionStorage 를 공유한다.
+  // 별도 창 시절엔 저장소가 갈려 있어 안전했지만, 패널로 바뀌며 성립하지 않는다.
+  const fn = extractFn(SRC, 'epSuppressOwnUi');
+  //  '쓰기'만 잡는다 — 주석에 sessionStorage 를 언급하는 건(왜 쓰면 안 되는지 적어둔 것) 정상.
+  assert.doesNotMatch(fn, /sessionStorage\s*\.\s*setItem/,
+    'epSuppressOwnUi 가 sessionStorage 에 쓰면 목록 페이지의 D102 도구까지 사라진다');
+  assert.match(SRC, /_IS_EP_FRAME/, '프레임 판정 상수로 억제해야 한다');
+});
+
+test('★[수정] 가로채기는 최상위 프레임에서만 — ERP 자체 iframe 에서 걸리면 패널이 갇힌다', () => {
+  const fn = extractFn(SRC, 'bindEditPopupIntercept');
+  assert.match(fn, /window\s*!==\s*window\.top/, '최상위 프레임 가드가 없다');
+});
+
+/* ── 세대(gen) 가드 — 낡은 문서가 새 패널을 닫지 못하는가 ────────────────────
+ *  별도 창 시절엔 레지스트리의 createdAt 으로 막던 경합이다. 패널로 바뀌며 신원이
+ *  주문키뿐이 되자 **같은 주문을 다시 열면** 구별이 사라졌다(주문키가 그대로라서).
+ *  epSignalDone 은 epLog 말고는 의존이 없어 여기서 **실제로 실행**해 검증한다.
+ * ------------------------------------------------------------------------ */
+const doneBox = {};
+// eslint-disable-next-line no-new-func
+new Function('exports', 'epLog',
+  extractFn(SRC, 'epSignalDone') + '\nexports.epSignalDone = epSignalDone;'
+)(doneBox, () => {});
+const { epSignalDone } = doneBox;
+
+//  dataset 을 흉내낸다 — 이 함수가 만지는 건 el.dataset 의 두 키가 전부다.
+function fakeFrame(gen) { return { dataset: { ubEpGen: String(gen) } }; }
+
+test('세대가 같으면 완료를 세운다', () => {
+  const el = fakeFrame(3);
+  assert.equal(epSignalDone({ orderSeq: '111', gen: '3', el: el }), true);
+  assert.equal(el.dataset.ubEpDone, '1');
+});
+
+test('★같은 주문이어도 세대가 다르면 완료를 세우지 않는다 — 낡은 문서가 새 패널을 닫는 경합', () => {
+  // 주문 A 를 저장 → 결과 페이지 문서(D1)가 아직 살아 있는 사이 사용자가 A 의 [수정]을
+  // 다시 누른다. 부모는 같은 iframe 에 A 를 다시 지정(세대 3→4)한다. 이때 뒤늦게 깨어난
+  // D1 이 완료를 세우면 방금 연 패널이 눈앞에서 닫힌다. 주문키만으로는 못 막는다.
+  const el = fakeFrame(4);                                   // 부모가 이미 다시 열었다
+  assert.equal(epSignalDone({ orderSeq: '111', gen: '3', el: el }), false);
+  assert.equal(el.dataset.ubEpDone, undefined, '낡은 문서가 완료를 세워선 안 된다');
+});
+
+test('세대값이 없으면 완료를 세우지 않는다 — fail-closed', () => {
+  //  ⓐ 내 세대는 있는데 화면에 세대가 없다.
+  const a = { dataset: {} };
+  assert.equal(epSignalDone({ orderSeq: '111', gen: '1', el: a }), false);
+  assert.equal(a.dataset.ubEpDone, undefined);
+  //  ⓑ ★양쪽 다 비었다. '다를 때만 거부' 로 두면 여기가 통과해 세대 보호가 통째로 우회된다
+  //     — 우리가 연 패널이 아닌데 data-ub-ep-seq 만 붙은 프레임이 그 경로다.
+  const b = { dataset: {} };
+  assert.equal(epSignalDone({ orderSeq: '111', gen: '', el: b }), false);
+  assert.equal(b.dataset.ubEpDone, undefined, '세대 없는 신원이 완료를 세워선 안 된다');
+  const c = { dataset: {} };
+  assert.equal(epSignalDone({ orderSeq: '111', el: c }), false);   // gen 자체가 없는 신원
+  assert.equal(c.dataset.ubEpDone, undefined);
+  //  ⓒ 신원 자체가 없으면 당연히 거부.
+  assert.equal(epSignalDone(null), false);
+  assert.equal(epSignalDone({ orderSeq: '111', gen: '1' }), false);
+});
+
+test('★신원은 document_start 캡처본을 쓴다 — epFrameIdentity 가 dataset 을 다시 읽으면 안 된다', () => {
+  // 이 함수는 storage 콜백 뒤(비동기)에 불린다. 그 시점에 dataset 을 읽으면 그 사이 부모가
+  // 다시 연 패널의 신원을 자기 것으로 읽어, 위 세대 가드가 통째로 무력해진다.
+  const fn = extractFn(SRC, 'epFrameIdentity');
+  assert.doesNotMatch(fn, /frameElement|dataset/,
+    'epFrameIdentity 가 dataset 을 다시 읽으면 세대 가드가 무력해진다');
+  assert.match(fn, /_EP_FRAME_ID/, 'document_start 캡처본(_EP_FRAME_ID)을 돌려줘야 한다');
+  assert.match(SRC, /const\s+_EP_FRAME_ID\s*=/, 'document_start 캡처 상수가 없다');
+  assert.match(SRC, /const\s+_IS_EP_FRAME\s*=\s*!!_EP_FRAME_ID/, '프레임 판정이 캡처본에서 파생돼야 한다');
+});
+
+test('★패널을 열 때마다 세대가 오른다 — 안 오르면 재사용을 구별할 수 없다', () => {
+  const fn = extractFn(SRC, 'epOpenPanel');
+  assert.match(fn, /ubEpGen\s*=\s*String\(\s*\+\+/, 'epOpenPanel 이 세대를 올려 심지 않는다');
+  const iGen = fn.indexOf('ubEpGen');
+  const iSrc = fn.indexOf('fr.src');
+  assert.ok(iGen >= 0 && iGen < iSrc, '세대도 src 대입보다 먼저 심어야 한다');
+});
+
+/* ── 완료 처리 순서 — 갱신이 걸렸을 때만 닫는가(fail-closed) ────────────────── */
+
+test('★목록 갱신을 먼저 걸고, 성공했을 때만 패널을 닫는다', () => {
+  // 반대 순서면 갱신이 안 걸렸을 때 패널까지 사라져, 사용자는 옛 값이 남은 목록만 보고
+  // 방금 저장한 화면으로 돌아갈 방법이 없다. 별도 창 시절의 fail-closed 순서와 같다.
+  const fn = extractFn(SRC, 'epEnsurePanel');
+  const iReload = fn.indexOf('epReloadList');
+  const iClose = fn.indexOf('epClosePanel(');
+  assert.ok(iReload >= 0 && iClose >= 0, '완료 감시가 갱신·닫기를 둘 다 다뤄야 한다');
+  assert.ok(iReload < iClose, 'epReloadList() 가 epClosePanel() 보다 앞서야 한다');
+  assert.match(fn, /if\s*\(\s*!epReloadList\(\)\s*\)[\s\S]{0,220}?return;/,
+    '갱신 실패 시 닫지 않고 빠져나가는 경로가 없다');
+});
+
+/* ── 패널 위치 보정 — 조작부가 화면 밖으로 나가지 않는가 ──────────────────────
+ *  epClampPanel 은 el.style·offsetWidth·window 크기만 만지므로 여기서 **실제로 실행**한다.
+ * ------------------------------------------------------------------------ */
+const VP = { innerWidth: 1920, innerHeight: 1080 };
+const clampBox = {};
+// eslint-disable-next-line no-new-func
+new Function('exports', 'window', 'epLog',
+  extractFn(SRC, 'epClampPanel') + '\nexports.epClampPanel = epClampPanel;'
+)(clampBox, VP, () => {});
+const { epClampPanel } = clampBox;
+
+//  style 만 있는 가짜 패널 — offsetWidth/Height 는 인라인 크기를 그대로 돌려준다.
+function fakePanel(w, h, x, y) {
+  const st = { width: w + 'px', height: h + 'px', left: x + 'px', top: y + 'px' };
+  return {
+    style: st,
+    get offsetWidth() { return parseInt(st.width, 10) || 0; },
+    get offsetHeight() { return parseInt(st.height, 10) || 0; }
+  };
+}
+const px = (v) => parseInt(v, 10);
+
+test('★좁은 화면에서 기본 크기 패널이 화면을 넘지 않는다 (닫기 버튼이 밖으로 안 나간다)', () => {
+  VP.innerWidth = 800; VP.innerHeight = 700;
+  const el = fakePanel(900, 660, 16, 16);        // 기본값 그대로 열린 상태
+  epClampPanel(el);
+  assert.ok(px(el.style.width) <= 800, '폭이 화면을 넘는다: ' + el.style.width);
+  assert.ok(px(el.style.left) + px(el.style.width) <= 800, '오른쪽 끝(닫기·리사이즈)이 화면 밖이다');
+  assert.ok(px(el.style.top) + px(el.style.height) <= 700, '아래쪽 끝이 화면 밖이다');
+});
+
+test('★열어둔 채 창을 줄이면 패널을 화면 안으로 다시 끌어온다', () => {
+  VP.innerWidth = 1920; VP.innerHeight = 1080;
+  const el = fakePanel(900, 660, 1000, 200);     // 넓은 모니터 오른쪽에 둔 패널
+  epClampPanel(el);
+  assert.equal(el.style.left, '1000px', '넓은 화면에서는 건드리지 않는다');
+  VP.innerWidth = 800; VP.innerHeight = 700;     // 창을 줄였다
+  epClampPanel(el);
+  assert.ok(px(el.style.left) >= 0 && px(el.style.left) + px(el.style.width) <= 800,
+    '창을 줄인 뒤에도 패널이 화면 밖에 남아 있다: left=' + el.style.left + ' w=' + el.style.width);
+});
+
+test('화면이 최소 크기보다 좁아도 420×320 아래로는 줄이지 않는다 (CSS min 과 싸우지 않게)', () => {
+  VP.innerWidth = 300; VP.innerHeight = 250;
+  const el = fakePanel(900, 660, 0, 0);
+  epClampPanel(el);
+  assert.equal(px(el.style.width), 420);
+  assert.equal(px(el.style.height), 320);
+});
+
+test('★패널을 만들 때·창 크기가 바뀔 때 둘 다 보정한다', () => {
+  const fn = extractFn(SRC, 'epEnsurePanel');
+  assert.match(fn, /epClampPanel\(el\)/, '생성 직후 보정이 없다');
+  assert.match(fn, /addEventListener\('resize'/, '창 크기 변경 보정이 없다');
+  assert.match(fn, /el\.isConnected[\s\S]{0,120}?epDropResize\(\)/,
+    '엘리먼트가 사라진 경우의 보정 해제가 없다');
+  const iAppend = fn.indexOf('appendChild(el)');
+  const iClamp = fn.indexOf('epClampPanel(el)');
+  assert.ok(iAppend >= 0 && iAppend < iClamp, 'offsetWidth 를 보려면 붙인 뒤에 보정해야 한다');
+});
+
+test('★패널을 닫을 때 resize 리스너를 즉시 뗀다 — 열고 닫기를 반복하면 쌓인다', () => {
+  // 다음 resize 를 기다려 자진 해제하게 두면, 창 크기를 안 바꾸고 X 로 열고 닫기를 반복하는
+  // 동안 리스너와 떼어진 패널 DOM 이 계속 쌓인다(closure 가 붙잡아 GC 도 안 된다).
+  const close = extractFn(SRC, 'epClosePanel');
+  assert.match(close, /epDropResize\(\)/, 'epClosePanel 이 리스너를 즉시 떼지 않는다');
+  const drop = extractFn(SRC, 'epDropResize');
+  assert.match(drop, /removeEventListener\('resize'/, 'epDropResize 가 실제로 떼지 않는다');
+  assert.match(drop, /_epOnResize = null/, '뗀 뒤 참조를 비우지 않으면 패널 DOM 이 붙잡힌다');
+  //  새 패널을 만들 때도 앞선 리스너가 남아 있으면 먼저 뗀다(중복 등록 방지).
+  const ensure = extractFn(SRC, 'epEnsurePanel');
+  const iDrop = ensure.indexOf('epDropResize()');
+  const iAdd = ensure.indexOf("addEventListener('resize'");
+  assert.ok(iDrop >= 0 && iDrop < iAdd, '등록 전에 기존 리스너를 떼지 않는다');
 });
 
 /* ── parseModifyArgs — 목록의 [수정] 앵커 인자 파싱 ──────────────────────── */

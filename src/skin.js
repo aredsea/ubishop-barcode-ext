@@ -85,7 +85,7 @@
     ubTabMode: 'off',                          // 'off' | 'global' | 'each'
     ubTabGlobal: 'jun',                        // global 일 때 'jun'(장) | 'list'(내역)
     ubTabEach: {},                             // each 일 때 { input:'list', balju:'jun', ... }
-    // v3.9.0 작업B 수정 팝업 — 켜면 [수정] 이 별도 브라우저 창으로 열린다. 기본 OFF.
+    // v3.9.9 작업B 수정 팝업 — 켜면 [수정] 이 목록 위 플로팅 패널로 열린다(별도 창 아님). 기본 OFF.
     ubEditPopup: false,
     ubEpX: null, ubEpY: null, ubEpW: 900, ubEpH: 660,
     // v3.8.x 작업C 본사확인+입고완료(slice C-2a) — 기본 OFF(§8: C 는 기본 OFF).
@@ -126,6 +126,26 @@
     return popup;
   }
   const _IS_POPUP = (() => { try { return isPopupWindow(); } catch (_) { return false; } })();
+  //  ★우리 수정 패널의 iframe 인가(v3.9.9 작업B). 부모가 src 를 주기 **전에** dataset 을
+  //   심으므로 document_start 에 이미 읽힌다 → 사이드바가 한 번도 안 만들어진다(깜빡임 없음).
+  //  ⚠ 여기서 POPUP_MARK(sessionStorage)를 쓰면 안 된다. iframe 은 부모 목록과 **같은 탭·
+  //   같은 origin** 이라 그 마커가 목록 페이지의 D102 도구까지 지워버린다(별도 창일 땐
+  //   저장소가 갈려 있어 안전했지만, 패널로 바뀌며 성립하지 않는다).
+  //  ★신원(주문키 + **세대**)을 여기 document_start 에서 붙잡는다. 나중에(init 은 storage
+  //   콜백 뒤라 비동기다) 읽으면 안 된다 — 같은 주문을 다시 열면 dataset 의 주문키가 그대로라,
+  //   늦게 깨어난 낡은 문서가 지금 열린 패널을 자기 것으로 오인해 닫는다. 별도 창 시절 gen
+  //   (createdAt)으로 막던 바로 그 경합이라, 문서가 **태어난 순간의 세대**를 들고 있다가
+  //   완료를 알릴 때 대조한다(epSignalDone).
+  const _EP_FRAME_ID = (() => {
+    try {
+      const fe = window.frameElement;   // cross-origin 이면 throw
+      if (!fe || !fe.dataset) return null;
+      const seq = String(fe.dataset.ubEpSeq == null ? '' : fe.dataset.ubEpSeq).trim();
+      if (!seq) return null;
+      return { orderSeq: seq, gen: String(fe.dataset.ubEpGen == null ? '' : fe.dataset.ubEpGen), el: fe };
+    } catch (_) { return null; }
+  })();
+  const _IS_EP_FRAME = !!_EP_FRAME_ID;
 
   //  버전은 manifest 에서 읽는다 — 하드코딩하면 릴리스마다 손으로 고쳐야 하고, 실제로 v3.6.1 이
   //   v3.8.8 까지 그대로 남아 배포 검증에서 '동기 실패' 로 오독될 뻔했다(2026-07-27).
@@ -910,7 +930,7 @@
     'searchJunNum', 'searchItemSize', 'searchClientName', 'searchDateType',
     'syear', 'smonth', 'sday', 'eyear', 'emonth', 'eday'
   ];
-  // ── 작업B 순수 헬퍼 — 수정 팝업(별도 창) ──────────────────────────────────
+  // ── 작업B 순수 헬퍼 — 수정 팝업(목록 위 플로팅 패널) ──────────────────────
   //  DOM·네트워크·chrome.* 미접촉. 판정은 전부 fail-closed 다.
   const EP_FORM_PATH = '/jun/orderitem/orderItemModifyForm.do';   // ⚠ Form 접미사 = 읽기 폼
   //  목록의 [수정] 앵커: <a href="javascript:modify('<seq>','<jun>')">.
@@ -949,9 +969,9 @@
   }
   const EP_SAVE_PATH = '/jun/orderitem/orderItemModify.do';   // ⚠ Form 접미사 없음 = 저장(POST)
   const EP_LIST_PATH = '/jun/orderitem/orderItemList.do';
-  //  팝업 창이 지금 어디에 있느냐로 할 일을 정한다.
+  //  패널 안 프레임이 지금 어디에 있느냐로 할 일을 정한다.
   //   'dress' = 수정폼 → 크롬 걷어내고 폼만 보여준다
-  //   'done'  = 저장 결과로 **알려진** 착지 → 목록 갱신·창 닫기
+  //   'done'  = 저장 결과로 **알려진** 착지 → 목록 갱신·패널 닫기
   //   'stay'  = 그 밖의 모든 곳 → 아무것도 하지 않고 창을 열어둔다
   //  ★'수정폼이 아니면 전부 done' 은 위험하다 — 사용자가 폼 안에서 다른 데로 이동했거나
   //   서버 오류·권한 화면에 착지했을 때도 창을 닫아버려, 저장 안 한 작업을 잃고 오류 내용을
@@ -2566,8 +2586,8 @@
     if (h) h.remove();
   }
   function renderSidebar() {
-    // 팝업 창(상품수정/공장검색/imageView 등)에서는 사이드바·핸들 안 뜨게.
-    if (_IS_POPUP) {
+    // 팝업 창(상품수정/공장검색/imageView 등)·수정 패널 iframe 에서는 사이드바·핸들 안 뜨게.
+    if (_IS_POPUP || _IS_EP_FRAME) {
       const old = document.getElementById(SIDEBAR_ID); if (old) old.remove();
       removeHandle();
       document.documentElement.classList.remove('ub-sidebar-docked');
@@ -3328,13 +3348,19 @@
 
   /* ==========================================================================
   /* ==========================================================================
-   *  5.9) 작업B — 수정 팝업 (별도 브라우저 창)
+   *  5.9) 작업B — 수정 팝업 (목록 위 플로팅 패널, v3.9.9)
    *
-   *  목록의 [수정] 을 가로채 **별도 창**에 네이티브 수정폼을 띄운다. 창 안에서는 ERP
-   *  헤더·메뉴를 걷어내 폼만 보이게 하고, 저장해서 폼을 떠나면 목록 탭을 갱신하고 창을 닫는다.
+   *  목록의 [수정] 을 가로채 **같은 페이지 위에 뜨는 패널**(div + iframe)에 네이티브 수정폼을
+   *  띄운다. 패널 안에서는 ERP 헤더·메뉴를 걷어내 폼만 보이게 하고, 저장해서 폼을 떠나면
+   *  목록을 갱신하고 패널을 닫는다.
    *
-   *  ⚠ iframe 을 쓰지 않는다. 예전 구현이 iframe 이라 X-Frame-Options·로드 성공 감지·
-   *   프레임 가드가 전부 걸림돌이었다. 진짜 창은 네이티브 이동을 그대로 쓰므로 그 문제가 없다.
+   *  ⚠ 별도 브라우저 창을 쓰지 않는다(v3.9.8 까지는 썼다). 사장님 지시(2026-07-28): 매입처
+   *   정보창처럼 보던 목록 위에 떠야 한다 — 창을 따로 띄우면 목록에서 시선이 끊긴다.
+   *   예전에 iframe 을 접었던 이유(X-Frame-Options·로드 감지·프레임 가드)는 spec 실측으로
+   *   해소됐다: 이 폼은 X-Frame-Options 가 없고 same-origin 이다.
+   *  ★신원은 URL 이 아니라 **iframe 엘리먼트의 dataset**(주문키+세대)으로 넘긴다. URL 쿼리는
+   *   첫 navigation 에서 사라지지만 엘리먼트는 프레임 내부 이동 후에도 살아남는다.
+   *   background(서비스워커)는 이 경로에 전혀 관여하지 않는다.
    *  ⚠ 이 블록이 하는 쓰기는 0 이다. 사용자가 네이티브 폼을 직접 저장하고, 우리는 목록을
    *   서버에서 다시 받아올 뿐이다(검색 폼 재제출 = 읽기).
    *  ⚠ 락·저널 미참여 — 네이티브 대비 쓰기 표면이 늘지 않는다(사용자가 폼을 직접 저장).
@@ -3344,9 +3370,8 @@
    * ========================================================================== */
   const EP_TAG = '[UB][editpop]';
   const epLog = (...a) => { try { console.log(EP_TAG, ...a); } catch (_) {} };
-  //  이 팝업 창이 누구인지(주문키 + 세대). 신원조회 응답으로 채워지고, 완료를 알릴 때 되돌려
-  //  보내 그 사이 창이 다른 주문으로 재사용됐는지 background 가 판별하게 한다.
-  let epSelf = { orderSeq: '', gen: null };
+  //  ※ 예전의 epSelf(신원조회 응답을 담아 두던 상태)는 없앴다 — 신원은 이제 document_start 에
+  //     붙잡는 _EP_FRAME_ID 하나뿐이라, 같은 것을 두 곳에 두면 어긋날 자리만 생긴다.
 
   //  수정폼 URL — 네이티브 modify() 가 만드는 것과 **똑같이** 만든다(실측, 2026-07-27):
   //    ?tcode=order_item&seq=<seq>&tradeJun=<jun>   ← 파라미터는 이 셋이 전부다.
@@ -3363,10 +3388,208 @@
     } catch (_) { return ''; }
   }
 
+  /* ── 목록 쪽: 페이지 안 플로팅 패널(= 매입처 정보창과 같은 형태) ─────────────
+   *  ★별도 브라우저 창을 쓰지 않는다. 사장님 지시(2026-07-28): 매입처 정보창처럼
+   *   보던 목록 위에 떠야 한다. 창을 따로 띄우면 목록에서 시선이 끊긴다.
+   *  ⚠ 그래서 iframe 으로 되돌아왔다. 예전에 iframe 을 접었던 이유(로드 감지·프레임
+   *   가드)는 spec 실측으로 해소돼 있다 — 이 폼은 X-Frame-Options 가 없고 same-origin
+   *   이라 iframe 로드가 정상이며(spec §"팝업 iframe 적합성"), 신원은 URL 이 아니라
+   *   **iframe 엘리먼트의 dataset** 으로 넘긴다(엘리먼트는 내부 이동 후에도 살아남는다).
+   * ------------------------------------------------------------------------ */
+  const EP_PANEL_ID = 'ub-epw';
+  const EP_PANEL_STYLE_ID = 'ub-epw-style';
+  const EP_PANEL_CSS = `
+    .ub-epw {
+      position: fixed; z-index: 2147483647;
+      background: #fff; color: #1b1b1b;
+      border: 1px solid #e5e7eb; border-radius: 14px;
+      box-shadow: 0 18px 48px rgba(15,20,25,.22);
+      font-family: Pretendard, -apple-system, 'Malgun Gothic', sans-serif;
+      display: flex; flex-direction: column; overflow: hidden;
+      min-width: 420px; min-height: 320px;
+    }
+    .ub-epw-h {
+      display: flex; align-items: center; gap: 8px;
+      padding: 11px 11px 11px 16px; cursor: move; user-select: none;
+      border-bottom: 1px solid #e5e7eb; background: #f7f9fc;
+    }
+    .ub-epw-h b { font-size: 13.5px; font-weight: 750; letter-spacing: -.01em; }
+    .ub-epw-seq {
+      font-size: 11.5px; font-weight: 700; color: #0d8695;
+      background: #e6f5f7; border-radius: 999px; padding: 3px 9px;
+    }
+    .ub-epw-hint { margin-left: auto; font-size: 11.5px; color: #8a94a0; }
+    .ub-epw-x {
+      width: 26px; height: 26px; border: 0; background: transparent; cursor: pointer;
+      border-radius: 7px; color: #6b7280; display: flex; align-items: center; justify-content: center;
+      transition: background .16s ease-out, color .16s ease-out;
+    }
+    .ub-epw-x:hover { background: #eceff3; color: #1b1b1b; }
+    .ub-epw-b { flex: 1; min-height: 0; background: #fff; }
+    .ub-epw-b iframe { width: 100%; height: 100%; border: 0; display: block; }
+    .ub-epw-rz {
+      position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+      cursor: nwse-resize;
+      background: linear-gradient(135deg, transparent 50%, #c9d2dc 50%, #c9d2dc 60%, transparent 60%,
+                                  transparent 72%, #c9d2dc 72%, #c9d2dc 82%, transparent 82%);
+    }
+  `;
+  function epEnsurePanelStyle() {
+    if (document.getElementById(EP_PANEL_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = EP_PANEL_STYLE_ID; s.textContent = EP_PANEL_CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+  function epPanelSavePos(el) {
+    try {
+      chrome.storage.local.set({
+        ubEpX: parseInt(el.style.left, 10) || 0, ubEpY: parseInt(el.style.top, 10) || 0,
+        ubEpW: el.offsetWidth, ubEpH: el.offsetHeight
+      });
+    } catch (_) {}
+  }
+  //  패널에 걸어둔 창 크기 리스너. 닫을 때 **즉시** 떼야 한다 — 다음 resize 를 기다려 자진
+  //  해제하게 두면, 창 크기를 안 바꾸고 열고 닫기를 반복하는 동안 리스너와 떼어진 패널 DOM 이
+  //  계속 쌓인다(closure 가 붙잡고 있어 GC 도 안 된다).
+  let _epOnResize = null;
+  function epDropResize() {
+    try { if (_epOnResize) window.removeEventListener('resize', _epOnResize); } catch (_) {}
+    _epOnResize = null;
+  }
+  function epClosePanel() {
+    epDropResize();
+    try { const el = document.getElementById(EP_PANEL_ID); if (el) el.remove(); } catch (_) {}
+  }
+  //  패널을 화면 안으로 밀어 넣는다 — 처음 열 때와 창 크기가 바뀔 때 같은 규칙을 쓴다.
+  //  ⚠ 안 하면 오른쪽 끝의 **닫기 버튼·리사이즈 손잡이가 화면 밖**으로 나가 패널을 닫지도
+  //   줄이지도 못한다. 기본 900×660 을 좁은 창(예: 800px)에서 열거나, 넓은 모니터에서 크게
+  //   키워 저장한 값을 노트북에서 여는 경우가 실제 경로다.
+  //  ⚠ 화면이 최소 크기(420×320)보다 좁으면 그 이상 줄이지 않는다 — 더 줄여도 CSS min-width
+  //   가 되돌리므로 무의미하고, 그 폭에서는 어차피 폼을 쓸 수 없다.
+  function epClampPanel(el) {
+    try {
+      if (!el) return;
+      const w = Math.max(420, Math.min(window.innerWidth - 32, el.offsetWidth));
+      const h = Math.max(320, Math.min(window.innerHeight - 32, el.offsetHeight));
+      el.style.width = w + 'px'; el.style.height = h + 'px';
+      const x = parseInt(el.style.left, 10) || 0, y = parseInt(el.style.top, 10) || 0;
+      el.style.left = Math.max(0, Math.min(x, window.innerWidth - w)) + 'px';
+      el.style.top = Math.max(0, Math.min(y, window.innerHeight - h)) + 'px';
+    } catch (e) { epLog('패널 위치 보정 실패(무해)', e); }
+  }
+  function epEnsurePanel() {
+    epEnsurePanelStyle();
+    let el = document.getElementById(EP_PANEL_ID);
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = EP_PANEL_ID; el.className = 'ub-epw';
+    el.innerHTML = '<div class="ub-epw-h"><b>주문 수정</b><span class="ub-epw-seq"></span>'
+                 + '<span class="ub-epw-hint">저장하면 목록이 갱신되고 이 창은 닫혀요</span>'
+                 + '<button class="ub-epw-x" title="닫기">' + FW_X_SVG + '</button></div>'
+                 + '<div class="ub-epw-b"><iframe></iframe></div><div class="ub-epw-rz"></div>';
+    //  ⚠ `|| 기본값` 으로 판정하면 저장값 0(화면 맨 왼쪽·맨 위)이 '미저장'으로 취급돼 매번
+    //   기본 위치로 튄다(정보창에서 이미 당한 함정). 숫자인지로 판정한다.
+    const num = (v) => (typeof v === 'number' && isFinite(v));
+    const w = Math.max(420, state.ubEpW | 0 || 900), h = Math.max(320, state.ubEpH | 0 || 660);
+    const x = num(state.ubEpX) ? state.ubEpX : Math.max(16, Math.round((window.innerWidth - w) / 2));
+    const y = num(state.ubEpY) ? state.ubEpY : Math.max(16, Math.round((window.innerHeight - h) / 2));
+    el.style.width = w + 'px'; el.style.height = h + 'px';
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+    document.body.appendChild(el);
+    epClampPanel(el);        // 붙인 뒤에 — offsetWidth 를 봐야 실제 크기로 맞출 수 있다
+    //  창 크기가 바뀌면 다시 밀어 넣는다. 넓은 모니터에서 오른쪽에 두고 창을 줄이면 패널이
+    //  통째로 화면 밖으로 나가 저장도 닫기도 못 하게 된다.
+    //  정상 해제는 epClosePanel 이 즉시 한다. 아래 isConnected 는 그 경로를 거치지 않고
+    //  엘리먼트가 사라진 경우(외부 코드·페이지 조작)를 위한 보정이다.
+    const onResize = () => {
+      if (!el.isConnected) { epDropResize(); return; }
+      epClampPanel(el);
+    };
+    epDropResize();                       // 앞선 패널의 리스너가 남아 있으면 먼저 뗀다
+    _epOnResize = onResize;
+    window.addEventListener('resize', onResize);
+    el.querySelector('.ub-epw-x').addEventListener('click', epClosePanel);
+    //  드래그(헤더) — 버튼 위에서 시작하면 무시.
+    //  ⚠ 드래그 중에는 iframe 이 마우스를 먹어 포인터가 끊긴다 → 드래그 동안만 통과 차단.
+    const hd = el.querySelector('.ub-epw-h');
+    const fr = el.querySelector('iframe');
+    const dragWith = (onMove) => (e) => {
+      e.preventDefault();
+      fr.style.pointerEvents = 'none';
+      const mv = onMove(e);
+      const up = () => {
+        document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+        fr.style.pointerEvents = '';
+        epPanelSavePos(el);
+      };
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    };
+    hd.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.ub-epw-x')) return;
+      dragWith((ev0) => {
+        const sx = ev0.clientX, sy = ev0.clientY;
+        const ox = parseInt(el.style.left, 10) || 0, oy = parseInt(el.style.top, 10) || 0;
+        return (ev) => {
+          el.style.left = Math.max(0, Math.min(window.innerWidth - 60, ox + ev.clientX - sx)) + 'px';
+          el.style.top  = Math.max(0, Math.min(window.innerHeight - 40, oy + ev.clientY - sy)) + 'px';
+        };
+      })(e);
+    });
+    el.querySelector('.ub-epw-rz').addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      dragWith((ev0) => {
+        const sx = ev0.clientX, sy = ev0.clientY, ow = el.offsetWidth, oh = el.offsetHeight;
+        return (ev) => {
+          el.style.width  = Math.max(420, ow + ev.clientX - sx) + 'px';
+          el.style.height = Math.max(320, oh + ev.clientY - sy) + 'px';
+        };
+      })(e);
+    });
+    //  ★완료 신호 — 자식(iframe 안 수정폼)이 자기 iframe 엘리먼트에 data-ub-ep-done 을
+    //   세우면 우리가 본다. same-origin DOM 만 쓰므로 postMessage 처럼 페이지가 위조할
+    //   표면이 생기지 않는다.
+    try {
+      new MutationObserver(() => {
+        try {
+          if (fr.dataset.ubEpDone !== '1') return;
+          //  ★갱신을 **먼저** 걸고, 걸렸을 때만 닫는다(별도 창 시절의 fail-closed 순서).
+          //   반대로 하면 갱신이 안 걸린 경우 패널까지 사라져, 사용자는 옛 값이 남은 목록만
+          //   보고 방금 저장한 화면으로 돌아갈 방법도 없다.
+          if (!epReloadList()) {
+            epLog('목록 갱신을 걸지 못했다 → 패널을 열어둔다');
+            try { asgToast('목록을 새로고침해 주세요'); } catch (_) {}
+            return;
+          }
+          epLog('저장 완료 신호 수신 → 목록 갱신·패널 닫기');
+          epClosePanel();
+        } catch (_) {}
+      }).observe(fr, { attributes: true, attributeFilter: ['data-ub-ep-done'] });
+    } catch (e) { epLog('완료 감시 장착 실패', e); }
+    return el;
+  }
+  //  패널을 열 때마다 오르는 세대 번호. 자식이 태어난 순간의 값을 들고 있다가 완료를 알릴 때
+  //  대조한다 — 같은 주문을 다시 열어도 세대가 달라져, 낡은 문서의 완료가 새 패널을 못 닫는다.
+  let _epGenSeq = 0;
+  function epOpenPanel(url, orderSeq) {
+    const el = epEnsurePanel();
+    const fr = el.querySelector('iframe');
+    el.querySelector('.ub-epw-seq').textContent = 'No. ' + orderSeq;
+    //  ★신원을 먼저 심고 src 를 나중에 준다. 순서가 뒤집히면 자식이 먼저 떠서 자기 신원을
+    //   못 읽고 평범한 페이지로 동작한다(= 폼이 날것으로 보인다). spec 의 iframe 불변식과 동일.
+    fr.dataset.ubEpSeq = String(orderSeq);
+    fr.dataset.ubEpGen = String(++_epGenSeq);
+    delete fr.dataset.ubEpDone;
+    fr.src = url;
+    epLog('수정 패널 열림', orderSeq);
+  }
+
   // ── 목록 쪽: [수정] 클릭 가로채기 ─────────────────────────────────────────
   function bindEditPopupIntercept(root) {
     try {
       if (!isOrderJunList()) return;                       // 목록에만 modify 링크가 있다
+      //  ★최상위 프레임에서만. ERP 페이지 자체에 iframe 이 10개고 작업C 자동화도 목록을
+      //   iframe 에 띄운다 — 거기서 걸리면 패널이 프레임 안에 갇혀 뜬다.
+      if (window !== window.top) return;
       const host = (root && root.documentElement) || document.documentElement;
       if (!host || host.dataset.ubEpBound === '1') return;  // 이미 bind → 중복 방지
       host.dataset.ubEpBound = '1';
@@ -3383,41 +3606,17 @@
             epLog('행 idx 와 modify() 첫 인자(seq) 불일치/누락 → 네이티브 진행', rowSeq, 'vs', args.seq);
             return;
           }
-          //  여기까지 동기적으로 확인됐으면 가로챈다. 창 열기는 비동기라, 실패하면
-          //  같은 목적지로 이 탭을 이동시켜 네이티브와 동등하게 복구한다(기능 상실 없음).
+          //  여기까지 동기적으로 확인됐으면 가로챈다. 패널 열기는 **동기**라(엘리먼트 생성뿐)
+          //  중간 실패 상태가 없다. 그래도 예외가 나면 네이티브와 동등하게 이 탭을 이동시켜
+          //  복구한다 — 이미 preventDefault 한 뒤라 안 그러면 클릭이 통째로 죽는다.
           const url = buildEditPopupUrl(args);
           e.preventDefault();
           e.stopPropagation();
-          //  ⚠ source:'ub' 는 필수다 — background 라우터 첫 줄이 msg.source !== 'ub' 면
-          //   즉시 반환한다(background.js:27). 빠뜨리면 응답이 없어 'message port closed'
-          //   로 실패하고, 그 폴백이 목록 탭을 이동시켜 마치 기능이 없는 것처럼 보인다(실측).
           try {
-            chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpOpen', url: url, orderSeq: rowSeq }, (res) => {
-              //  ★두 실패를 구분한다.
-              //   ⓐ 응답 유실(lastError): 창이 떴는지 **모른다** → 자동 이동하면 같은 수정폼이
-              //     두 곳에 열려 중복 저장 위험 → 알리기만 하고 사용자가 다시 누르게 한다.
-              //   ⓑ background 가 명시적으로 실패를 답함(res.ok===false): 창이 없는 것이 **확정**
-              //     (레지스트리 실패 시 background 가 만든 창까지 닫는다) → 네이티브와 동등하게
-              //     이 탭을 이동시켜 복구한다. 안 그러면 새 기능이 원래 되던 것까지 막는다.
-              const lost = chrome.runtime.lastError && chrome.runtime.lastError.message;
-              if (lost) {
-                epLog('수정 창 응답 유실 — 결과 불명이라 자동 이동하지 않는다', lost);
-                try { asgToast('수정 창을 열지 못했어요. 다시 눌러 주세요'); } catch (_) {}
-                return;
-              }
-              if (!res || res.ok !== true) {
-                epLog('수정 창 열기 확정 실패 → 네이티브 이동으로 복구', res && res.error);
-                try { asgToast('수정 창을 열 수 없어 기존 화면으로 엽니다'); } catch (_) {}
-                try { location.href = url; } catch (_) {}
-                return;
-              }
-              epLog('수정 창 열림', rowSeq, res.reused ? '(기존 창 재사용)' : '');
-            });
-          } catch (sendErr) {
-            //  동기 throw = 확장 컨텍스트 무효(업데이트 후 새로고침 안 한 탭). 창이 뜰 수 없는
-            //  것이 확정이라 네이티브와 동등하게 이 탭을 이동시켜 복구한다 — 안 그러면 이미
-            //  preventDefault 한 뒤라 클릭이 통째로 죽는다.
-            epLog('메시지 전송 불가 → 네이티브 이동으로 복구', sendErr);
+            epOpenPanel(url, rowSeq);
+          } catch (openErr) {
+            epLog('수정 패널 열기 실패 → 네이티브 이동으로 복구', openErr);
+            try { asgToast('수정 창을 열 수 없어 기존 화면으로 엽니다'); } catch (_) {}
             try { location.href = url; } catch (_) {}
           }
         } catch (err) {
@@ -3439,13 +3638,15 @@
     } catch (e) { epLog('목록 갱신 실패', e); return false; }
   }
 
-  // ── 팝업 창 쪽: 크롬 걷어내기 + 저장 감지 ─────────────────────────────────
+  // ── 패널 프레임 쪽: 크롬 걷어내기 + 저장 감지 ─────────────────────────────
   function epLooksLogin() {
     try { return !!document.querySelector('input[type=password]'); } catch (_) { return false; }
   }
-  //  제출 신호 — 이 **창**의 sessionStorage 에 남긴다. 창 안에서 페이지가 바뀌어도 살아남고
-  //  (같은 origin·같은 탭), 다른 탭·다른 창에는 안 보인다. 그래서 '이 수정 창에서 저장을
+  //  제출 신호 — sessionStorage 에 남긴다. 프레임 안에서 페이지가 바뀌어도 살아남아, '저장을
   //  눌렀다' 는 사실을 navigation 너머로 옮길 수 있다.
+  //  ⚠ 패널로 바뀐 뒤로 이 저장소는 **부모 목록 탭과 공유**다(같은 탭·같은 origin). 별도 창
+  //   시절의 '이 창만의 저장소' 가 아니다. 그래서 마커는 boolean 이 아니라 주문키를 담아야
+  //   하고(아래), 부모 목록이 이 키를 읽거나 쓰지 않아야 한다.
   const EP_SUBMIT_MARK = 'ub_ep_submitted';
   //  ★마커는 boolean 이 아니라 **그 주문의 키**를 담는다. 창은 재사용되므로(같은 탭을 다른
   //   주문 폼으로 이동) boolean 이면 주문 A 의 신호가 주문 B 로 승계돼, B 에서 저장하지 않고
@@ -3577,18 +3778,17 @@
       });
     } catch (e) { epLog('화면 정리 실패(무해)', e); }
     epUpgradeTitle();
-    epCompactForm();
-    try { document.body.insertBefore(epHeader(orderSeq), document.body.firstChild); }
-    catch (e) { epLog('헤더 표시 실패(무해)', e); }
-    try { document.title = '주문 수정'; } catch (_) {}
-    epLog('팝업 화면 정리 — 숨긴 블록', hidden, '개');
+    epReflowLayout(epCompactForm());
+    epLog('패널 화면 정리 — 숨긴 블록', hidden, '개');
   }
   //  이 창에서는 확장 자신의 UI(D102 도구 사이드바·핸들)를 띄우지 않는다.
   //  ★확장이 이미 가진 팝업 억제 경로를 재사용한다 — sessionStorage 마커를 세우면
   //   renderSidebar() 가 스스로 제거하고, 이 창의 다음 페이지부터는 document_start 에
   //   _IS_POPUP 이 true 라 아예 만들지도 않는다(깜빡임 없음).
   function epSuppressOwnUi() {
-    try { sessionStorage.setItem('ub_is_popup_window', '1'); } catch (_) {}
+    //  ⚠ 여기서 sessionStorage 마커를 세우지 않는다 — 이 프레임은 부모 목록과 저장소를
+    //   공유해서, 세우면 목록의 D102 도구까지 사라진다. 억제는 _IS_EP_FRAME 이 한다.
+    //   아래 제거는 혹시 다른 경로로 이미 만들어졌을 때를 위한 보정이다.
     try {
       ['ub-sidebar', 'ub-sb-handle'].forEach((id) => {
         const el = document.getElementById(id);
@@ -3680,7 +3880,69 @@
         if (verdict.kinds[i] === 'full') { tr.classList.add('ub-ep-full'); full++; } else { half++; }
       });
       epLog('옵션 배치 압축 — 2열', half, '행 / 전체폭', full, '행');
-    } catch (e) { epLog('배치 압축 실패(무해)', e); }
+      return target;
+    } catch (e) { epLog('배치 압축 실패(무해)', e); return null; }
+  }
+
+  /* ── 비고를 맨 위로, 썸네일은 숨김 (사장님 지시 2026-07-28) ─────────────────
+   *  ⚠⚠ **노드를 절대 옮기지 않는다.** 이 폼의 입력 49개는 DOM 상 form1 **밖**인데
+   *   파서가 붙여준 소유권으로만 form1 에 연결돼 있다(실측: el.form===form1 인데
+   *   form1.contains(el)===false). 옮기면 그 소유권이 재계산돼 끊기고 — 조상에 form 이
+   *   없으니 — **그 칸이 저장되지 않는다.** 비고를 옮기려다 비고를 못 저장하게 되는 것이다.
+   *   그래서 재배치는 전부 CSS order 로만 한다. 표를 grid 로 만들고 순서만 준다.
+   *  실측 구조: 바깥 배치표의 칸들 = [상품정보][썸네일] / [옵션] / [인도예정일+비고].
+   * ------------------------------------------------------------------------ */
+  const EP_THUMB_SEL = "img[onclick*='imageView']";
+  function epReflowLayout(optTable) {
+    try {
+      const cell = optTable && optTable.parentElement;
+      const outer = cell && cell.closest ? cell.closest('table') : null;
+      if (!outer || outer === optTable) { epLog('바깥 배치표를 못 찾았다 → 순서 유지'); return; }
+      const rows = Array.from(outer.rows);
+      //  rowspan 이 있으면 표 레이아웃을 벗어날 때 묶임이 깨진다 → 손대지 않는다(fail-safe).
+      if (rows.some((tr) => Array.from(tr.cells).some((td) => td.rowSpan > 1))) {
+        epLog('바깥 배치표에 rowspan 있음 → 순서 유지'); return;
+      }
+      const cells = [];
+      rows.forEach((tr) => Array.from(tr.cells).forEach((td) => cells.push(td)));
+      const remarkCell = cells.find((td) => td.querySelector('textarea'));
+      if (!remarkCell) { epLog('비고 칸을 못 찾았다 → 순서 유지'); return; }
+      outer.classList.add('ub-ep-outer');
+      let thumbs = 0;
+      cells.forEach((td) => {
+        //  썸네일 칸 = 입력이 하나도 없고 상품 사진만 있는 칸. 입력이 있으면 절대 숨기지 않는다.
+        if (!td.querySelector('input:not([type=hidden]),select,textarea') && td.querySelector(EP_THUMB_SEL)) {
+          td.style.display = 'none'; thumbs++; return;
+        }
+        td.style.order = (td === remarkCell) ? '1' : (td.contains(optTable) ? '3' : '2');
+      });
+      epReflowRemarks(remarkCell.querySelector('table'));
+      epLog('배치 재정렬 — 비고 최상단 / 썸네일', thumbs, '칸 숨김');
+    } catch (e) { epLog('배치 재정렬 실패(무해)', e); }
+  }
+  //  비고 표 안에서도 비고 행이 먼저 오게 한다(원래는 고객인도예정일이 위에 있다).
+  function epReflowRemarks(t) {
+    try {
+      if (!t) return;
+      const own = Array.from(t.rows);
+      if (!own.length) return;
+      //  rowspan 은 어디에 있든 거부. colspan 은 1칸 구분선에서는 정상이라 2칸 행에서만 거부한다.
+      const odd = own.some((tr) => Array.from(tr.cells).some(
+        (td) => td.rowSpan > 1 || (td.colSpan > 1 && tr.cells.length === 2)));
+      if (odd) { epLog('비고 표 구조가 예상과 다르다 → 순서 유지'); return; }
+      if (!own.some((tr) => tr.querySelector('textarea'))) return;
+      t.classList.add('ub-ep-grid1');
+      own.forEach((tr) => {
+        const n = tr.cells.length;
+        tr.classList.add('ub-ep-row');
+        if (n === 2) { tr.cells[0].classList.add('ub-ep-lab'); tr.cells[1].classList.add('ub-ep-val'); }
+        else { tr.classList.add('ub-ep-solo'); if (tr.cells[0]) tr.cells[0].classList.add('ub-ep-val'); }
+        const hasTa = !!tr.querySelector('textarea');
+        //  같은 order 끼리는 문서 순서가 유지된다 → 주문비고·발주비고 순서는 그대로.
+        tr.style.order = hasTa ? '1' : '2';
+        if (hasTa || n !== 2) tr.classList.add('ub-ep-full');
+      });
+    } catch (e) { epLog('비고 재정렬 실패(무해)', e); }
   }
   //  섹션 제목을 비트맵 gif → 진짜 글자로 바꾼다(D102 타이포 18px/700).
   //  ★아는 파일명만 바꾸고 모르면 원본을 그대로 둔다 — 파일명으로 제목을 지어내면 다른 폼에서
@@ -3727,15 +3989,8 @@
         //  ⚠ margin-left 만 되돌린다. 도킹 CSS 가 건드리는 건 margin 뿐이라 padding 까지 0 으로
         //   만들면 위에서 준 body padding 이 깨져 헤더 음수 마진과 어긋나 왼쪽이 잘린다.
         "html.ub-sidebar-docked body{margin-left:0 !important;}",
-        // 헤더 — 아뜰리에 오버레이와 같은 리듬(surface + hairline + 14px/750 제목)
-        // body 에 12px 패딩을 줬으니 헤더는 음수 마진으로 폭을 꽉 채운다(full-bleed).
-        "#ub-ep-head{position:sticky;top:0;z-index:2147483000;background:var(--ub-surface);",
-        "border-bottom:1px solid var(--ub-hairline);padding:12px 16px;margin:-12px -12px 12px;",
-        "display:flex;align-items:center;gap:9px;}",
-        "#ub-ep-head .t{font-size:14px;font-weight:750;letter-spacing:-.01em;color:var(--ub-ink);}",
-        "#ub-ep-head .seq{font-size:11px;font-weight:700;color:var(--ub-accent);background:var(--ub-tint);",
-        "border-radius:999px;padding:3px 9px;font-variant-numeric:tabular-nums;}",
-        "#ub-ep-head .hint{margin-left:auto;font-size:11px;font-weight:600;color:var(--ub-ink-3);}",
+        // ※ 예전의 문서 내부 헤더(#ub-ep-head)는 없앴다 — 패널 자체가 제목·주문번호·안내를
+        //    들고 있어 안에 또 두면 같은 말이 두 번 나오고 세로 공간만 먹는다.
         // 폼 카드 — ⚠ display 는 건드리지 않는다. 원래 table/flex 인 블록에 block 을 씌우면
         //  formatting context 가 사라져 열 정렬·버튼 배치가 깨진다.
         //  ★width:100% — 호스트 표가 width="980" 고정이라(실측) 이걸 안 풀면 창을 줄여도
@@ -3779,22 +4034,34 @@
         //   그래서 우리가 분류하며 붙인 클래스(.ub-ep-row/.ub-ep-lab/.ub-ep-val)에만 건다.
         ".ub-ep-form{display:grid !important;grid-template-columns:repeat(2,minmax(0,1fr)) !important;",
         "gap:2px 22px !important;width:100% !important;}",
-        ".ub-ep-form>tbody,.ub-ep-form>thead,.ub-ep-form>tfoot{display:contents !important;}",
-        ".ub-ep-form tr.ub-ep-row{display:grid !important;",
+        //  ★바깥 배치표 — 칸(td)을 그리드 아이템으로 만들어 **순서만** 바꾼다(노드 이동 금지).
+        //   tr 을 display:contents 로 통과시키므로 colspan 은 애초에 의미가 없어진다.
+        ".ub-ep-outer{display:grid !important;grid-template-columns:minmax(0,1fr) !important;",
+        "width:100% !important;}",
+        ".ub-ep-outer>tbody>tr,.ub-ep-outer>thead>tr,.ub-ep-outer>tfoot>tr{display:contents !important;}",
+        //  ★비고 표 — 한 칸짜리 그리드. 행 순서는 style.order 로 준다.
+        ".ub-ep-grid1{display:grid !important;grid-template-columns:minmax(0,1fr) !important;",
+        "gap:2px 0 !important;width:100% !important;}",
+        ".ub-ep-form>tbody,.ub-ep-form>thead,.ub-ep-form>tfoot,",
+        ".ub-ep-outer>tbody,.ub-ep-outer>thead,.ub-ep-outer>tfoot,",
+        ".ub-ep-grid1>tbody,.ub-ep-grid1>thead,.ub-ep-grid1>tfoot{display:contents !important;}",
+        //  행·칸 규칙은 **우리가 붙인 클래스**에만 건다(자손 선택자를 쓰면 값 칸 안의 중첩
+        //  표까지 갈아엎는다). 옵션 표·비고 표 양쪽에서 같은 규칙을 쓴다.
+        ".ub-ep-card tr.ub-ep-row{display:grid !important;",
         "grid-template-columns:78px minmax(0,1fr) !important;align-items:center !important;",
         "gap:10px !important;}",
         //  라벨 없는 1칸 행(구분선 등)은 78px 칸에 갇히지 않게 한 칸으로.
-        ".ub-ep-form tr.ub-ep-solo{grid-template-columns:minmax(0,1fr) !important;}",
-        ".ub-ep-form tr.ub-ep-full{grid-column:1 / -1 !important;align-items:start !important;}",
-        ".ub-ep-form td.ub-ep-lab,.ub-ep-form td.ub-ep-val{display:block !important;",
+        ".ub-ep-card tr.ub-ep-solo{grid-template-columns:minmax(0,1fr) !important;}",
+        ".ub-ep-card tr.ub-ep-full{grid-column:1 / -1 !important;align-items:start !important;}",
+        ".ub-ep-card td.ub-ep-lab,.ub-ep-card td.ub-ep-val{display:block !important;",
         "padding:5px 0 !important;border:0 !important;}",
         //  ⚠ 라벨 칸에 width 속성이 박혀 있어(실측: 품위·색상 135px) 그대로 두면 78px 칸을
         //   넘쳐 오른쪽 정렬된 글자가 값 컨트롤 뒤로 밀려 **안 보인다**. 칸에 맞춰 못 박는다.
-        ".ub-ep-form td.ub-ep-lab{width:100% !important;min-width:0 !important;",
+        ".ub-ep-card td.ub-ep-lab{width:100% !important;min-width:0 !important;",
         "box-sizing:border-box !important;text-align:right !important;font-size:12px !important;",
         "font-weight:600 !important;color:var(--ub-ink-2) !important;white-space:nowrap !important;}",
         //  ★비고는 한눈에 보이게 크게 — 이 폼에서 가장 자주 고치는 칸이다.
-        ".ub-ep-form tr.ub-ep-full td.ub-ep-lab{padding-top:12px !important;}",
+        ".ub-ep-card tr.ub-ep-full td.ub-ep-lab{padding-top:12px !important;}",
         //  짧은 컨트롤이 값 칸을 다 먹지 않게(수량·주문가 등은 원래 133px).
         //  직계 자식으로 한정 — 중첩 표 안의 입력까지 좁히지 않는다.
         ".ub-ep-form tr.ub-ep-row:not(.ub-ep-full)>td.ub-ep-val>input[type=text]{",
@@ -3843,8 +4110,6 @@
         "@media (max-width:620px){",
         ".ub-ep-form{grid-template-columns:minmax(0,1fr) !important;}}",
         "@media (max-width:760px){body{padding:8px !important;}",
-        "#ub-ep-head{padding:10px 12px;margin:-8px -8px 10px;flex-wrap:wrap;gap:6px;}",
-        "#ub-ep-head .hint{margin-left:0;flex-basis:100%;}",
         ".ub-ep-card{padding:12px !important;}",
         ".ub-ep-card input[type=text],.ub-ep-card input[type=number],.ub-ep-card input[type=password],",
         ".ub-ep-card select,.ub-ep-card textarea{font-size:16px !important;}}"
@@ -3852,21 +4117,7 @@
       (document.head || document.documentElement).appendChild(s);
     } catch (e) { epLog('스타일 주입 실패(무해)', e); }
   }
-  function epHeader(orderSeq) {
-    const head = document.createElement('div');
-    head.id = 'ub-ep-head';
-    const t = document.createElement('span'); t.className = 't'; t.textContent = '주문 수정';
-    head.appendChild(t);
-    if (orderSeq) {
-      const s = document.createElement('span'); s.className = 'seq'; s.textContent = 'No. ' + orderSeq;
-      head.appendChild(s);
-    }
-    const h = document.createElement('span'); h.className = 'hint';
-    h.textContent = '저장하면 목록이 갱신되고 이 창은 닫혀요';
-    head.appendChild(h);
-    return head;
-  }
-  //  팝업 창 안에 안내 한 줄을 띄운다(토스트는 이 창에 없다). 같은 문구는 한 번만.
+  //  패널 안에 안내 한 줄을 띄운다(토스트는 이 프레임에 없다). 같은 문구는 한 번만.
   function epNotice(text) {
     try {
       epInjectStyle();                 // 안내만 뜨는 경로(수정폼이 아닐 때)에서도 스타일이 필요하다
@@ -3883,7 +4134,7 @@
   //  ★수정폼을 떠났는데 저장으로 못 알아본 경우의 탈출구. 네이티브 저장 진입점이 어떤
   //   마크업인지 아직 실측하지 못해(예: type=button + onclick 에서 form.submit()) 제출 신호를
   //   놓칠 수 있다. 그때 창이 조용히 멈춰 있지 않게, 사용자가 직접 끝내는 버튼을 준다.
-  function epOfferFinish() {
+  function epOfferFinish(id) {
     try {
       const box = epNotice('저장하셨다면 아래 버튼을 눌러 주세요. 목록을 새로고침하고 이 창을 닫아요.');
       if (!box || box.querySelector('button')) return;
@@ -3894,64 +4145,66 @@
         'background:#123842;color:#fff;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;';
       btn.addEventListener('click', () => {
         btn.disabled = true;
-        chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpDone', orderSeq: epSelf.orderSeq, gen: epSelf.gen, reason:'manual' }, (res) => {
-          try {
-            if (res && res.ok) return;             // 창이 곧 닫힌다
-            btn.disabled = false;
-            epNotice('목록을 새로고치지 못했어요. 목록 창을 직접 새로고침해 주세요.');
-          } catch (_) {}
-        });
+        if (!epSignalDone(id)) {
+          btn.disabled = false;
+          epNotice('목록을 새로고치지 못했어요. 목록 화면을 직접 새로고침해 주세요.');
+        }
       });
       box.appendChild(btn);
     } catch (e) { epLog('수동 완료 버튼 표시 실패', e); }
   }
-  //  팝업 창에서만 도는 진입점. 목록 탭에서도 호출되지만 isEditPopup=false 로 즉시 빠진다.
-  //  ★신원 판단은 background 의 windowId 레지스트리다(URL 쿼리는 navigation 에서 사라진다).
-  function initEditPopupWindow(attempt) {
-    if (window !== window.top) return;   // ERP 자체 iframe 에서는 돌지 않는다
-    const tries = attempt || 0;
+  //  ★신원 = **우리 iframe 엘리먼트의 dataset**. URL 쿼리로 넘기면 첫 navigation 에서 사라지고
+  //   (이 저장소가 이미 당한 함정), 엘리먼트는 프레임 내부 이동 후에도 살아남는다.
+  //   same-origin 이라 frameElement 접근이 허용된다 — 다른 origin 이면 throw 라 null 이 된다.
+  //  ⚠ 여기서 dataset 을 **다시 읽지 않는다.** 이 함수는 storage 콜백 뒤(비동기)에 불리는데,
+  //   그 사이 부모가 패널을 다시 열었으면 지금 읽은 값은 남의 신원이다. document_start 에
+  //   붙잡아 둔 값을 그대로 돌려준다.
+  function epFrameIdentity() {
+    return _EP_FRAME_ID;
+  }
+  //  완료를 부모에게 알린다 — 부모가 이 속성을 보고 패널을 닫고 목록을 갱신한다.
+  //  ★DOM 속성 한 줄이라 실패 경로가 거의 없다(별도 창 시절의 메시지 왕복·응답 유실·
+  //   SW 종료가 통째로 사라졌다). 그래도 예외는 삼키지 않고 알린다.
+  function epSignalDone(id) {
     try {
-      chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpWhoAmI' }, (who) => {
-        try {
-          if (chrome.runtime.lastError) return;
-          if (!who || !who.isEditPopup) {
-            //  창 생성 기록보다 이 문서가 먼저 뜨는 경합은 실질적으로 없지만(기록은 창 생성
-            //  직후, 이 질의는 DOMContentLoaded), 수정폼에서 '아니다' 가 나오면 한 번만 더 묻는다.
-            //  평범한 탭에서 사용자가 네이티브로 수정폼에 온 경우엔 메시지 한 번 더가 전부다.
-            if (tries === 0 && epPopupAction(location.pathname) === 'dress') {
-              setTimeout(() => initEditPopupWindow(1), 200);
-            }
-            return;
-          }
-          const orderSeq = who.orderSeq;
-          epSelf = { orderSeq: orderSeq, gen: who.gen };   // 완료를 알릴 때 자기 신원을 싣는다
-          const submitted = epWasSubmitted(orderSeq);
-          const action = epPopupAction(location.pathname, submitted);
-          if (action === 'dress') { epDressPopup(orderSeq); return; }
-          if (action === 'stay') {   // 아는 착지가 아니거나 제출 증거가 없다 → 손대지 않는다
-            epLog('완료로 볼 근거가 없다 → 창을 그대로 둔다', location.pathname, 'submitted=' + submitted);
-            //  수정폼을 이미 떠난 상태라면 사용자가 직접 끝낼 수 있게 탈출구를 준다.
-            //  ⚠ 로그인 만료 화면에는 띄우지 않는다 — 저장한 적이 없는데 '저장하셨다면' 을
-            //   물으면 오해를 부른다.
-            if (location.pathname !== EP_FORM_PATH && !epLooksLogin()) epOfferFinish();
-            return;
-          }
-          //  저장 경로를 지나 떠났다. 로그인 화면이면 세션이 끊긴 것이라 조용히 닫지 않는다.
-          if (epLooksLogin()) { epLog('로그인 화면 — 창을 닫지 않는다(세션 만료)'); return; }
-          epLog('폼을 떠남 → 목록 갱신 요청', location.pathname);
-          chrome.runtime.sendMessage({ source: 'ub', type: 'ubEpDone', orderSeq: epSelf.orderSeq, gen: epSelf.gen, reason:location.pathname }, (res) => {
-            try {
-              if (res && res.ok) return;                     // 성공이면 이 창은 곧 닫힌다
-              //  실패든 응답 유실이든 **조용히 사라지지 않는다** — 창을 닫지 않고 알린다.
-              //  (응답이 유실됐는데 실제로는 성공해 창이 닫히는 중이면 이 안내는 보이지 않는다.)
-              const why = (chrome.runtime.lastError && chrome.runtime.lastError.message) || (res && res.error);
-              epLog('목록 갱신 확인 실패 — 창을 열어둔다', why);
-              epNotice('목록을 자동으로 새로고치지 못했어요. 목록 창을 직접 새로고침해 주세요.');
-            } catch (_) {}
-          });
-        } catch (e) { epLog('팝업 처리 실패', e); }
-      });
-    } catch (e) { epLog('팝업 조회 실패', e); }
+      if (!id || !id.el) return false;
+      //  ★내가 태어난 세대가 아직 화면의 세대인가. 다르면 그 사이 패널이 **다시 열린** 것이라
+      //   (같은 주문이어도) 내 완료 신호는 남이 보고 있는 화면을 닫는 짓이 된다 → 물러난다.
+      //  ⚠ 세대가 **없으면** 거부한다(fail-closed). '다를 때만 거부' 로 두면 양쪽 다 빈 값인
+      //   경우(우리가 연 패널이 아닌데 data-ub-ep-seq 만 있는 프레임)가 통과해, 세대 보호를
+      //   통째로 우회한다. 우리가 여는 경로는 epOpenPanel 이 항상 세대를 심는다.
+      const mine = String(id.gen == null ? '' : id.gen);
+      const now = String(id.el.dataset.ubEpGen == null ? '' : id.el.dataset.ubEpGen);
+      if (!mine || now !== mine) {
+        epLog('세대가 없거나 낡은 완료 신호 → 무시', mine, '≠', now);
+        return false;
+      }
+      id.el.dataset.ubEpDone = '1';
+      return true;
+    } catch (e) { epLog('완료 신호 실패', e); return false; }
+  }
+  //  수정 패널의 iframe 안에서만 도는 진입점. 다른 프레임·평범한 탭에서는 신원이 없어 즉시 빠진다.
+  function initEditPopupWindow() {
+    try {
+      const id = epFrameIdentity();
+      if (!id) return;                       // 우리 패널의 iframe 이 아니다 → 네이티브 그대로
+      const orderSeq = id.orderSeq;
+      const submitted = epWasSubmitted(orderSeq);
+      const action = epPopupAction(location.pathname, submitted);
+      if (action === 'dress') { epDressPopup(orderSeq); return; }
+      if (action === 'stay') {   // 아는 착지가 아니거나 제출 증거가 없다 → 손대지 않는다
+        epLog('완료로 볼 근거가 없다 → 패널을 그대로 둔다', location.pathname, 'submitted=' + submitted);
+        //  수정폼을 이미 떠난 상태라면 사용자가 직접 끝낼 수 있게 탈출구를 준다.
+        //  ⚠ 로그인 만료 화면에는 띄우지 않는다 — 저장한 적이 없는데 '저장하셨다면' 을
+        //   물으면 오해를 부른다.
+        if (location.pathname !== EP_FORM_PATH && !epLooksLogin()) epOfferFinish(id);
+        return;
+      }
+      //  저장 경로를 지나 떠났다. 로그인 화면이면 세션이 끊긴 것이라 조용히 닫지 않는다.
+      if (epLooksLogin()) { epLog('로그인 화면 — 패널을 닫지 않는다(세션 만료)'); return; }
+      epLog('폼을 떠남 → 완료 신호', location.pathname);
+      if (!epSignalDone(id)) epNotice('목록을 자동으로 새로고치지 못했어요. 목록 화면을 직접 새로고침해 주세요.');
+    } catch (e) { epLog('패널 처리 실패', e); }
   }
 
   /* ==========================================================================
@@ -4580,8 +4833,8 @@
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
     initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
-    bindEditPopupIntercept(document);   // v3.9.0 작업B: [수정] → 별도 창. 게이트 OFF 여도 항상 idempotent bind(§5)
-    initEditPopupWindow();              // v3.9.0 작업B: 이 문서가 수정 팝업 창이면 크롬 정리·저장 감지
+    bindEditPopupIntercept(document);   // v3.9.9 작업B: [수정] → 플로팅 패널. 게이트 OFF 여도 항상 idempotent bind(§5)
+    initEditPopupWindow();              // v3.9.9 작업B: 이 문서가 패널 안 프레임이면 크롬 정리·저장 감지
     injectHqConfirmButton();   // v3.8.x 작업C(C-2a): 본사확인+입고완료 버튼 — 게이트 OFF 면 숨김(항상 idempotent 주입)
     initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
@@ -4592,21 +4845,8 @@
     // background → cacheProgress 메시지 수신
     try {
       chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-        //  수정 팝업이 저장하고 닫힐 때 — 이 목록을 서버에서 다시 받아온다(읽기).
-        //  ★top frame + 주문전표 목록에서만 처리한다. skin.js 는 all_frames:true 라 ERP 자체
-        //   iframe(이 페이지에 10개)에서도 돌고, 거기서 form1.submit() 을 부르면 우리가 의도한
-        //   적 없는 폼이 제출된다. background 가 frameId:0 으로 보내지만 여기서도 막는다(이중).
-        if (msg && msg.source === 'ub-bg' && msg.type === 'ubEpRefresh') {
-          if (window !== window.top || !isOrderJunList()) {
-            sendResponse({ ok: false, error: 'not_list_top' });
-            return false;
-          }
-          epLog('수정 반영 → 목록 갱신', msg.orderSeq);
-          try { asgToast('수정 내용을 불러옵니다'); } catch (_) {}
-          const ok = epReloadList();            // form1 재제출(검색조건 유지) — 읽기
-          sendResponse({ ok: ok });             // 갱신을 실제로 걸었는지 background 에 알린다
-          return false;
-        }
+        //  ※ 수정 팝업의 목록 갱신은 더 이상 background 를 거치지 않는다(v3.9.9). 패널이 같은
+        //     문서 안에 있어 자식이 iframe 속성을 세우면 부모가 바로 본다.
         if (!msg || msg.source !== 'ub-bg' || msg.type !== 'cacheProgress') return;
         cacheJob.current = msg.current || 0;
         cacheJob.total = msg.total || 0;
