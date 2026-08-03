@@ -87,7 +87,8 @@
     ubTabEach: {},                             // each 일 때 { input:'list', balju:'jun', ... }
     // v3.9.9 작업B 수정 팝업 — 켜면 [수정] 이 목록 위 플로팅 패널로 열린다(별도 창 아님). 기본 OFF.
     ubEditPopup: false,
-    ubEpX: null, ubEpY: null, ubEpW: 900, ubEpH: 660,
+    //  ⚠ ubEpH 는 없다 — 높이는 저장하지 않고 열 때마다 콘텐츠에 맞춘다(2026-08-03).
+    ubEpX: null, ubEpY: null, ubEpW: 900,
     // v3.8.x 작업C 본사확인+입고완료(slice C-2a) — 기본 OFF(§8: C 는 기본 OFF).
     //  이 슬라이스는 읽기 전용(버튼+사전검증 승인창+fetchOrderRow). 쓰기 배선 없음.
     ubHqConfirm: false
@@ -987,6 +988,65 @@
     if (submitted !== true) return 'stay';                    // 제출 신호 없음 → 관여하지 않는다
     if (p === EP_SAVE_PATH || p === EP_LIST_PATH) return 'done';
     return 'stay';
+  }
+  /* ── 작업B 순수 헬퍼 — 내부 배치(2026-08-03 재설계) ────────────────────────
+   *  ★왜 이 셋이 생겼나: 재설계 전까지 `epReflowLayout` 은 바깥 배치표에 rowspan 이
+   *   **하나라도** 있으면 통째로 물러났다. 그런데 그 표는 썸네일 칸이 항상 rowspan=2 라
+   *   (실측 2026-08-03) 비고 재정렬이 **한 번도 실행된 적이 없다.** 판정을 함수로 꺼내
+   *   테스트로 못 박는다 — 조용히 안 도는 코드를 두 번 만들지 않기 위해서다.
+   * ------------------------------------------------------------------------ */
+  //  손대면 안 되는 rowspan 인가. 위험은 "묶여 있어야 할 **입력**이 흩어지는 것" 하나뿐이다.
+  //  ★tr 을 display:contents 로 통과시키는 순간 rowspan 은 렌더링에 관여하지 않는다. 그러니
+  //   표시 전용 칸(상품 사진)의 rowspan 은 흩어져도 잃을 게 없다 — 그것까지 거부하던 게
+  //   과보호였다. 입력을 품은 rowspan 칸만 거부한다(fail-closed 는 그대로).
+  //  ⚠ 인자는 **평평한 칸 목록**이다(행이 아니라). 행 단위로 받으면 호출부가 매번 펴야 해서
+  //   테스트와 실제 호출의 모양이 어긋난다.
+  function epRowspanBlocks(cells) {
+    return (cells || []).some((c) => !!c && (c.rowSpan | 0) > 1 && (c.controls | 0) > 0);
+  }
+  //  바깥 배치표 칸의 자리. 비고가 맨 위, 참고용 정보가 아래다(사장님 지시 2026-07-28).
+  //  ★flex 를 쓰는 이유 — 마지막 줄에서 상품정보(남는 폭 전부)와 썸네일(48px 고정)을 한 줄에
+  //   나란히 두려면 `1 1 240px` / `0 0 auto` 조합이 필요하다. grid 는 열 수를 미리 못 박아야
+  //   해서 이 조합이 안 나온다.
+  function epOuterSlot(c) {
+    const s = c || {};
+    if (s.remark) return { order: 1, flex: '0 0 100%' };   // 주문비고·발주비고·인도예정일
+    if (s.opt)    return { order: 2, flex: '0 0 100%' };   // 품위·색상·사이즈·수량·주문가
+    if (s.thumb)  return { order: 4, flex: '0 0 auto' };   // 상품 사진(48px)
+    return { order: 3, flex: '1 1 240px' };                 // 상품정보 표
+  }
+  //  비고 표 행의 자리. textarea 행만 반 칸을 쓰고 라벨을 값 **위**로 올린다.
+  //  ★라벨을 옆(78px 우측정렬)에 두면 반 칸에서 값이 뭉개진다 — 2열로 나란히 놓는 순간
+  //   가로 예산이 절반이 되기 때문이다. 나머지 행(고객인도예정일)은 전체 폭을 쓰고 아래로.
+  function epRemarkRowSlot(r) {
+    return (r && r.textarea)
+      ? { full: false, stack: true,  order: 1 }
+      : { full: true,  stack: false, order: 2 };
+  }
+  //  패널 높이 = 콘텐츠에 맞춘다. 사장님이 매번 늘리거나 스크롤하던 것을 없애는 핵심.
+  //  ★최소 320 은 CSS min-height 와 같은 값이다 — 여기서 더 작게 정해도 CSS 가 되돌리므로
+  //   숫자가 어긋나면 '맞췄는데 안 맞는' 상태가 된다. 최대는 화면에서 32px 뺀 값(epClampPanel
+  //   과 동일 규칙)이라 화면보다 큰 패널이 나오지 않는다.
+  //  ⚠ 화면이 352px 보다 낮으면 최소치가 이긴다. 그 높이에서는 어차피 폼을 쓸 수 없다.
+  //  ⚠ 화면을 **못 잰 경우(0·음수)는 가두지 않는다.** 백그라운드 탭에서는 innerHeight 가 0 이라
+  //   (실측 2026-08-03: document.hidden 이면 inner/outer/screen 전부 0) 그대로 계산하면 cap 이
+  //   최소치로 떨어져 패널이 320px 로 찌그러진다. 사용자가 [수정]을 누르고 다른 탭에 다녀오면
+  //   높이 신호가 그때 도착해 실제로 밟히는 경로다.
+  function epFitHeight(contentH, chromeH, viewportH) {
+    const want = Math.ceil(Number(contentH) || 0) + Math.ceil(Number(chromeH) || 0) + 2;
+    const vp = Number(viewportH) || 0;
+    const cap = vp > 0 ? Math.max(320, vp - 32) : Infinity;
+    return Math.max(320, Math.min(cap, want));
+  }
+  //  ERP 가 표 사이에 끼워 넣은 **빈 행**인가.
+  //  ★실측 2026-08-03: 비고 표에만 9개(11~15px)가 있고 grid gap 까지 더해 177px 을 먹었다 —
+  //   '매번 스크롤' 의 최대 단일 원인이었다. 간격은 이제 grid gap 이 주므로 순수 낭비다.
+  //  ⚠ 보이는 입력이 하나라도 있으면 빈 행이 아니다(숨기면 그 칸을 영영 못 고친다).
+  //   hidden 입력만 있는 행은 숨겨도 제출에 영향이 없다 — display:none 은 successful control
+  //   판정을 막지 않는다(HTML 명세). 그래서 controls 는 **보이는 입력**만 센다.
+  function epIsFillerRow(r) {
+    const s = r || {};
+    return (s.controls | 0) === 0 && !String(s.text == null ? '' : s.text).trim() && !s.thumb;
   }
   // ── 작업C 순수 헬퍼 (slice 1) ─────────────────────────────────────────────
   //  본사확인 → 입고완료 자동화의 순수 판정부. DOM·쓰기·chrome.*·타이머 미접촉.
@@ -3398,9 +3458,16 @@
    * ------------------------------------------------------------------------ */
   const EP_PANEL_ID = 'ub-epw';
   const EP_PANEL_STYLE_ID = 'ub-epw-style';
+  //  자식이 높이를 못 알려줄 때의 폴백. 열 때마다 여기서 출발해 콘텐츠 높이로 맞춰 간다.
+  const EP_DEFAULT_H = 660;
   const EP_PANEL_CSS = `
     .ub-epw {
       position: fixed; z-index: 2147483647;
+      /*  ★border-box 가 없으면 패널이 clamp 할 때마다 2px 씩 커진다(Codex 검수 2026-08-03).
+          content-box 에서 offsetWidth 는 border 를 포함하는데 epClampPanel 이 그 값을 그대로
+          style.width 에 되쓰므로 border 가 매번 재가산된다(900 → 902 → 904 …).
+          fit 신호가 주문마다 두 번 오고 탭 복귀에도 clamp 하니 실제로 쌓인다. */
+      box-sizing: border-box;
       background: #fff; color: #1b1b1b;
       border: 1px solid #e5e7eb; border-radius: 14px;
       box-shadow: 0 18px 48px rgba(15,20,25,.22);
@@ -3440,21 +3507,51 @@
     s.id = EP_PANEL_STYLE_ID; s.textContent = EP_PANEL_CSS;
     (document.head || document.documentElement).appendChild(s);
   }
+  //  ★높이는 저장하지 않는다(2026-08-03). 저장하면 콘텐츠를 아무리 줄여도 옛 높이로 열려
+  //   '매번 늘리거나 스크롤' 문제가 그대로 남는다 — 이번 작업이 없애려는 바로 그 증상이다.
+  //   높이는 열 때마다 콘텐츠에 맞춘다(epApplyFit). 폭·위치는 사용자 취향이라 그대로 저장한다.
   function epPanelSavePos(el) {
     try {
       chrome.storage.local.set({
         ubEpX: parseInt(el.style.left, 10) || 0, ubEpY: parseInt(el.style.top, 10) || 0,
-        ubEpW: el.offsetWidth, ubEpH: el.offsetHeight
+        ubEpW: el.offsetWidth
       });
     } catch (_) {}
+  }
+  //  이 패널을 사용자가 손으로 늘렸나. 늘렸으면 자동 맞춤이 그 위를 덮지 않는다
+  //  (사진이 늦게 로드돼 두 번째 신호가 올 때 사용자가 방금 늘린 크기를 되돌리면 안 된다).
+  let _epUserSized = false;
+  //  마지막으로 받은 콘텐츠 높이. 숨은 탭이라 지금 못 맞췄더라도 돌아왔을 때 다시 쓴다.
+  let _epPendingFit = 0;
+  //  자식이 알려온 콘텐츠 높이를 패널에 적용한다.
+  function epApplyFit(el, raw) {
+    try {
+      if (!el) return false;
+      const content = parseInt(raw, 10);
+      if (!isFinite(content) || content <= 0) return false;
+      _epPendingFit = content;
+      if (_epUserSized) return false;               // 사용자가 정한 크기를 덮지 않는다
+      //  ★화면을 못 재는 동안(백그라운드 탭)엔 적용하지 않는다. 상한 없이 키워 놓으면 돌아와도
+      //   resize 이벤트가 없어 화면보다 큰 채로 남는다(Fable 검수 2026-08-03 지적).
+      //   값은 위에 담아 뒀다가 탭이 보이는 순간 다시 맞춘다.
+      if (!(window.innerHeight > 0)) { epLog('화면을 못 잰다 → 높이 맞춤 보류', content); return false; }
+      const head = el.querySelector('.ub-epw-h');
+      const chromeH = head ? head.offsetHeight : 44;
+      el.style.height = epFitHeight(content, chromeH, window.innerHeight) + 'px';
+      epClampPanel(el);
+      return true;
+    } catch (e) { epLog('높이 맞춤 실패(무해)', e); return false; }
   }
   //  패널에 걸어둔 창 크기 리스너. 닫을 때 **즉시** 떼야 한다 — 다음 resize 를 기다려 자진
   //  해제하게 두면, 창 크기를 안 바꾸고 열고 닫기를 반복하는 동안 리스너와 떼어진 패널 DOM 이
   //  계속 쌓인다(closure 가 붙잡고 있어 GC 도 안 된다).
   let _epOnResize = null;
+  //  탭이 다시 보이는 순간을 잡는 리스너. 숨은 동안엔 화면을 못 재서 보정도 맞춤도 미뤄 둔다.
+  let _epOnVis = null;
   function epDropResize() {
     try { if (_epOnResize) window.removeEventListener('resize', _epOnResize); } catch (_) {}
-    _epOnResize = null;
+    try { if (_epOnVis) document.removeEventListener('visibilitychange', _epOnVis); } catch (_) {}
+    _epOnResize = null; _epOnVis = null;
   }
   function epClosePanel() {
     epDropResize();
@@ -3469,6 +3566,11 @@
   function epClampPanel(el) {
     try {
       if (!el) return;
+      //  ★화면을 못 재면 아무것도 하지 않는다(2026-08-03 실측 버그). 백그라운드 탭에서는
+      //   innerWidth/innerHeight 가 **0** 이라 그대로 계산하면 min() 이 음수를 골라 패널이
+      //   최소 크기(420×320)로 찌그러진다. 사용자가 [수정] 후 다른 탭에 다녀오면 돌아왔을 때
+      //   패널이 손톱만 해져 있다. 못 잴 때는 손대지 않는 쪽이 항상 옳다.
+      if (!(window.innerWidth > 0) || !(window.innerHeight > 0)) return;
       const w = Math.max(420, Math.min(window.innerWidth - 32, el.offsetWidth));
       const h = Math.max(320, Math.min(window.innerHeight - 32, el.offsetHeight));
       el.style.width = w + 'px'; el.style.height = h + 'px';
@@ -3490,7 +3592,10 @@
     //  ⚠ `|| 기본값` 으로 판정하면 저장값 0(화면 맨 왼쪽·맨 위)이 '미저장'으로 취급돼 매번
     //   기본 위치로 튄다(정보창에서 이미 당한 함정). 숫자인지로 판정한다.
     const num = (v) => (typeof v === 'number' && isFinite(v));
-    const w = Math.max(420, state.ubEpW | 0 || 900), h = Math.max(320, state.ubEpH | 0 || 660);
+    //  ★EP_DEFAULT_H 는 **자식이 신호를 못 보냈을 때의 폴백**이다(구조가 달라 dress 가 물러난 경우).
+    //   정상 경로에서는 곧바로 epApplyFit 이 콘텐츠 높이로 덮는다. 저장값은 읽지 않는다.
+    const w = Math.max(420, state.ubEpW | 0 || 900), h = EP_DEFAULT_H;
+    _epUserSized = false;
     const x = num(state.ubEpX) ? state.ubEpX : Math.max(16, Math.round((window.innerWidth - w) / 2));
     const y = num(state.ubEpY) ? state.ubEpY : Math.max(16, Math.round((window.innerHeight - h) / 2));
     el.style.width = w + 'px'; el.style.height = h + 'px';
@@ -3505,9 +3610,19 @@
       if (!el.isConnected) { epDropResize(); return; }
       epClampPanel(el);
     };
+    //  ★탭이 다시 보이면 그때 맞춘다 — 숨은 동안 도착한 높이 신호는 보류돼 있고(epApplyFit),
+    //   숨은 채로 창 크기가 바뀌었어도 resize 는 안 왔으니 여기서 한 번 보정한다.
+    const onVisible = () => {
+      if (!el.isConnected) { epDropResize(); return; }
+      if (document.hidden) return;
+      if (_epPendingFit > 0 && !_epUserSized) { epApplyFit(el, _epPendingFit); return; }
+      epClampPanel(el);
+    };
     epDropResize();                       // 앞선 패널의 리스너가 남아 있으면 먼저 뗀다
     _epOnResize = onResize;
+    _epOnVis = onVisible;
     window.addEventListener('resize', onResize);
+    document.addEventListener('visibilitychange', onVisible);
     el.querySelector('.ub-epw-x').addEventListener('click', epClosePanel);
     //  드래그(헤더) — 버튼 위에서 시작하면 무시.
     //  ⚠ 드래그 중에는 iframe 이 마우스를 먹어 포인터가 끊긴다 → 드래그 동안만 통과 차단.
@@ -3537,6 +3652,7 @@
     });
     el.querySelector('.ub-epw-rz').addEventListener('mousedown', (e) => {
       e.stopPropagation();
+      _epUserSized = true;     // 이후 자동 맞춤은 사용자가 정한 크기를 덮지 않는다
       dragWith((ev0) => {
         const sx = ev0.clientX, sy = ev0.clientY, ow = el.offsetWidth, oh = el.offsetHeight;
         return (ev) => {
@@ -3551,6 +3667,13 @@
     try {
       new MutationObserver(() => {
         try {
+          //  ★높이 신호가 먼저다 — 완료와 달리 여러 번(레이아웃 직후·사진 로드 후) 온다.
+          //   완료 신호와 같은 감시자를 쓰되 서로를 가로막지 않게 각자 return 한다.
+          if (fr.dataset.ubEpFit) {
+            const fit = fr.dataset.ubEpFit;
+            delete fr.dataset.ubEpFit;        // 소비한다 — 다음 신호를 새 변경으로 받기 위해
+            if (epApplyFit(el, fit)) epLog('패널 높이 맞춤', fit);
+          }
           if (fr.dataset.ubEpDone !== '1') return;
           //  ★갱신을 **먼저** 걸고, 걸렸을 때만 닫는다(별도 창 시절의 fail-closed 순서).
           //   반대로 하면 갱신이 안 걸린 경우 패널까지 사라져, 사용자는 옛 값이 남은 목록만
@@ -3563,7 +3686,7 @@
           epLog('저장 완료 신호 수신 → 목록 갱신·패널 닫기');
           epClosePanel();
         } catch (_) {}
-      }).observe(fr, { attributes: true, attributeFilter: ['data-ub-ep-done'] });
+      }).observe(fr, { attributes: true, attributeFilter: ['data-ub-ep-done', 'data-ub-ep-fit'] });
     } catch (e) { epLog('완료 감시 장착 실패', e); }
     return el;
   }
@@ -3572,6 +3695,15 @@
   let _epGenSeq = 0;
   function epOpenPanel(url, orderSeq) {
     const el = epEnsurePanel();
+    //  ★열 때마다 리셋한다. epEnsurePanel 은 **이미 있는 패널이면 조기 반환**하므로 거기서만
+    //   리셋하면 재사용 경로가 빠진다 — 주문 A 에서 손잡이를 한 번 잡고 닫지 않은 채 주문 B 의
+    //   [수정]을 누르면 B 가 영영 A 때 크기로 열린다(Fable 검수 2026-08-03 지적).
+    //  ★플래그만 리셋하면 부족하다 — **높이 자체**도 폴백으로 되돌려야 한다. 안 그러면 B 에서
+    //   dress 가 물러났을 때(신호 없음) A 의 크기가 그대로 남아 660 폴백이 또 무력해진다
+    //   (Codex 검수 3라운드 지적). 정상 경로에서는 곧 도착할 신호가 이 값을 덮는다.
+    _epUserSized = false; _epPendingFit = 0;
+    el.style.height = EP_DEFAULT_H + 'px';
+    epClampPanel(el);
     const fr = el.querySelector('iframe');
     el.querySelector('.ub-epw-seq').textContent = 'No. ' + orderSeq;
     //  ★신원을 먼저 심고 src 를 나중에 준다. 순서가 뒤집히면 자식이 먼저 떠서 자기 신원을
@@ -3579,6 +3711,7 @@
     fr.dataset.ubEpSeq = String(orderSeq);
     fr.dataset.ubEpGen = String(++_epGenSeq);
     delete fr.dataset.ubEpDone;
+    delete fr.dataset.ubEpFit;      // 앞 문서가 남긴 높이를 새 문서 것으로 오인하지 않게
     fr.src = url;
     epLog('수정 패널 열림', orderSeq);
   }
@@ -3732,9 +3865,12 @@
   //  ERP 헤더·메뉴를 걷어낸다. ★마크업을 추측하지 않는다 — body 직계 자식 중 수정폼을
   //   품지 않은 것만 숨긴다. 헤더·네비가 body 직계면 걷히고, 폼과 같은 컨테이너에 있으면
   //   그대로 남는다(효과가 없을 뿐 저장 버튼이 사라지지는 않는다 = fail-safe).
+  //  ★반환값 = **화면을 실제로 정리했는가**. 호출자는 이 값이 true 일 때만 높이 신호를 건다 —
+  //   정리하지 못한 날것 문서의 높이에 패널을 맞추면 엉뚱한 크기로 열린다(설계의 660 폴백이
+  //   무력화된다. Codex 검수 2026-08-03 지적).
   function epDressPopup(orderSeq) {
     const form = document.forms && document.forms['form1'];
-    if (!form) { epLog('form1 없음 → 화면을 손대지 않는다'); return; }
+    if (!form) { epLog('form1 없음 → 화면을 손대지 않는다'); return false; }
     //  ★수정폼이 보이고 있다 = 직전 제출은 폼을 벗어나지 못했다(검증 실패·재표시). 그러니
     //   여기서 **증거를 무조건 소비한다**. 마커의 수명은 '제출 → 바로 다음 이동' 한 번뿐이다.
     //   이렇게 하면 옛 주문 승계도, 같은 주문의 낡은 세대도 구조적으로 남을 수 없다.
@@ -3780,6 +3916,7 @@
     epUpgradeTitle();
     epReflowLayout(epCompactForm());
     epLog('패널 화면 정리 — 숨긴 블록', hidden, '개');
+    return true;
   }
   //  이 창에서는 확장 자신의 UI(D102 도구 사이드바·핸들)를 띄우지 않는다.
   //  ★확장이 이미 가진 팝업 억제 경로를 재사용한다 — sessionStorage 마커를 세우면
@@ -3878,6 +4015,7 @@
           if (tr.cells[0]) tr.cells[0].classList.add('ub-ep-val');
         }
         if (verdict.kinds[i] === 'full') { tr.classList.add('ub-ep-full'); full++; } else { half++; }
+        epMarkFiller(tr);
       });
       epLog('옵션 배치 압축 — 2열', half, '행 / 전체폭', full, '행');
       return target;
@@ -3893,31 +4031,59 @@
    *  실측 구조: 바깥 배치표의 칸들 = [상품정보][썸네일] / [옵션] / [인도예정일+비고].
    * ------------------------------------------------------------------------ */
   const EP_THUMB_SEL = "img[onclick*='imageView']";
+  const EP_CTRL_SEL = 'input:not([type=hidden]),select,textarea';
+  //  ★빈 행 판정에만 쓰는 **넓은** 선택자. 글자가 없어도 사용자가 누를 수 있는 것이 있으면
+  //   빈 행이 아니다 — 이 ERP 의 버튼은 `<button>` 이거나 `btn_*.gif` 이미지 링크다(우리 CSS 도
+  //   `.ub-ep-card a>img[src*='btn_']` 를 버튼으로 다룬다). 그걸 접으면 사용자가 못 누른다.
+  //  ⚠ EP_CTRL_SEL 자체를 넓히면 안 된다 — 썸네일 칸 판정(`입력이 없는 칸`)이 `<a>` 로 감싼
+  //   사진에서 뒤집혀 사진 축소가 통째로 풀린다.
+  const EP_ACTION_SEL = EP_CTRL_SEL + ",button,a,img[src*='btn_']";
+  //  빈 행이면 표시만 해 둔다 — 접는 것은 CSS(.ub-ep-filler)가 한다. 노드는 건드리지 않는다.
+  function epMarkFiller(tr) {
+    try {
+      if (!epIsFillerRow({
+        controls: tr.querySelectorAll(EP_ACTION_SEL).length,
+        text: tr.textContent,
+        thumb: !!tr.querySelector(EP_THUMB_SEL)
+      })) return false;
+      tr.classList.add('ub-ep-filler');
+      return true;
+    } catch (_) { return false; }
+  }
   function epReflowLayout(optTable) {
     try {
       const cell = optTable && optTable.parentElement;
       const outer = cell && cell.closest ? cell.closest('table') : null;
       if (!outer || outer === optTable) { epLog('바깥 배치표를 못 찾았다 → 순서 유지'); return; }
-      const rows = Array.from(outer.rows);
-      //  rowspan 이 있으면 표 레이아웃을 벗어날 때 묶임이 깨진다 → 손대지 않는다(fail-safe).
-      if (rows.some((tr) => Array.from(tr.cells).some((td) => td.rowSpan > 1))) {
-        epLog('바깥 배치표에 rowspan 있음 → 순서 유지'); return;
-      }
       const cells = [];
-      rows.forEach((tr) => Array.from(tr.cells).forEach((td) => cells.push(td)));
+      Array.from(outer.rows).forEach((tr) => Array.from(tr.cells).forEach((td) => cells.push(td)));
+      //  ★rowspan 판정을 좁혔다(2026-08-03). 종전엔 rowspan 이 하나라도 있으면 물러났는데,
+      //   이 표는 **썸네일 칸이 항상 rowspan=2** 라 이 함수가 한 번도 실행된 적이 없었다.
+      //   위험은 입력을 품은 칸이 흩어지는 경우뿐이므로 거기서만 물러난다.
+      if (epRowspanBlocks(cells.map((td) => ({
+        rowSpan: td.rowSpan, controls: td.querySelectorAll(EP_CTRL_SEL).length
+      })))) { epLog('입력을 품은 rowspan 칸이 있다 → 순서 유지'); return; }
       const remarkCell = cells.find((td) => td.querySelector('textarea'));
       if (!remarkCell) { epLog('비고 칸을 못 찾았다 → 순서 유지'); return; }
       outer.classList.add('ub-ep-outer');
       let thumbs = 0;
       cells.forEach((td) => {
-        //  썸네일 칸 = 입력이 하나도 없고 상품 사진만 있는 칸. 입력이 있으면 절대 숨기지 않는다.
-        if (!td.querySelector('input:not([type=hidden]),select,textarea') && td.querySelector(EP_THUMB_SEL)) {
-          td.style.display = 'none'; thumbs++; return;
-        }
-        td.style.order = (td === remarkCell) ? '1' : (td.contains(optTable) ? '3' : '2');
+        //  썸네일 칸 = 입력이 하나도 없고 상품 사진만 있는 칸. 입력이 있으면 사진 칸이 아니다.
+        //  ★숨기지 않는다(사장님 결정 2026-08-03) — 48px 로 줄여 맨 아래 상품정보 옆에 남긴다.
+        //   엉뚱한 주문을 열었을 때 눈으로 거를 수 있어야 한다.
+        const thumb = !td.querySelector(EP_CTRL_SEL) && !!td.querySelector(EP_THUMB_SEL);
+        if (thumb) { td.classList.add('ub-ep-thumb'); thumbs++; }
+        const slot = epOuterSlot({
+          remark: td === remarkCell, opt: td.contains(optTable), thumb: thumb
+        });
+        td.style.order = String(slot.order);
+        td.style.flex = slot.flex;
+        //  상품정보 칸(참고용 표)만 따로 표시한다 — 안의 표가 height 속성(28·48)과 큰 여백으로
+        //  172px 을 먹고 있었다(실측). CSS 로 압축하되 우리가 고른 칸에만 닿게 한다.
+        if (slot.order === 3) td.classList.add('ub-ep-info');
       });
       epReflowRemarks(remarkCell.querySelector('table'));
-      epLog('배치 재정렬 — 비고 최상단 / 썸네일', thumbs, '칸 숨김');
+      epLog('배치 재정렬 — 비고 최상단 / 썸네일', thumbs, '칸 축소');
     } catch (e) { epLog('배치 재정렬 실패(무해)', e); }
   }
   //  비고 표 안에서도 비고 행이 먼저 오게 한다(원래는 고객인도예정일이 위에 있다).
@@ -3937,10 +4103,14 @@
         tr.classList.add('ub-ep-row');
         if (n === 2) { tr.cells[0].classList.add('ub-ep-lab'); tr.cells[1].classList.add('ub-ep-val'); }
         else { tr.classList.add('ub-ep-solo'); if (tr.cells[0]) tr.cells[0].classList.add('ub-ep-val'); }
-        const hasTa = !!tr.querySelector('textarea');
-        //  같은 order 끼리는 문서 순서가 유지된다 → 주문비고·발주비고 순서는 그대로.
-        tr.style.order = hasTa ? '1' : '2';
-        if (hasTa || n !== 2) tr.classList.add('ub-ep-full');
+        //  ★비고 두 칸을 **가로 2열로 나란히**(사장님 결정 2026-08-03). textarea 행만 반 칸을
+        //   쓰고 라벨은 값 위로 올린다 — 78px 우측정렬 라벨을 반 칸에 두면 값이 뭉개진다.
+        //   같은 order 끼리는 문서 순서가 유지된다 → 왼쪽 주문비고 / 오른쪽 발주비고 그대로.
+        const slot = epRemarkRowSlot({ textarea: !!tr.querySelector('textarea') });
+        tr.style.order = String(slot.order);
+        if (slot.full) tr.classList.add('ub-ep-full');
+        if (slot.stack) tr.classList.add('ub-ep-stack');
+        epMarkFiller(tr);
       });
     } catch (e) { epLog('비고 재정렬 실패(무해)', e); }
   }
@@ -3995,7 +4165,7 @@
         //  formatting context 가 사라져 열 정렬·버튼 배치가 깨진다.
         //  ★width:100% — 호스트 표가 width="980" 고정이라(실측) 이걸 안 풀면 창을 줄여도
         //   폼이 안 줄어들고 가로 스크롤이 생긴다.
-        ".ub-ep-card{margin:0 !important;padding:16px !important;",
+        ".ub-ep-card{margin:0 !important;padding:14px !important;",
         "background:var(--ub-surface) !important;border:1px solid var(--ub-hairline) !important;",
         "border-radius:var(--ub-r-md) !important;",
         //  ⚠ overflow 를 걸지 않는다. 한 축만 auto 로 줘도 다른 축이 계산상 auto 가 돼 카드가
@@ -4019,9 +4189,10 @@
         ".ub-ep-card .t_tab th,.ub-ep-card .t_tab thead td{background:var(--ub-navy) !important;",
         "color:#fff !important;font-weight:700 !important;font-size:12px !important;",
         "letter-spacing:.03em !important;text-align:center !important;vertical-align:middle !important;",
-        "padding:11px 10px !important;border:0 !important;}",
+        //  ★11px → 6px. 상품정보 표는 읽기용 참고 정보인데 두 줄에 44px 을 먹고 있었다.
+        "padding:6px 10px !important;border:0 !important;}",
         ".ub-ep-card .t_tab td{font-size:13px !important;color:var(--ub-ink) !important;",
-        "text-align:center !important;vertical-align:middle !important;padding:11px 10px !important;",
+        "text-align:center !important;vertical-align:middle !important;padding:6px 10px !important;",
         "border-bottom:1px solid var(--ub-hairline) !important;}",
         ".ub-ep-card .bg_gray{background:var(--ub-sunken) !important;}",
         ".ub-ep-card .blk_line{border-color:var(--ub-hairline) !important;}",
@@ -4034,14 +4205,45 @@
         //   그래서 우리가 분류하며 붙인 클래스(.ub-ep-row/.ub-ep-lab/.ub-ep-val)에만 건다.
         ".ub-ep-form{display:grid !important;grid-template-columns:repeat(2,minmax(0,1fr)) !important;",
         "gap:2px 22px !important;width:100% !important;}",
-        //  ★바깥 배치표 — 칸(td)을 그리드 아이템으로 만들어 **순서만** 바꾼다(노드 이동 금지).
-        //   tr 을 display:contents 로 통과시키므로 colspan 은 애초에 의미가 없어진다.
-        ".ub-ep-outer{display:grid !important;grid-template-columns:minmax(0,1fr) !important;",
-        "width:100% !important;}",
+        //  ★바깥 배치표 — 칸(td)을 flex 아이템으로 만들어 **순서만** 바꾼다(노드 이동 금지).
+        //   tr 을 display:contents 로 통과시키므로 colspan·rowspan 은 의미가 없어진다.
+        //  ⚠ grid 가 아니라 flex 다 — 마지막 줄에서 상품정보(`1 1 240px`)와 썸네일(`0 0 auto`)을
+        //   한 줄에 나란히 두려면 칸마다 다른 신축성이 필요한데, grid 는 열 수를 미리 못 박아야
+        //   해서 그 조합이 안 나온다. 자리는 epOuterSlot 이 인라인 order/flex 로 준다.
+        ".ub-ep-outer{display:flex !important;flex-wrap:wrap !important;",
+        "align-items:flex-start !important;gap:10px 14px !important;width:100% !important;}",
         ".ub-ep-outer>tbody>tr,.ub-ep-outer>thead>tr,.ub-ep-outer>tfoot>tr{display:contents !important;}",
-        //  ★비고 표 — 한 칸짜리 그리드. 행 순서는 style.order 로 준다.
-        ".ub-ep-grid1{display:grid !important;grid-template-columns:minmax(0,1fr) !important;",
-        "gap:2px 0 !important;width:100% !important;}",
+        //  칸의 원래 여백은 걷어내고 간격은 위 gap 하나로 관리한다(ERP 스페이서가 세로를 먹는다).
+        //  ⚠ 선택자에 `.ub-ep-card` 와 `table` 을 함께 쓴다 — 이 표는 `.t_form` 안에 있어서
+        //   위쪽 `.ub-ep-card .t_form td{padding:7px 8px !important}`(클래스 2개)와 경쟁한다.
+        //   `!important` 끼리는 특이도로 갈리므로 클래스 수를 맞추지 않으면 조용히 진다(실측).
+        ".ub-ep-card table.ub-ep-outer>tbody>tr>td,",
+        ".ub-ep-card table.ub-ep-outer>thead>tr>td,",
+        ".ub-ep-card table.ub-ep-outer>tfoot>tr>td{",
+        "padding:0 !important;vertical-align:top !important;min-width:0 !important;}",
+        //  ★ERP 가 표 사이에 끼워 넣은 빈 행을 접는다(epMarkFiller 가 표시한 것만).
+        //   실측: 비고 표의 빈 행 9개 + gap 이 177px — '매번 스크롤' 의 최대 원인이었다.
+        //  ⚠ 빈 행은 `ub-ep-row` 도 같이 달고 있고, 아래쪽 `.ub-ep-card tr.ub-ep-row` 가
+        //   `display:grid !important` 를 준다. **둘 다 !important 에 특이도가 같으면(0,2,1)
+        //   뒤에 선언된 쪽이 이긴다** — 그래서 이 규칙만 두면 조용히 지고 빈 행이 안 접힌다
+        //   (Codex 검수 2026-08-03 지적, 실제로 졌다). 순서에 기대지 않게 클래스를 하나 더
+        //   얹어 특이도(0,3,1)로 못 박는다. 앞으로 규칙 순서를 바꿔도 안전하다.
+        ".ub-ep-card tr.ub-ep-row.ub-ep-filler,.ub-ep-card tr.ub-ep-filler{display:none !important;}",
+        //  상품 사진 칸 — 숨기지 않고 48px 로 줄여 상품정보 옆에 남긴다.
+        //  ⚠ 사진은 `td.img_border` 의 **height=\"160\" 속성**이 만든 액자 안에 있다(실측).
+        //   이미지만 줄이면 액자가 그대로 160px 을 먹으므로 액자도 같이 풀어야 한다.
+        ".ub-ep-card td.ub-ep-thumb{width:auto !important;text-align:left !important;}",
+        ".ub-ep-card td.ub-ep-thumb table,.ub-ep-card td.ub-ep-thumb td{",
+        "height:auto !important;width:auto !important;}",
+        ".ub-ep-card td.ub-ep-thumb td.img_border{padding:2px !important;}",
+        //  상품정보 칸 — 참고용 표. 셀 height 속성(28·48)과 여백으로 172px 을 먹었다.
+        ".ub-ep-card td.ub-ep-info table td{padding:4px 8px !important;height:auto !important;",
+        "line-height:1.45 !important;font-size:12.5px !important;}",
+        ".ub-ep-card td.ub-ep-info table tr{height:auto !important;}",
+        //  ★비고 표 — 가로 2열. 주문비고 | 발주비고 가 나란히 서고 인도예정일은 전체 폭을 쓴다.
+        ".ub-ep-grid1{display:grid !important;",
+        "grid-template-columns:repeat(2,minmax(0,1fr)) !important;",
+        "gap:6px 16px !important;width:100% !important;align-items:start !important;}",
         ".ub-ep-form>tbody,.ub-ep-form>thead,.ub-ep-form>tfoot,",
         ".ub-ep-outer>tbody,.ub-ep-outer>thead,.ub-ep-outer>tfoot,",
         ".ub-ep-grid1>tbody,.ub-ep-grid1>thead,.ub-ep-grid1>tfoot{display:contents !important;}",
@@ -4053,6 +4255,13 @@
         //  라벨 없는 1칸 행(구분선 등)은 78px 칸에 갇히지 않게 한 칸으로.
         ".ub-ep-card tr.ub-ep-solo{grid-template-columns:minmax(0,1fr) !important;}",
         ".ub-ep-card tr.ub-ep-full{grid-column:1 / -1 !important;align-items:start !important;}",
+        //  ★비고 행 — 반 칸을 쓰고 라벨을 값 **위**로 올린다(2열이라 가로 예산이 절반이다).
+        //   .ub-ep-row 가 준 78px 라벨 칸을 한 칸으로 되돌리는 게 핵심.
+        ".ub-ep-card tr.ub-ep-stack{grid-template-columns:minmax(0,1fr) !important;",
+        "align-items:start !important;gap:4px !important;}",
+        ".ub-ep-card tr.ub-ep-stack>td.ub-ep-lab{text-align:left !important;padding:0 !important;",
+        "font-size:12px !important;font-weight:700 !important;color:var(--ub-accent) !important;}",
+        ".ub-ep-card tr.ub-ep-stack>td.ub-ep-val{padding:0 !important;}",
         ".ub-ep-card td.ub-ep-lab,.ub-ep-card td.ub-ep-val{display:block !important;",
         "padding:5px 0 !important;border:0 !important;}",
         //  ⚠ 라벨 칸에 width 속성이 박혀 있어(실측: 품위·색상 135px) 그대로 두면 78px 칸을
@@ -4083,14 +4292,19 @@
         "border-color:var(--ub-accent);box-shadow:0 0 0 3px var(--ub-tint);}",
         ".ub-ep-card input[readonly],.ub-ep-card .input_gray_no{background:var(--ub-sunken);",
         "color:var(--ub-ink-2);}",
-        //  ★비고는 이 폼에서 가장 자주 고치는 칸이다 — 스크롤 없이 한눈에 보이게 크게 준다.
-        ".ub-ep-card textarea{min-height:112px !important;resize:vertical !important;",
+        //  ★비고는 이 폼에서 가장 자주 고치는 칸이다 — 맨 위에 두 칸을 나란히 놓는다.
+        //   112px(4행)에서 84px(3행)로 줄였다: 두 칸이 가로로 서니 세로를 두 번 먹는데,
+        //   실제 값은 '선인도OK' 같은 한 줄이 대부분이다(실측). 모자라면 손잡이로 늘린다.
+        //  ⚠ min-height 만으로는 **안 줄어든다** — 이 textarea 는 rows=4 라 자연 높이가 105px 고
+        //   min-height 는 바닥값일 뿐이다(실측). 실제 높이를 줘야 한다. 다만 `height` 에는
+        //   !important 를 붙이지 않는다 — 붙이면 리사이즈 손잡이가 쓰는 인라인 style 이 져서
+        //   사용자가 비고를 늘릴 수 없게 된다.
+        ".ub-ep-card textarea{min-height:84px !important;height:84px;resize:vertical !important;",
         "line-height:1.55 !important;width:100% !important;}",
-        // 제품 사진 — 썸네일 라운드 12
-        //  상품 사진 — 원래 180px 칸을 차지해 위쪽이 커진다. 컴팩트하게 줄인다.
-        ".ub-ep-card img[onclick*='imageView']{border-radius:12px !important;",
-        "border:1px solid var(--ub-hairline) !important;width:112px !important;height:auto !important;",
-        "max-width:100% !important;}",
+        // 제품 사진 — 48px 썸네일(사장님 결정 2026-08-03). 숨기지 않되 세로를 먹지 않게.
+        ".ub-ep-card img[onclick*='imageView']{border-radius:8px !important;",
+        "border:1px solid var(--ub-hairline) !important;width:48px !important;height:auto !important;",
+        "max-width:100% !important;cursor:pointer !important;}",
         // 붉은 안내 문구
         ".ub-ep-card font[color='red']{color:var(--ub-danger) !important;font-size:12px !important;",
         "font-weight:600 !important;}",
@@ -4108,7 +4322,9 @@
         //  ★2열을 끝까지 유지하면 반 칸이 60~80px 까지 줄어 컨트롤 자체가 못 쓰게 된다.
         //   스크롤로 해결되지 않는 문제라 좁은 구간에서는 1열로 접는다.
         "@media (max-width:620px){",
-        ".ub-ep-form{grid-template-columns:minmax(0,1fr) !important;}}",
+        ".ub-ep-form{grid-template-columns:minmax(0,1fr) !important;}",
+        //  비고 2열도 같이 접는다 — 반 칸이 260px 아래로 내려가면 글을 못 읽는다.
+        ".ub-ep-grid1{grid-template-columns:minmax(0,1fr) !important;}}",
         "@media (max-width:760px){body{padding:8px !important;}",
         ".ub-ep-card{padding:12px !important;}",
         ".ub-ep-card input[type=text],.ub-ep-card input[type=number],.ub-ep-card input[type=password],",
@@ -4183,6 +4399,51 @@
       return true;
     } catch (e) { epLog('완료 신호 실패', e); return false; }
   }
+  //  콘텐츠 높이를 부모에게 알린다 — 부모가 패널을 여기에 맞춘다(스크롤·수동 리사이즈 제거).
+  //  ★완료 신호와 **같은 방식**(same-origin dataset 한 줄)이고 세대 검사도 똑같이 건다 —
+  //   낡은 문서가 새 패널을 자기 콘텐츠 높이로 줄여 버리면 안 된다.
+  function epSignalFit(id) {
+    try {
+      if (!id || !id.el) return false;
+      const mine = String(id.gen == null ? '' : id.gen);
+      const now = String(id.el.dataset.ubEpGen == null ? '' : id.el.dataset.ubEpGen);
+      if (!mine || now !== mine) return false;
+      const h = epContentHeight();
+      if (!(h > 0)) return false;
+      id.el.dataset.ubEpFit = String(h);
+      return true;
+    } catch (e) { epLog('높이 신호 실패(무해)', e); return false; }
+  }
+  //  콘텐츠의 실제 바닥. ★scrollHeight 를 쓰면 안 된다 — 그 값은 **뷰포트보다 작아지지 않아서**
+  //   (실측: 패널 900/700/660 에서 scrollHeight 가 851/651/626 으로 따라다녔고 실제 콘텐츠는
+  //   내내 627 이었다) 패널이 결코 줄지 않고, 신호가 두 번 오는 동안 오히려 조금씩 커진다.
+  //   body 자식들의 가장 아래 모서리를 직접 재면 패널 크기와 무관하게 같은 값이 나온다.
+  //  ⚠ 숨긴 블록(높이 0)은 자동으로 빠진다. 잴 수 없으면 scrollHeight 로 폴백한다.
+  function epContentHeight() {
+    try {
+      const b = document.body;
+      if (!b) return 0;
+      let bottom = 0;
+      Array.from(b.children).forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.bottom > bottom) bottom = r.bottom;
+      });
+      if (!(bottom > 0)) return document.documentElement.scrollHeight | 0;
+      const padB = parseFloat(getComputedStyle(b).paddingBottom) || 0;
+      return Math.ceil(bottom + padB + (window.scrollY || 0));
+    } catch (e) { epLog('콘텐츠 높이 측정 실패(무해)', e); return 0; }
+  }
+  //  두 번 잰다. ①레이아웃이 잡힌 직후 ②사진까지 로드된 뒤.
+  //  ★①만 하면 48px 썸네일이 아직 0 높이라 패널이 그만큼 짧게 열리고, ②만 하면 사진이 느린
+  //   날엔 660 폴백을 한참 보고 있어야 한다. 둘 다 보내고 부모가 마지막 값을 쓴다.
+  function epScheduleFit(id) {
+    const fire = () => epSignalFit(id);
+    try { requestAnimationFrame(() => requestAnimationFrame(fire)); } catch (_) { setTimeout(fire, 0); }
+    try {
+      if (document.readyState === 'complete') setTimeout(fire, 150);
+      else window.addEventListener('load', () => setTimeout(fire, 150), { once: true });
+    } catch (_) {}
+  }
   //  수정 패널의 iframe 안에서만 도는 진입점. 다른 프레임·평범한 탭에서는 신원이 없어 즉시 빠진다.
   function initEditPopupWindow() {
     try {
@@ -4191,7 +4452,8 @@
       const orderSeq = id.orderSeq;
       const submitted = epWasSubmitted(orderSeq);
       const action = epPopupAction(location.pathname, submitted);
-      if (action === 'dress') { epDressPopup(orderSeq); return; }
+      //  정리에 성공했을 때만 높이를 맞춘다 — 날것 문서 높이에 패널을 맞추지 않는다.
+      if (action === 'dress') { if (epDressPopup(orderSeq)) epScheduleFit(id); return; }
       if (action === 'stay') {   // 아는 착지가 아니거나 제출 증거가 없다 → 손대지 않는다
         epLog('완료로 볼 근거가 없다 → 패널을 그대로 둔다', location.pathname, 'submitted=' + submitted);
         //  수정폼을 이미 떠난 상태라면 사용자가 직접 끝낼 수 있게 탈출구를 준다.
