@@ -38,16 +38,27 @@ function extractConstLine(src, name) {
 
 const ORIG_COL_SRC = SRC.match(/const\s+ORIG_COL\s*=\s*\{[^}]*\}/);
 assert.ok(ORIG_COL_SRC, 'masterprice.js 에서 ORIG_COL 상수를 찾지 못했습니다');
-const CONST_LINES = ['LOG_KEY', 'LOG_CAP', 'SAVE_TIMEOUT_MS', 'MAX_GOLD_PRICE'].map(n => extractConstLine(SRC, n)).join('\n');
+// log 는 한 줄 화살표 함수라 extractConstLine 의 `[^;]+;` 로는 중간 세미콜론에서 잘린다.
+// 줄 단위로 원본을 그대로 가져온다 — 진단 로그 분기(`if (!upd) log(...)`)를 실제로 실행하는
+// 테스트가 있으므로 no-op 스텁으로 대체하지 않는다.
+const LOG_SRC = SRC.match(/^[ \t]*const log = .*$/m);
+assert.ok(LOG_SRC, 'masterprice.js 에서 log 정의를 찾지 못했습니다');
+const CONST_LINES = ['LOG_KEY', 'LOG_CAP', 'SAVE_TIMEOUT_MS', 'MAX_GOLD_PRICE']
+  .map(n => extractConstLine(SRC, n)).concat([LOG_SRC[0]]).join('\n');
 
 /* ---- 가짜 localStorage ----
  *  lsThrows: 모든 접근 실패(F1 fail-closed 테스트용).
  *  lsThrowOnNewKey: 기존 키 setItem 은 성공, "새" 키 setItem 만 실패 — quota 총량은 찼지만
  *   기존 키 덮어쓰기는 되는 상황을 흉내(G5 — 손상 로그 백업 실패 테스트 전용).
+ *  lsSetItemOkCount: 앞의 N 번 setItem 만 성공하고 그 뒤로는 전부 실패(null=제한 없음).
+ *   appendPriceLog(쓰기 1회)는 통과시키고 그 다음 updatePriceLog 만 실패시키는 데 쓴다
+ *   (G11 — write-ahead before 스냅샷 기록 실패 테스트 전용).
  * ------------------------------------------------------------------------ */
 let lsStore = {};
 let lsThrows = false;
 let lsThrowOnNewKey = false;
+let lsSetItemOkCount = null;
+let lsSetItemCalls = 0;
 const fakeLocalStorage = {
   getItem(k) {
     if (lsThrows) throw new Error('storage 접근 실패(TEST)');
@@ -58,11 +69,18 @@ const fakeLocalStorage = {
     if (lsThrowOnNewKey && !Object.prototype.hasOwnProperty.call(lsStore, k)) {
       throw new Error('새 키 저장 실패(TEST — quota 총량 초과 흉내)');
     }
+    lsSetItemCalls++;
+    if (lsSetItemOkCount != null && lsSetItemCalls > lsSetItemOkCount) {
+      throw new Error('setItem 실패(TEST — ' + lsSetItemOkCount + '회 이후 quota 초과 흉내)');
+    }
     lsStore[k] = String(v);
   },
   removeItem(k) { delete lsStore[k]; }
 };
-function resetLS() { lsStore = {}; lsThrows = false; lsThrowOnNewKey = false; }
+function resetLS() {
+  lsStore = {}; lsThrows = false; lsThrowOnNewKey = false;
+  lsSetItemOkCount = null; lsSetItemCalls = 0;
+}
 
 /* ---- 가짜 fetch(MAIN 샌드박스용) ----
  *  processOneItem(G2)·decideTrialContinuation 표시용 재조회가 이제 fetch 를 쓴다.
@@ -880,6 +898,24 @@ test('F1(실행검증): 로그 기록 자체가 실패하면 저장을 시도하
   assert.strictEqual(r.status, 'not_applied');
   assert.match(r.reason, /처리 로그 기록 실패/);
   assert.strictEqual(iframe._clickCount(), 0);
+});
+test('G11(실행검증): before 스냅샷 기록이 실패하면 저장 클릭을 하지 않는다(되돌릴 근거 없이 운영 데이터를 쓰지 않는다)', async () => {
+  resetLS(); resetFetch(); setServerFields(GOOD_FIELDS);
+  // appendPriceLog 의 쓰기 1회만 통과시키고, 그 다음 updatePriceLog(before 갱신) 부터 실패시킨다.
+  // pending 항목은 남지만 "우리가 실제로 덮어쓴 원본"은 기록되지 않은 상태 — 여기서 클릭이
+  // 나가면 되돌릴 유일한 근거가 유실된 채 라이브 마스터 데이터가 바뀐다(3라운드 Codex P1).
+  lsSetItemOkCount = 1;
+  const iframe = makeScenario({
+    initialFields: GOOD_FIELDS,
+    onClick(ctx) { ctx.succeedTo(GOOD_LANDING, 2); }
+  });
+  const item = { seq: '7646', itemCode: 'ITEM-7646', listPrice: null, listSupply: null, listSale: null };
+  const r = await processItemWithLog(iframe, item, '900,000', 900000);
+  lsSetItemOkCount = null;
+  assert.strictEqual(iframe._clickCount(), 0, 'before 를 못 남겼는데 저장 클릭이 나갔다(G11 회귀)');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'not_applied', '클릭 전에 멈췄으므로 확실히 미반영이어야 한다');
+  assert.match(r.reason, /되돌릴 근거/);
 });
 
 /* ==========================================================================

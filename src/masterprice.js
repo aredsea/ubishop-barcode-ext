@@ -430,9 +430,11 @@
     }
   }
 
-  // write-ahead 로 남긴 항목을 결과로 갱신(F1). 갱신 실패는 fail-closed 대상이 아니다 —
-  // 최초 항목은 이미 안전하게 남아 있어, 갱신 실패는 최종 상태 표기가 낡은 채로 남는
-  // 정도의 손해라 실행을 막지 않는다.
+  // write-ahead 로 남긴 항목을 결과로 갱신(F1). 반환값의 의미는 호출 시점에 따라 다르다:
+  //  · 클릭 '전' before 스냅샷 갱신 — 실패는 fail-closed 다. 되돌릴 근거가 없으므로 호출부가
+  //    false 를 processOneItem 에 돌려 저장을 중단시킨다(G11).
+  //  · 클릭 '후' 결과 갱신 — 이미 서버에 썼으니 막을 것이 없다. 최종 상태 표기가 낡은 채로
+  //    남는 정도의 손해라 실행을 막지 않고 진단 로그만 남긴다.
   function updatePriceLog(id, patch) {
     try {
       const list = readPriceLogListOrRecover();
@@ -622,6 +624,7 @@
   // 상품 1건 처리 — design doc §2.4 의 7단계 + 3자 검수 반영판(G2·G3·G7 포함).
   // timeoutMs 는 테스트에서 짧은 값을 주입하기 위한 선택 인자(기본 SAVE_TIMEOUT_MS).
   // onBefore(before) — 클릭 전 실제 폼 스냅샷을 얻는 즉시 호출된다(G3, write-ahead 로그 보강용).
+  //   false 를 돌려주거나 예외를 던지면 기록 실패로 보고 클릭하지 않는다(G11, fail-closed).
   // 반환: {ok, status, reason?, before?, recalced?, resultUrl?}
   //   status: 'applied'(확실히 반영) | 'not_applied'(클릭 전 실패 — 확실히 미반영) |
   //           'unknown'(클릭 후 실패 — 반영 여부 불명, F5)
@@ -656,7 +659,24 @@
       }
 
       const before = readFormSnapshot(doc);
-      if (typeof onBefore === 'function') { try { onBefore(before); } catch (_) {} }   // G3
+      // G3 + G11 — onBefore 가 false 를 돌려주거나 예외를 던지면 "되돌릴 근거를 남기지 못한
+      // 것"이므로 저장 클릭을 하지 않는다. 여기서 클릭이 나가면 우리가 실제로 덮어쓴 원본이
+      // 유실된 채 라이브 마스터 데이터가 바뀐다 — appendPriceLog 실패를 fail-closed 로 막는
+      // processItemWithLog 의 규율에서 이 한 곳만 빠져 있었다(3라운드 Codex P1).
+      // undefined 반환은 성공으로 본다(스냅샷 결과를 쓰지 않는 호출부와의 호환).
+      if (typeof onBefore === 'function') {
+        let beforeOk;
+        try {
+          beforeOk = onBefore(before);
+        } catch (e) {
+          return { ok: false, status: 'not_applied', before: before,
+            reason: '원본 스냅샷 기록 실패 — 되돌릴 근거를 남길 수 없어 저장을 시도하지 않았습니다: ' + (e && e.message ? e.message : String(e)) };
+        }
+        if (beforeOk === false) {
+          return { ok: false, status: 'not_applied', before: before,
+            reason: '원본 스냅샷 기록 실패 — 되돌릴 근거를 남길 수 없어 저장을 시도하지 않았습니다' };
+        }
+      }
 
       form.elements['goldPrice'].value = newPriceFormatted;
 
@@ -736,8 +756,12 @@
       };
     }
     const r = await processOneItem(iframe, item.seq, priceFormatted, timeoutMs, (before) => {
+      // G11 — 여기서 false 를 돌려주면 processOneItem 이 클릭 전에 멈춘다. 목록 표시값만 남기고
+      // 진행하면 안 된다: 목록을 띄운 뒤 다른 사람이 그 상품을 고쳤다면 그건 우리가 실제로
+      // 덮어쓴 원본이 아니라, 되돌릴 근거가 되지 못한다.
       const upd = updatePriceLog(w.id, { before: before });
-      if (!upd) log('write-ahead before 갱신 실패(목록 표시값은 남아 있음):', item.seq);
+      if (!upd) { log('write-ahead before 갱신 실패 — 저장을 시도하지 않는다:', item.seq); return false; }
+      return true;
     });
     const upd = updatePriceLog(w.id, Object.assign({ status: r.status || (r.ok ? 'applied' : 'unknown') }, r));
     if (!upd) log('처리 로그 갱신 실패(write-ahead 항목 자체는 이미 남아 있음):', item.seq);
