@@ -483,12 +483,34 @@
         '<td>' + escHtml(sale1) + (sale2 ? '(' + escHtml(sale2) + ')' : '') + '</td>' +
         '<td>' + escHtml(e.reason || '') + '</td></tr>';
     }).join('');
+    // 🔴 F2 — 전체 상품은 7,273건인데 LOG_CAP 은 2,000 이다. 전 상품 시세 갱신을 여러 번에
+    // 나눠 돌리면 작업이 끝나기도 전에 초기 배치의 before 스냅샷이 FIFO 로 잘려 나간다.
+    // "되돌릴 유일한 근거"가 그렇게 사라지지 않도록, 용량 상한과 무관한 보존 경로를 준다.
+    // JSON 안의 '<' 를 \u003c 로 escape 해 </script> 조기 종료를 막는다(JSON 문법상 '<' 는
+    // 문자열 안에만 나오므로 이 치환은 값을 바꾸지 않는다).
+    let payload = '[]';
+    try {
+      payload = JSON.stringify(list || []).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+    } catch (_) {}
     return '<!doctype html><meta charset="utf-8"><title>적용시세 일괄변경 로그</title>' +
       '<style>body{font-family:Pretendard,-apple-system,\'Malgun Gothic\',sans-serif;font-size:13px;padding:16px}' +
       'table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:6px 8px;text-align:left;' +
-      'white-space:nowrap}th{background:#f7f9fc}</style>' +
+      'white-space:nowrap}th{background:#f7f9fc}' +
+      '#ub-mp-export{font:inherit;padding:6px 14px;border:1px solid #4abcc7;background:#4abcc7;color:#fff;' +
+      'border-radius:4px;cursor:pointer}</style>' +
       '<h3>적용시세 일괄변경 처리 로그 (' + (list ? list.length : 0) + '건, 최신순)</h3>' +
-      '<p style="color:#888;font-size:12px">최근 ' + formatComma(LOG_CAP) + '건까지만 보관됩니다 — 그보다 오래된 기록은 자동으로 사라집니다.</p>' +
+      '<p style="color:#888;font-size:12px">최근 ' + formatComma(LOG_CAP) + '건까지만 보관됩니다 — 그보다 오래된 기록은 자동으로 사라집니다.<br>' +
+      '되돌릴 근거를 영구 보관하려면 아래 버튼으로 파일을 내려받아 두세요.</p>' +
+      '<p><button id="ub-mp-export" type="button">JSON 내보내기</button></p>' +
+      '<script>var UB_MP_LOG=' + payload + ';' +
+      'document.getElementById("ub-mp-export").addEventListener("click",function(){' +
+      'try{var b=new Blob([JSON.stringify(UB_MP_LOG,null,2)],{type:"application/json"});' +
+      'var u=URL.createObjectURL(b);var a=document.createElement("a");a.href=u;' +
+      'a.download="masterprice-log-"+new Date().toISOString().slice(0,19).replace(/[:T-]/g,"")+".json";' +
+      'document.body.appendChild(a);a.click();a.remove();' +
+      'setTimeout(function(){URL.revokeObjectURL(u);},1000);}' +
+      'catch(e){alert("내보내기 실패: "+(e&&e.message?e.message:e));}});' +
+      '<\/script>' +
       '<table><thead><tr><th>시각</th><th>상품코드</th><th>seq</th><th>상태</th><th>새 시세</th>' +
       '<th>이전 시세</th><th>이전 입고공급가</th><th>이전 판매가</th><th>사유</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
@@ -605,12 +627,31 @@
 
   // 1건 시범 정지의 서버 재조회 — 목록이 아니라 수정폼을 seq 로 다시 GET(파일 상단 주석).
   // processOneItem(G2) 과 runBulkUpdate(트라이얼 표시) 둘 다 이 함수를 쓴다.
-  async function refetchFieldsForSeq(seq) {
+  // 🔴 F1 — 반드시 시간제한을 건다. 이 GET 은 저장 클릭이 '이미 나간 뒤' 실행되므로, 응답이
+  // 오지 않으면 await 가 영원히 안 풀리고 runBulkUpdate 의 finally 도 실행되지 않는다
+  // (UI 는 busy 로 얼고, 부분 반영 요약 알림이 영원히 안 뜬다). 이 ERP 서버는 느린 응답이
+  // 실측된 이력이 있다(app-files note v2.4.8: fetch timeout 20초→300초). abort 는 예외로
+  // 터져 기존 '서버 재조회 실패' 경로(→ unknown/refetch_failed)로 그대로 합류한다.
+  async function refetchFieldsForSeq(seq, timeoutMs) {
     const url = modifyFormUrl(seq);
-    const resp = await fetch(url, { credentials: 'same-origin', cache: 'no-cache' });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const buf = await resp.arrayBuffer();
-    const ct = resp.headers.get('content-type') || '';
+    const t = (timeoutMs == null) ? SAVE_TIMEOUT_MS : timeoutMs;
+    const ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    let timer = null;
+    if (ctrl) { try { timer = setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, t); } catch (_) {} }
+    let resp, buf, ct;
+    try {
+      const opts = { credentials: 'same-origin', cache: 'no-cache' };
+      if (ctrl) opts.signal = ctrl.signal;
+      resp = await fetch(url, opts);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      buf = await resp.arrayBuffer();   // 본문 읽기도 같은 signal 로 끊긴다
+      ct = resp.headers.get('content-type') || '';
+    } catch (e) {
+      const aborted = e && (e.name === 'AbortError' || /abort/i.test(String(e.message || '')));
+      throw aborted ? new Error('서버 재조회 시간 초과(' + Math.round(t / 1000) + '초)') : e;
+    } finally {
+      if (timer != null) { try { clearTimeout(timer); } catch (_) {} }
+    }
     const html = decodeResponseBytes(buf, ct, window);
     return {
       goldPrice: extractInputValue(html, 'goldPrice'),
@@ -776,7 +817,17 @@
   // F12 로 직접 뒤지는 게 유일한 열람 수단이라 "되돌릴 유일한 근거"를 사장님이 실제로는
   // 볼 수 없었다.
   function showLogViewer() {
-    const list = readPriceLogListOrRecover();
+    // 🔴 readPriceLogListOrRecover 는 손상 로그의 백업까지 실패하면 throw 한다(G5). 여기서
+    // 안 잡으면 리스너 예외로 삼켜져 버튼이 '무반응' 이 된다 — 되돌릴 근거를 확인해야 하는
+    // 바로 그 상황에서 원인조차 알 수 없게 된다.
+    let list;
+    try {
+      list = readPriceLogListOrRecover();
+    } catch (e) {
+      window.alert('처리 로그를 읽을 수 없습니다: ' + (e && e.message ? e.message : e) +
+        '\n\n브라우저 저장소(localStorage) 키 ' + LOG_KEY + ' 를 직접 확인해야 합니다.');
+      return;
+    }
     const html = buildLogViewerHtml(list);
     let w = null;
     try { w = window.open('', '_blank', 'width=960,height=600'); } catch (_) {}
@@ -804,8 +855,16 @@
     if (!go) return;
 
     ui.setBusy(true);
-    const iframe = createHiddenFrame();
+    // 🔴 F3 — 배치는 500건 기준 15분대다. 그동안 ERP 네이티브 검색·메뉴·페이지네이션은 살아
+    // 있어서 클릭 한 번에 페이지가 이동하면 iframe 과 배치가 즉사한다. 그때 in-flight 상품은
+    // 저장 클릭이 이미 나갔을 수 있는데 로그는 pending 이고 요약 알림은 영원히 안 뜬다.
+    const onBeforeUnload = function (e) { e.preventDefault(); e.returnValue = ''; return ''; };
+    try { window.addEventListener('beforeunload', onBeforeUnload); } catch (_) {}
+    // 🔴 createHiddenFrame 은 try 안에서 만든다 — 밖에서 던지면 finally 에 못 들어가
+    // setBusy(false) 가 실행되지 않아 UI 가 새로고침 전까지 영구 비활성이 된다.
+    let iframe = null;
     try {
+      iframe = createHiddenFrame();
       ui.setProgress(1, items.length, items[0].itemCode);
       const r0 = await processItemWithLog(iframe, items[0], priceFormatted, v.price);
 
@@ -890,8 +949,9 @@
         window.alert('완료 — 총 ' + items.length + '건의 적용시세를 ' + priceFormatted + '원으로 변경했습니다.');
       }
     } finally {
+      try { window.removeEventListener('beforeunload', onBeforeUnload); } catch (_) {}
       ui.setBusy(false);
-      try { iframe.remove(); } catch (_) {}
+      if (iframe) { try { iframe.remove(); } catch (_) {} }
     }
   }
 

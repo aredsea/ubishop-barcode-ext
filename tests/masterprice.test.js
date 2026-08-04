@@ -91,15 +91,29 @@ function fieldsToHtml(fields) {
 }
 let fetchFields = null;
 let fetchShouldFail = false;
-const fakeFetchMain = async function () {
+let fetchNeverResolves = false;   // F1 — 스톨한 서버 흉내. signal 을 실제로 존중한다.
+const fakeFetchMain = async function (url, opts) {
   if (fetchShouldFail) throw new Error('네트워크 실패(TEST)');
+  if (fetchNeverResolves) {
+    // 진짜 fetch 처럼 abort 신호에만 반응해 AbortError 로 reject 한다. signal 을 무시하면
+    // 타임아웃 테스트가 영원히 매달려 "그냥 느린 테스트" 로 위장된다.
+    return new Promise((_resolve, reject) => {
+      const sig = opts && opts.signal;
+      if (!sig) return;
+      sig.addEventListener('abort', () => {
+        const e = new Error('The operation was aborted.');
+        e.name = 'AbortError';
+        reject(e);
+      });
+    });
+  }
   return {
     ok: true, headers: { get: () => 'text/html; charset=utf-8' },
     arrayBuffer: async () => new TextEncoder().encode(fieldsToHtml(fetchFields || {})).buffer
   };
 };
 function setServerFields(fields) { fetchFields = fields; }
-function resetFetch() { fetchFields = null; fetchShouldFail = false; }
+function resetFetch() { fetchFields = null; fetchShouldFail = false; fetchNeverResolves = false; }
 
 const MAIN_NAMES = [
   'extractSeq', 'isTargetPage', 'parsePriceInput', 'formatComma', 'splitDualValue',
@@ -130,7 +144,7 @@ const {
   localJudgeSubmitUrl, judgeSubmitUrl, judgeLandingUrl,
   validateBulkInput, numOrNull, validateRecalc, serverValueMatches, verifyAgainstServer, decideTrialContinuation,
   runSequential, augmentMasterTable, getSelectedItems,
-  escHtml, logFieldDisplay, buildLogViewerHtml,
+  escHtml, logFieldDisplay, buildLogViewerHtml, refetchFieldsForSeq,
   processOneItem, readPriceLogListOrRecover, appendPriceLog, updatePriceLog, processItemWithLog,
   ORIG_COL
 } = sandbox;
@@ -854,6 +868,20 @@ test('G7(실행검증): 클릭 후 예외(클릭 처리 자체가 던짐)는 unk
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.status, 'unknown');
   assert.match(r.reason, /클릭 처리 중 알 수 없는 오류/);
+});
+
+test('F1(실행검증): 서버 재조회가 응답하지 않으면 시간제한으로 끊는다(무기한 정지 방지)', async () => {
+  // 이 GET 은 저장 클릭이 '이미 나간 뒤' 실행된다. 안 끊기면 runBulkUpdate 의 finally 가
+  // 영원히 실행되지 않아 UI 가 얼고 부분 반영 요약 알림이 아예 안 뜬다.
+  resetFetch();
+  fetchNeverResolves = true;
+  await assert.rejects(() => refetchFieldsForSeq('7646', 40), /시간 초과/);
+  resetFetch();
+});
+test('F1(실행검증): 정상 응답이면 시간제한이 걸리지 않는다(타임아웃 상시발동 변이에 민감)', async () => {
+  resetFetch(); setServerFields(GOOD_FIELDS);
+  const r = await refetchFieldsForSeq('7646', 2000);
+  assert.strictEqual(r.goldPrice, GOOD_FIELDS.goldPrice);
 });
 
 /* ── processItemWithLog(F1 write-ahead + G3 before 스냅샷) ────────────── */
