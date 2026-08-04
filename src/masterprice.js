@@ -664,6 +664,10 @@
       // 유실된 채 라이브 마스터 데이터가 바뀐다 — appendPriceLog 실패를 fail-closed 로 막는
       // processItemWithLog 의 규율에서 이 한 곳만 빠져 있었다(3라운드 Codex P1).
       // undefined 반환은 성공으로 본다(스냅샷 결과를 쓰지 않는 호출부와의 호환).
+      // 🔴 그래서 이 게이트의 기본값은 fail-open 방향이다 — 아래 콜백 계약을 지켜야 안전하다:
+      //    onBefore 는 **동기 함수여야 하고 반드시 boolean 을 돌려줘야 한다.**
+      //    async 로 바꾸면 beforeOk 가 Promise 가 되어 `=== false` 가 영원히 거짓이 되고,
+      //    이 보호가 조용히 죽는다(테스트도 못 잡는다). 계약을 바꾸려면 `!== true` 로 뒤집어라.
       if (typeof onBefore === 'function') {
         let beforeOk;
         try {

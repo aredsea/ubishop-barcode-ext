@@ -915,7 +915,27 @@ test('G11(실행검증): before 스냅샷 기록이 실패하면 저장 클릭�
   assert.strictEqual(iframe._clickCount(), 0, 'before 를 못 남겼는데 저장 클릭이 나갔다(G11 회귀)');
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.status, 'not_applied', '클릭 전에 멈췄으므로 확실히 미반영이어야 한다');
-  assert.match(r.reason, /되돌릴 근거/);
+  // 🔴 '되돌릴 근거' 로 느슨하게 보면 appendPriceLog 실패 메시지에도 걸려 경로를 오인한다
+  // (두 문구가 같은 말로 끝난다). before 스냅샷 경로만 잡도록 좁힌다.
+  assert.match(r.reason, /원본 스냅샷 기록 실패/);
+});
+test('G11(실행검증): onBefore 가 예외를 던져도 클릭 전에 중단한다(방어 분기가 실제로 동작함)', async () => {
+  // 이 분기는 현재 프로덕션 호출부에서는 도달 불가다(updatePriceLog·log 가 둘 다 내부
+  // try/catch). 그래서 테스트 없이 두면 "catch 를 beforeOk = true 로 치환" 하는 변이가
+  // 살아남는다(Opus 4라운드 실측). processOneItem 을 직접 불러 분기를 실행시킨다.
+  resetFetch(); setServerFields(GOOD_FIELDS);
+  const iframe = makeScenario({
+    initialFields: GOOD_FIELDS,
+    onClick(ctx) { ctx.succeedTo(GOOD_LANDING, 2); }
+  });
+  const r = await processOneItem(iframe, '7646', '900,000', 60, () => {
+    throw new Error('스냅샷 기록 중 예외(TEST)');
+  });
+  assert.strictEqual(iframe._clickCount(), 0, 'onBefore 가 던졌는데 저장 클릭이 나갔다');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'not_applied');
+  assert.match(r.reason, /원본 스냅샷 기록 실패/);
+  assert.match(r.reason, /스냅샷 기록 중 예외/, '예외 메시지가 사유에 실려야 한다');
 });
 
 /* ==========================================================================
