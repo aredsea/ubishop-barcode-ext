@@ -44,6 +44,14 @@
     });
   }
 
+  // 인쇄 성공 후 목록의 체크를 전부 해제한다(개별 idx 전부 + 전체선택 all).
+  // 페이지의 checkAll()은 토글이라 상태에 따라 오히려 전부 켜버릴 수 있어 부르지 않고
+  // checked=false를 직접 쓴다. root를 인자로 받아 테스트에서 실제 DOM 없이 검증한다.
+  function clearBarPrintSelection(root) {
+    const boxes = [...root.querySelectorAll('input[name="idx"], input[name="all"]')];
+    boxes.forEach(b => { b.checked = false; });
+  }
+
   async function sendBarPrintReplacement() {
     try {
       window.UBOverlay && window.UBOverlay.show('인쇄 준비 중…');
@@ -68,6 +76,7 @@
         }
       } else {
         log('인쇄 완료', resp.result);
+        clearBarPrintSelection(document);
       }
     } catch (e) {
       window.UBOverlay && window.UBOverlay.hide();
