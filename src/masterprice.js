@@ -567,6 +567,12 @@
     .ub-mp-btn-ghost:disabled { background: #fff; color: #b7bec7; border-color: #e5e7eb; }
     .ub-mp-count { color: #5b6472; font-size: 12.5px; }
     .ub-mp-progress { color: #0d8695; font-size: 12.5px; font-weight: 600; }
+    /* 이번 실행에서 실제로 값이 바뀐 셀. 유비샵 자체 배경(bg_1·bg_3)이 이미 깔려 있어
+       !important 로 덮는다. 서식(두 줄·회색 괄호)은 건드리지 않고 배경·테두리만 얹는다. */
+    td.ub-mp-updated {
+      background: #e6f7f9 !important;
+      box-shadow: inset 0 0 0 2px #4abcc7;
+    }
   `;
   function injectStyles() {
     if (document.getElementById(TOOLBAR_STYLE_ID)) return;
@@ -930,42 +936,76 @@
     }
   }
 
-  // 목록 셀을 원래 셀과 '같은 표기 형식'으로만 되돌려 쓴다. 2품위 상품은 "740,920(495,598)"
-  // 처럼 오므로, 원래가 이중 표기였는데 짝이 없으면 아예 건드리지 않는다(형식을 깨뜨려
-  // 정보가 사라지는 것보다 낡은 값이 남는 편이 낫다 — 어차피 로그와 서버가 정본이다).
-  function formatLikeCell(currentText, first, second) {
+  // 목록 셀에 값을 써 넣는다 — 🔴 마크업을 새로 만들지 않고 **기존 구조 안의 값만** 바꾼다.
+  // 실제 목록 구조(2026-08-05 실측):
+  //   시세             : 순수 텍스트 노드(자식 엘리먼트 없음)
+  //   입고공급가·판매가 : <span class="f_bold">740,920</span><br><span class="f_gray_bold">(495,598)</span>
+  //                     1품위 상품도 구조는 같고 f_gray_bold 가 비어 있을 뿐이다.
+  // 🔴 textContent 로 셀을 통째로 덮으면 두 줄·회색 괄호 서식이 사라져 그 행만 딴판이 된다
+  //   (실제로 당했다 — 사용자가 "형식이 이상해졌다"고 지적). 그래서 span 안쪽만 갈아끼운다.
+  // 모르는 구조(자식 엘리먼트는 있는데 f_bold 가 없다)면 아예 건드리지 않는다 — 낡은 값이
+  // 남는 편이 서식을 깨뜨리는 것보다 낫다(로그와 서버가 정본이다).
+  function putCellValue(cell, first, second) {
+    if (!cell) return false;
     const f = (first == null ? '' : String(first)).trim();
-    if (!f) return null;
-    const cur = splitDualValue(currentText);
-    const wasDual = !!(cur && cur.second != null && String(cur.second) !== '');
-    if (!wasDual) return f;
-    const s = (second == null ? '' : String(second)).trim();
-    return s ? (f + '(' + s + ')') : null;
+    if (!f) return false;
+    const bold = cell.querySelector ? cell.querySelector('.f_bold') : null;
+    if (bold) {
+      bold.textContent = f;
+      const gray = cell.querySelector('.f_gray_bold');
+      if (gray) {
+        const s = (second == null ? '' : String(second)).trim();
+        gray.textContent = s ? ('(' + s + ')') : '';
+      }
+      return true;
+    }
+    if (cell.children && cell.children.length) return false;   // 모르는 마크업 — 손대지 않는다
+    cell.textContent = f;
+    return true;
   }
 
-  // 저장에 성공한 행의 시세·입고공급가·판매가 셀을 서버에서 확인된 값으로 갱신한다.
-  // 페이지를 다시 조회하지 않으므로 선택·스크롤이 유지되고, 이 ERP 의 느린 검색을 다시
-  // 타지 않는다. 값의 출처가 serverAfter(재조회 결과)라 화면과 DB 가 어긋나지 않는다.
+  // 저장에 성공한 행의 시세·입고공급가·판매가 셀을 서버에서 확인된 값으로 갱신하고, 바뀐
+  // 셀에 강조 클래스를 붙인다. 페이지를 다시 조회하지 않으므로 선택·스크롤이 유지되고, 이
+  // ERP 의 느린 검색을 다시 타지 않는다. 값의 출처가 serverAfter(재조회 결과)라 화면과 DB 가
+  // 어긋나지 않는다.
   function updateListRow(row, goldFormatted, serverAfter) {
     if (!row || !row.cells || !serverAfter) return false;
-    let touched = false;
     try {
-      const put = function (origIdx, text) {
-        if (text == null) return;
-        const cell = row.cells[1 + origIdx];   // 체크박스가 0 에 삽입돼 있어 +1
-        if (!cell) return;
-        cell.textContent = text;
-        touched = true;
-      };
-      const supplyCell = row.cells[1 + ORIG_COL.supply];
-      const saleCell = row.cells[1 + ORIG_COL.sale];
-      put(ORIG_COL.price, (goldFormatted == null ? null : String(goldFormatted)));
-      put(ORIG_COL.supply, formatLikeCell(supplyCell ? supplyCell.textContent : '',
-        serverAfter.inputSupplyPrice1, serverAfter.inputSupplyPrice2));
-      put(ORIG_COL.sale, formatLikeCell(saleCell ? saleCell.textContent : '',
-        serverAfter.salePrice1, serverAfter.salePrice2));
-    } catch (_) { return touched; }
-    return touched;
+      const price = row.cells[1 + ORIG_COL.price];    // 체크박스가 0 에 삽입돼 있어 +1
+      const supply = row.cells[1 + ORIG_COL.supply];
+      const sale = row.cells[1 + ORIG_COL.sale];
+      const a = putCellValue(price, goldFormatted, '');
+      const b = putCellValue(supply, serverAfter.inputSupplyPrice1, serverAfter.inputSupplyPrice2);
+      const c = putCellValue(sale, serverAfter.salePrice1, serverAfter.salePrice2);
+      // 실제로 값을 바꾼 셀에만 강조를 붙인다 — 안 바뀐 셀까지 칠하면 무엇이 바뀌었는지
+      // 오히려 안 보인다.
+      [[price, a], [supply, b], [sale, c]].forEach(function (pair) {
+        if (!pair[1] || !pair[0] || !pair[0].classList) return;
+        try { pair[0].classList.add('ub-mp-updated'); } catch (_) {}
+      });
+      return a || b || c;
+    } catch (_) { return false; }
+  }
+
+  // 입력창 천단위 콤마 — 900000 을 치면 900,000 으로 보이게 한다(사용자 요구).
+  // 커서는 '앞쪽 숫자 개수'를 기준으로 되돌려, 중간을 고쳐도 끝으로 튀지 않는다.
+  // 🔴 Number 로 변환하지 않고 문자열 자릿수로 콤마를 넣는다 — 아주 긴 입력을 Number 로
+  // 돌리면 정밀도 때문에 사용자가 친 것과 다른 값이 보인다(값 자체의 거부는 parsePriceInput
+  // 이 따로 한다). 콤마는 parsePriceInput 이 벗겨 읽으므로 검증에는 영향이 없다.
+  function formatPriceTyping(raw, caret) {
+    const s = String(raw == null ? '' : raw);
+    const pos = (typeof caret === 'number' && caret >= 0) ? Math.min(caret, s.length) : s.length;
+    const digitsBefore = s.slice(0, pos).replace(/\D/g, '').length;
+    const digits = s.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+    if (!digits) return { value: '', caret: 0 };
+    const value = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    let i = 0, seen = 0;
+    while (i < value.length && seen < digitsBefore) {
+      const ch = value.charCodeAt(i);
+      if (ch >= 48 && ch <= 57) seen++;
+      i++;
+    }
+    return { value: value, caret: i };
   }
 
   // 전체 실행 — 검증 → 확인 → 1건 시범(+서버 재조회 자동 비교, F6/G2) → 사용자 승인 →
@@ -1122,7 +1162,7 @@
     bar.className = 'ub-mp-bar';
     bar.innerHTML =
       '<span class="ub-mp-count"></span>' +
-      '<label>새 적용시세 <input type="text" class="ub-mp-input" placeholder="예: 900000" inputmode="numeric"></label>' +
+      '<label>새 적용시세 <input type="text" class="ub-mp-input" placeholder="예: 900,000" inputmode="numeric"></label>' +
       '<button type="button" class="ub-mp-btn">일괄 변경</button>' +
       '<button type="button" class="ub-mp-btn ub-mp-btn-ghost">처리 로그 보기</button>' +
       '<span class="ub-mp-progress"></span>';
@@ -1136,6 +1176,15 @@
 
     function refreshCount() { countEl.textContent = getSelectedItems(table).length + '건 선택됨'; }
     refreshCount();
+
+    // 입력하는 즉시 천단위 콤마를 넣는다(900000 → 900,000). 커서는 앞쪽 숫자 개수 기준으로
+    // 되돌려 중간 수정 시에도 끝으로 튀지 않는다.
+    inputEl.addEventListener('input', function () {
+      const r = formatPriceTyping(inputEl.value, inputEl.selectionStart);
+      if (r.value === inputEl.value) return;
+      inputEl.value = r.value;
+      try { inputEl.setSelectionRange(r.caret, r.caret); } catch (_) {}
+    });
 
     table.addEventListener('change', (e) => {
       const t = e.target;

@@ -123,7 +123,7 @@ const MAIN_NAMES = [
   'runSequential', 'augmentMasterTable', 'getSelectedItems',
   'escHtml', 'logFieldDisplay', 'buildLogViewerHtml',
   'modifyFormUrl', 'waitForLoadOrTimeout', 'waitForLoadOrDialog', 'readFormSnapshot', 'refetchFieldsForSeq', 'findSaveButton',
-  'ceilToUnit', 'applySaleRounding', 'formatLikeCell', 'updateListRow',
+  'ceilToUnit', 'applySaleRounding', 'putCellValue', 'updateListRow', 'formatPriceTyping',
   'processOneItem', 'readPriceLogListOrRecover', 'appendPriceLog', 'updatePriceLog', 'processItemWithLog'
 ];
 
@@ -146,13 +146,54 @@ const {
   validateBulkInput, numOrNull, validateRecalc, serverValueMatches, verifyAgainstServer, decideTrialContinuation,
   runSequential, augmentMasterTable, getSelectedItems,
   escHtml, logFieldDisplay, buildLogViewerHtml, refetchFieldsForSeq, findSaveButton,
-  ceilToUnit, applySaleRounding, formatLikeCell, updateListRow,
+  ceilToUnit, applySaleRounding, putCellValue, updateListRow, formatPriceTyping,
   processOneItem, readPriceLogListOrRecover, appendPriceLog, updatePriceLog, processItemWithLog,
   ORIG_COL
 } = sandbox;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+
+/* ---- 가짜 목록 셀 ----
+ *  🔴 실제 마크업을 그대로 흉내낸다(2026-08-05 라이브 실측):
+ *    입고공급가·판매가 = <span class="f_bold">740,920</span><br><span class="f_gray_bold">(495,598)</span>
+ *    시세             = 순수 텍스트(자식 엘리먼트 없음)
+ *  셀의 textContent 는 일부러 '(원본유지)' 로 둬서, 코드가 셀을 통째로 덮으면 테스트가
+ *  즉시 알아채게 한다 — 그 덮어쓰기가 바로 서식이 깨졌던 원인이다.
+ * ------------------------------------------------------------------------ */
+function makeClassList(set) {
+  return { add(c) { set.add(c); }, remove(c) { set.delete(c); }, contains(c) { return set.has(c); } };
+}
+function makeSpanCell(first, second) {
+  const bold = { className: 'f_bold', textContent: String(first) };
+  const gray = { className: 'f_gray_bold', textContent: second ? '(' + second + ')' : '' };
+  const set = new Set();
+  return {
+    children: [bold, gray], _bold: bold, _gray: gray, _classes: set,
+    classList: makeClassList(set),
+    textContent: '(원본유지)',
+    querySelector(sel) {
+      if (sel === '.f_bold') return bold;
+      if (sel === '.f_gray_bold') return gray;
+      return null;
+    }
+  };
+}
+function makePlainCell(text) {
+  const set = new Set();
+  return {
+    children: [], _classes: set, classList: makeClassList(set),
+    textContent: String(text), querySelector() { return null; }
+  };
+}
+function makeRowCells(price, supply, sale) {
+  const cells = [];
+  for (let i = 0; i < 22; i++) cells.push(makePlainCell(''));
+  cells[1 + ORIG_COL.price] = makePlainCell(price);
+  cells[1 + ORIG_COL.supply] = makeSpanCell(supply[0], supply[1]);
+  cells[1 + ORIG_COL.sale] = makeSpanCell(sale[0], sale[1]);
+  return cells;
+}
 
 /* ==========================================================================
  *  가짜 iframe 하네스 — processOneItem 을 실제 실행 검증하기 위한 최소 iframe/문서/창.
@@ -944,35 +985,76 @@ test('applySaleRounding: 판매가 필드가 없거나 비숫자면 아무것도
   assert.strictEqual(form.elements.salePrice1.value, '');
   assert.strictEqual(form.elements.salePrice2.value, '-');
 });
-test('formatLikeCell: 원래 표기 형식을 유지한다(단일↔이중)', () => {
-  assert.strictEqual(formatLikeCell('250,000', '260,000', ''), '260,000');
-  assert.strictEqual(formatLikeCell('2,200,000(1,850,000)', '2,300,000', '1,900,000'), '2,300,000(1,900,000)');
-  assert.strictEqual(formatLikeCell('2,200,000(1,850,000)', '2,300,000', ''), null,
-    '이중 표기였는데 짝이 없으면 형식이 깨지므로 건드리지 않는다');
-  assert.strictEqual(formatLikeCell('250,000', '', ''), null);
+test('putCellValue: span 안쪽 값만 갈아끼우고 두 줄·회색 괄호 서식은 보존한다', () => {
+  const cell = makeSpanCell('740,920', '495,598');
+  assert.strictEqual(putCellValue(cell, '814,012', '545,158'), true);
+  assert.strictEqual(cell._bold.textContent, '814,012');
+  assert.strictEqual(cell._gray.textContent, '(545,158)', '괄호 서식이 유지돼야 한다');
+  assert.strictEqual(cell.textContent, '(원본유지)', '셀 자체를 textContent 로 덮으면 서식이 날아간다');
 });
-test('updateListRow: 시세·입고공급가·판매가 셀을 서버 확인값으로 갱신한다(체크박스 +1 오프셋)', () => {
-  const cells = [];
-  for (let i = 0; i < 22; i++) cells.push({ textContent: '' });
-  cells[1 + ORIG_COL.price].textContent = '900,000';
-  cells[1 + ORIG_COL.supply].textContent = '740,920(495,598)';
-  cells[1 + ORIG_COL.sale].textContent = '2,200,000(1,850,000)';
-  const row = { cells: cells };
-  const ok = updateListRow(row, '990,000', {
+test('putCellValue: 1품위 상품은 회색 스팬을 빈 칸으로 둔다(다른 행과 같은 구조)', () => {
+  const cell = makeSpanCell('36,000', '');
+  assert.strictEqual(putCellValue(cell, '40,000', ''), true);
+  assert.strictEqual(cell._bold.textContent, '40,000');
+  assert.strictEqual(cell._gray.textContent, '');
+});
+test('putCellValue: 순수 텍스트 셀(시세)은 그대로 textContent 로 쓴다', () => {
+  const cell = makePlainCell('900,000');
+  assert.strictEqual(putCellValue(cell, '990,000', ''), true);
+  assert.strictEqual(cell.textContent, '990,000');
+});
+test('putCellValue: 모르는 마크업이면 건드리지 않는다(서식 파괴 방지)', () => {
+  const cell = { children: [{ className: 'unknown' }], textContent: '원본', querySelector() { return null; } };
+  assert.strictEqual(putCellValue(cell, '990,000', ''), false);
+  assert.strictEqual(cell.textContent, '원본');
+});
+test('updateListRow: 세 열을 갱신하고 바뀐 셀에만 강조 클래스를 붙인다', () => {
+  const cells = makeRowCells('900,000', ['740,920', '495,598'], ['2,200,000', '1,850,000']);
+  const ok = updateListRow({ cells: cells }, '990,000', {
     goldPrice: '990,000',
     inputSupplyPrice1: '814,012', inputSupplyPrice2: '545,158',
     salePrice1: '2,420,000', salePrice2: '2,040,000'
   });
   assert.strictEqual(ok, true);
   assert.strictEqual(cells[1 + ORIG_COL.price].textContent, '990,000');
-  assert.strictEqual(cells[1 + ORIG_COL.supply].textContent, '814,012(545,158)');
-  assert.strictEqual(cells[1 + ORIG_COL.sale].textContent, '2,420,000(2,040,000)');
+  assert.strictEqual(cells[1 + ORIG_COL.supply]._bold.textContent, '814,012');
+  assert.strictEqual(cells[1 + ORIG_COL.supply]._gray.textContent, '(545,158)');
+  assert.strictEqual(cells[1 + ORIG_COL.sale]._bold.textContent, '2,420,000');
+  [ORIG_COL.price, ORIG_COL.supply, ORIG_COL.sale].forEach((i) => {
+    assert.ok(cells[1 + i]._classes.has('ub-mp-updated'), '강조 클래스가 붙어야 한다: 열 ' + i);
+  });
+  // 손대지 않은 열에는 강조가 붙지 않는다
+  assert.ok(!cells[1 + ORIG_COL.itemCode]._classes.has('ub-mp-updated'));
 });
 test('updateListRow: serverAfter 가 없으면 아무것도 바꾸지 않는다(추측으로 화면을 쓰지 않는다)', () => {
-  const cells = [];
-  for (let i = 0; i < 22; i++) cells.push({ textContent: 'X' });
+  const cells = makeRowCells('900,000', ['740,920', '495,598'], ['2,200,000', '1,850,000']);
   assert.strictEqual(updateListRow({ cells: cells }, '990,000', null), false);
-  assert.strictEqual(cells[1 + ORIG_COL.price].textContent, 'X');
+  assert.strictEqual(cells[1 + ORIG_COL.price].textContent, '900,000');
+  assert.ok(!cells[1 + ORIG_COL.price]._classes.has('ub-mp-updated'));
+});
+
+/* ── 입력창 천단위 콤마 ─────────────────────────────────────────────────── */
+test('formatPriceTyping: 900000 → 900,000 (사용자 요구)', () => {
+  assert.deepStrictEqual(formatPriceTyping('900000', 6), { value: '900,000', caret: 7 });
+  assert.strictEqual(formatPriceTyping('1234567', 7).value, '1,234,567');
+  assert.strictEqual(formatPriceTyping('900,000', 7).value, '900,000', '이미 콤마가 있으면 그대로');
+});
+test('formatPriceTyping: 숫자 아닌 문자는 버리고 앞 0 은 정리한다', () => {
+  assert.strictEqual(formatPriceTyping('9a0b0c000', 9).value, '900,000');
+  assert.strictEqual(formatPriceTyping('000900000', 9).value, '900,000');
+  assert.deepStrictEqual(formatPriceTyping('', 0), { value: '', caret: 0 });
+  assert.deepStrictEqual(formatPriceTyping('abc', 3), { value: '', caret: 0 });
+});
+test('formatPriceTyping: 커서가 앞쪽 숫자 개수를 따라간다(중간 수정 시 끝으로 안 튄다)', () => {
+  // "1234567" 에서 커서가 3번째 숫자 뒤(=pos 3) → "1,234,567" 에서도 숫자 3개 뒤
+  const r = formatPriceTyping('1234567', 3);
+  assert.strictEqual(r.value, '1,234,567');
+  assert.strictEqual(r.value.slice(0, r.caret).replace(/\D/g, '').length, 3);
+});
+test('formatPriceTyping: 아주 긴 입력도 정밀도 손실 없이 자릿수를 보존한다', () => {
+  const long = '9'.repeat(25);
+  assert.strictEqual(formatPriceTyping(long, long.length).value.replace(/,/g, ''), long,
+    'Number 로 변환하면 뭉개져 사용자가 친 것과 다른 값이 보인다');
 });
 
 /* ── 판매가고정 강제 재계산(2026-08-05 라이브 실측 반영) ───────────────── */
@@ -1281,17 +1363,9 @@ test('G8(실행검증): processOneItem 내부(G2)는 통과했어도 표시용 �
  *  나머지 건 **양쪽 다** 갱신되는지 실제 실행으로 확인한다. */
 test('목록 갱신(배선): 저장 성공한 행의 시세·입고공급가·판매가 셀이 서버 확인값으로 바뀐다', async () => {
   resetLS(); resetFetch();
-  function makeRow(price, supply, sale) {
-    const cells = [];
-    for (let i = 0; i < 22; i++) cells.push({ textContent: '' });
-    cells[1 + ORIG_COL.price].textContent = price;
-    cells[1 + ORIG_COL.supply].textContent = supply;
-    cells[1 + ORIG_COL.sale].textContent = sale;
-    return { cells: cells };
-  }
   const rows = [
-    makeRow('800,000', '740,920(495,598)', '2,200,000(1,850,000)'),   // 시범 1건
-    makeRow('800,000', '565,600(385,935)', '1,680,000(1,400,000)')    // 나머지 1건
+    { cells: makeRowCells('800,000', ['740,920', '495,598'], ['2,200,000', '1,850,000']) },   // 시범 1건
+    { cells: makeRowCells('800,000', ['565,600', '385,935'], ['1,680,000', '1,400,000']) }    // 나머지 1건
   ];
   const items = [
     { seq: '7646', itemCode: 'A', row: rows[0] },
@@ -1302,20 +1376,21 @@ test('목록 갱신(배선): 저장 성공한 행의 시세·입고공급가·�
     fakeLocalStorage, makeFakeFetchOk(fieldsToHtml(GOOD_FIELDS)));
   await box.runBulkUpdate(null, items, '900,000', { setBusy() {}, setProgress() {} });
 
-  const 기대공급가 = GOOD_FIELDS.inputSupplyPrice1 + '(' + GOOD_FIELDS.inputSupplyPrice2 + ')';
-  const 기대판매가 = GOOD_FIELDS.salePrice1 + '(' + GOOD_FIELDS.salePrice2 + ')';
   rows.forEach((r, i) => {
     const 위치 = (i === 0 ? '시범 행' : '나머지 행');
     assert.strictEqual(r.cells[1 + ORIG_COL.price].textContent, '900,000', 위치 + ' 시세가 안 바뀌었다');
-    assert.strictEqual(r.cells[1 + ORIG_COL.supply].textContent, 기대공급가, 위치 + ' 입고공급가가 안 바뀌었다');
-    assert.strictEqual(r.cells[1 + ORIG_COL.sale].textContent, 기대판매가, 위치 + ' 판매가가 안 바뀌었다');
+    assert.strictEqual(r.cells[1 + ORIG_COL.supply]._bold.textContent, GOOD_FIELDS.inputSupplyPrice1,
+      위치 + ' 입고공급가가 안 바뀌었다');
+    assert.strictEqual(r.cells[1 + ORIG_COL.supply]._gray.textContent, '(' + GOOD_FIELDS.inputSupplyPrice2 + ')',
+      위치 + ' 입고공급가 둘째 값 서식이 깨졌다');
+    assert.strictEqual(r.cells[1 + ORIG_COL.sale]._bold.textContent, GOOD_FIELDS.salePrice1,
+      위치 + ' 판매가가 안 바뀌었다');
+    assert.ok(r.cells[1 + ORIG_COL.sale]._classes.has('ub-mp-updated'), 위치 + ' 강조가 안 붙었다');
   });
 });
 test('목록 갱신(배선): 저장하지 못한 행은 건드리지 않는다(반영되지 않은 값을 화면에 쓰지 않는다)', async () => {
   resetLS(); resetFetch();
-  const cells = [];
-  for (let i = 0; i < 22; i++) cells.push({ textContent: '' });
-  cells[1 + ORIG_COL.price].textContent = '800,000';
+  const cells = makeRowCells('800,000', ['740,920', '495,598'], ['2,200,000', '1,850,000']);
   const row = { cells: cells };
   // 시범 1건이 클릭 전에 실패하도록 — 저장 버튼을 못 찾는 상황
   const iframe = makeScenario({ initialFields: GOOD_FIELDS, noSaveButton: true });
