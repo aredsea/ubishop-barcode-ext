@@ -317,10 +317,18 @@
   /* ====================================================================== *
    *  출처 C — 상품입고 페이지(inputItemWriteForm.do) 목록 스크래핑
    * ====================================================================== */
-  function isInboundPage() {
-    const cfg = window.UBCFG.inbound;
-    return !!(cfg && cfg.match && cfg.match.test(location.pathname));
+  // 목록 스크래핑 대상 페이지의 설정을 고른다 — 상품입고(inbound)와 메인석입고(inboundStone)는
+  // 열 구성이 거의 같지만 판매가 열이 다르다. 경로로 갈라 해당 cell 맵을 쓴다.
+  // 새 입고 화면이 늘면 config 에 항목을 추가하고 이 목록에 이름만 넣으면 된다.
+  const INBOUND_KEYS = ['inbound', 'inboundStone'];
+  function inboundCfg() {
+    for (const key of INBOUND_KEYS) {
+      const cfg = window.UBCFG[key];
+      if (cfg && cfg.match && cfg.match.test(location.pathname)) return cfg;
+    }
+    return null;
   }
+  function isInboundPage() { return !!inboundCfg(); }
 
   // 입고장 헤더의 매입처명(행별 열이 없어 시트 단위). 다이아 지표(본디/캐럿)용 — best-effort.
   let _inboundVendor;
@@ -348,7 +356,7 @@
   }
 
   function scrapeInboundRow(cb) {
-    const C = window.UBCFG.inbound.cell;
+    const C = (inboundCfg() || window.UBCFG.inbound).cell;
     const tr = cb.closest('tr');
     const cells = [...tr.children];
     const lines = i => ((cells[i] && cells[i].innerText) || '')
