@@ -88,6 +88,9 @@
   const LOG_CAP = 2000;
   const SAVE_TIMEOUT_MS = 30000;
   const MAX_GOLD_PRICE = 100000000;   // 1억 — 상식적 상한(G9). 실제 금 시세는 g 당 수십만원대라 이보다 훨씬 작다.
+  // 판매가 올림 단위(사용자 확정 2026-08-05) — 만원. ERP 계산 결과 786,000 → 790,000.
+  // 입고공급가에는 적용하지 않는다(원가 성격이라 이익율 계산이 틀어진다).
+  const SALE_ROUND_UNIT = 10000;
 
   /* ==========================================================================
    *  1) 순수 헬퍼 — DOM/iframe 비의존. tests/masterprice.test.js 가 이름으로
@@ -383,7 +386,12 @@
         listSupply = splitDualValue(row.cells[1 + ORIG_COL.supply].textContent);
         listSale = splitDualValue(row.cells[1 + ORIG_COL.sale].textContent);
       } catch (_) {}
-      out.push({ seq: seq, itemCode: itemCode, listPrice: listPrice, listSupply: listSupply, listSale: listSale });
+      // row 는 저장 성공 후 목록 셀을 갱신할 때만 쓴다. 로그에는 들어가지 않는다
+      // (processItemWithLog 가 base 로 필요한 필드만 골라 담는다 — DOM 노드가 로그에 섞이면
+      //  JSON 직렬화가 깨진다).
+      let rowRef = null;
+      try { rowRef = boxes[i].closest('tr'); } catch (_) {}
+      out.push({ seq: seq, itemCode: itemCode, listPrice: listPrice, listSupply: listSupply, listSale: listSale, row: rowRef });
     }
     return out;
   }
@@ -662,6 +670,40 @@
     };
   }
 
+  // 판매가 올림 — 콤마 문자열을 받아 unit 배수로 올린 '수'를 돌려준다. 비숫자·빈 값·0 이하·
+  // 안전정수 초과는 null 을 돌려 호출부가 그 필드를 건드리지 않게 한다. 우리가 값을 만들어
+  // 넣었다가 비숫자/0 이 되면 F2 재계산 검증이 저장을 막는다 — 애초에 손대지 않는 쪽이 옳다.
+  function ceilToUnit(raw, unit) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return null;
+    const stripped = s.replace(/,/g, '');
+    if (!/^\d+$/.test(stripped)) return null;
+    const n = Number(stripped);
+    if (!Number.isSafeInteger(n) || n <= 0) return null;
+    if (!(unit > 0)) return null;
+    const up = Math.ceil(n / unit) * unit;
+    return Number.isSafeInteger(up) ? up : null;
+  }
+
+  // 폼의 판매가1·2 를 unit 배수로 올린다. calItemPrice 가 끝난 뒤·recalced 스냅샷 전에 부른다
+  // (그래야 올림 결과가 그대로 저장되고 G2 서버 대조의 기준값이 된다). 바뀐 항목만 돌려준다.
+  function applySaleRounding(form, unit) {
+    const changed = {};
+    if (!form || !form.elements) return changed;
+    ['salePrice1', 'salePrice2'].forEach(function (name) {
+      const el = form.elements[name];
+      if (!el) return;
+      const up = ceilToUnit(el.value, unit);
+      if (up == null) return;
+      const next = formatComma(up);
+      if (next !== String(el.value)) {
+        changed[name] = { from: String(el.value), to: next };
+        el.value = next;
+      }
+    });
+    return changed;
+  }
+
   // 🔴 저장 버튼 찾기 — form.elements 로는 **절대** 못 찾는다. 함정이 둘 겹쳐 있다
   // (2026-08-05 라이브 실측, seq 7618):
   //   ① 저장 버튼이 <input type="image"> 다. HTML 명세상 form.elements(HTMLFormControlsCollection)
@@ -768,6 +810,9 @@
         // 예외로 빠져나가도 폼에 'N' 이 남지 않게 한다. 남은 채 저장되면 상품 속성이 바뀐다.
         if (fixEl) fixEl.value = fixOrig;
       }
+      // 판매가 만원 단위 올림(사용자 요구) — recalced 스냅샷 '전에' 적용해야 이 값이 그대로
+      // 저장되고 G2 서버 대조의 기준이 된다. 스냅샷 뒤에 올리면 화면·로그·서버가 어긋난다.
+      applySaleRounding(form, SALE_ROUND_UNIT);
       const recalced = readFormSnapshot(doc);
 
       // F2 — 계산식은 이식하지 않고 불변식만 검사한다. 걸리면 클릭하지 않는다(확실히 미반영).
@@ -819,7 +864,8 @@
       }
       if (!verify.ok) return { ok: false, status: 'unknown', reason: '저장 후 서버 대조 실패 — ' + verify.reason, before: before, recalced: recalced };
 
-      return { ok: true, status: 'applied', before: before, recalced: recalced, resultUrl: resultUrl };
+      // serverAfter 를 실어 보낸다 — 호출부가 목록 셀을 '서버에서 확인된 값'으로 갱신한다.
+      return { ok: true, status: 'applied', before: before, recalced: recalced, resultUrl: resultUrl, serverAfter: serverAfter };
     } catch (e) {
       // G7 — 클릭을 실제로 시도했는지에 따라 상태를 가른다. 서버 쓰기가 시작되지도 않은
       // 예외까지 전부 unknown 으로 보내면 진짜 unknown 의 경고가 무뎌진다.
@@ -884,6 +930,44 @@
     }
   }
 
+  // 목록 셀을 원래 셀과 '같은 표기 형식'으로만 되돌려 쓴다. 2품위 상품은 "740,920(495,598)"
+  // 처럼 오므로, 원래가 이중 표기였는데 짝이 없으면 아예 건드리지 않는다(형식을 깨뜨려
+  // 정보가 사라지는 것보다 낡은 값이 남는 편이 낫다 — 어차피 로그와 서버가 정본이다).
+  function formatLikeCell(currentText, first, second) {
+    const f = (first == null ? '' : String(first)).trim();
+    if (!f) return null;
+    const cur = splitDualValue(currentText);
+    const wasDual = !!(cur && cur.second != null && String(cur.second) !== '');
+    if (!wasDual) return f;
+    const s = (second == null ? '' : String(second)).trim();
+    return s ? (f + '(' + s + ')') : null;
+  }
+
+  // 저장에 성공한 행의 시세·입고공급가·판매가 셀을 서버에서 확인된 값으로 갱신한다.
+  // 페이지를 다시 조회하지 않으므로 선택·스크롤이 유지되고, 이 ERP 의 느린 검색을 다시
+  // 타지 않는다. 값의 출처가 serverAfter(재조회 결과)라 화면과 DB 가 어긋나지 않는다.
+  function updateListRow(row, goldFormatted, serverAfter) {
+    if (!row || !row.cells || !serverAfter) return false;
+    let touched = false;
+    try {
+      const put = function (origIdx, text) {
+        if (text == null) return;
+        const cell = row.cells[1 + origIdx];   // 체크박스가 0 에 삽입돼 있어 +1
+        if (!cell) return;
+        cell.textContent = text;
+        touched = true;
+      };
+      const supplyCell = row.cells[1 + ORIG_COL.supply];
+      const saleCell = row.cells[1 + ORIG_COL.sale];
+      put(ORIG_COL.price, (goldFormatted == null ? null : String(goldFormatted)));
+      put(ORIG_COL.supply, formatLikeCell(supplyCell ? supplyCell.textContent : '',
+        serverAfter.inputSupplyPrice1, serverAfter.inputSupplyPrice2));
+      put(ORIG_COL.sale, formatLikeCell(saleCell ? saleCell.textContent : '',
+        serverAfter.salePrice1, serverAfter.salePrice2));
+    } catch (_) { return touched; }
+    return touched;
+  }
+
   // 전체 실행 — 검증 → 확인 → 1건 시범(+서버 재조회 자동 비교, F6/G2) → 사용자 승인 →
   // 나머지 순차. 트라이얼 정지·최종 확인은 confirm()/alert() 네이티브 dialog 를 쓴다(이
   // 세션에서 커스텀 모달의 실제 렌더링을 확인할 수 없어 신뢰성을 우선했다). 진행률 표시는
@@ -921,6 +1005,9 @@
           (uncertain ? '\n\n주의: 이 1건은 반영 여부가 불확실합니다. 직접 확인하세요.' : '\n\n이 1건은 반영되지 않았습니다.'));
         return;
       }
+
+      // 시범 1건이 반영됐으니 그 행을 먼저 갱신한다(시범 정지 화면에서 바로 보이도록).
+      updateListRow(items[0].row, priceFormatted, r0.serverAfter);
 
       let serverAfter = null, serverErr = '';
       try { serverAfter = await refetchFieldsForSeq(items[0].seq); }
@@ -967,7 +1054,13 @@
       const rest = items.slice(1);
       const summary = await runSequential(
         rest,
-        (item) => processItemWithLog(iframe, item, priceFormatted, v.price),
+        async (item) => {
+          const r = await processItemWithLog(iframe, item, priceFormatted, v.price);
+          // 한 건이 확실히 반영될 때마다 그 행을 즉시 갱신한다 — 배치가 중간에 멈춰도
+          // 어디까지 바뀌었는지 화면에 그대로 남는다.
+          if (r && r.ok) updateListRow(item.row, priceFormatted, r.serverAfter);
+          return r;
+        },
         (item, idx, total) => ui.setProgress(idx + 2, items.length, item.itemCode)
       );
 

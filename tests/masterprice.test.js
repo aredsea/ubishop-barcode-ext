@@ -43,7 +43,7 @@ assert.ok(ORIG_COL_SRC, 'masterprice.js 에서 ORIG_COL 상수를 찾지 못했�
 // 테스트가 있으므로 no-op 스텁으로 대체하지 않는다.
 const LOG_SRC = SRC.match(/^[ \t]*const log = .*$/m);
 assert.ok(LOG_SRC, 'masterprice.js 에서 log 정의를 찾지 못했습니다');
-const CONST_LINES = ['LOG_KEY', 'LOG_CAP', 'SAVE_TIMEOUT_MS', 'MAX_GOLD_PRICE']
+const CONST_LINES = ['LOG_KEY', 'LOG_CAP', 'SAVE_TIMEOUT_MS', 'MAX_GOLD_PRICE', 'SALE_ROUND_UNIT']
   .map(n => extractConstLine(SRC, n)).concat([LOG_SRC[0]]).join('\n');
 
 /* ---- 가짜 localStorage ----
@@ -123,6 +123,7 @@ const MAIN_NAMES = [
   'runSequential', 'augmentMasterTable', 'getSelectedItems',
   'escHtml', 'logFieldDisplay', 'buildLogViewerHtml',
   'modifyFormUrl', 'waitForLoadOrTimeout', 'waitForLoadOrDialog', 'readFormSnapshot', 'refetchFieldsForSeq', 'findSaveButton',
+  'ceilToUnit', 'applySaleRounding', 'formatLikeCell', 'updateListRow',
   'processOneItem', 'readPriceLogListOrRecover', 'appendPriceLog', 'updatePriceLog', 'processItemWithLog'
 ];
 
@@ -145,6 +146,7 @@ const {
   validateBulkInput, numOrNull, validateRecalc, serverValueMatches, verifyAgainstServer, decideTrialContinuation,
   runSequential, augmentMasterTable, getSelectedItems,
   escHtml, logFieldDisplay, buildLogViewerHtml, refetchFieldsForSeq, findSaveButton,
+  ceilToUnit, applySaleRounding, formatLikeCell, updateListRow,
   processOneItem, readPriceLogListOrRecover, appendPriceLog, updatePriceLog, processItemWithLog,
   ORIG_COL
 } = sandbox;
@@ -229,7 +231,7 @@ function makeScenario(scenario) {
     btn.name = 'imageField22';
     btn.type = 'image';
     btn.form = doc.forms.form1;
-    doc._extra.push(btn);
+    if (!scenario.noSaveButton) doc._extra.push(btn);   // 저장 버튼 부재 상황 재현용
   }
   function emitLoad() { [...loadCbs].forEach((fn) => { try { fn(); } catch (_) {} }); }
 
@@ -909,6 +911,70 @@ test('F1(실행검증): 정상 응답이면 시간제한이 걸리지 않는다(
   assert.strictEqual(r.goldPrice, GOOD_FIELDS.goldPrice);
 });
 
+/* ── 판매가 만원 단위 올림 + 목록 셀 갱신(2026-08-05 사용자 요구) ───────── */
+test('ceilToUnit: 만원 단위 올림(사용자 확정 예시 786,000 → 790,000)', () => {
+  assert.strictEqual(ceilToUnit('786,000', 10000), 790000);
+  assert.strictEqual(ceilToUnit('573,000', 10000), 580000);
+  assert.strictEqual(ceilToUnit('790,000', 10000), 790000, '이미 만원 단위면 그대로');
+  assert.strictEqual(ceilToUnit('690,001', 10000), 700000);
+  assert.strictEqual(ceilToUnit('1', 10000), 10000);
+});
+test('ceilToUnit: 비숫자·빈값·0 이하는 null(그 필드를 건드리지 않는다)', () => {
+  [null, '', '   ', 'abc', '12a', '-5', '0'].forEach((bad) => {
+    assert.strictEqual(ceilToUnit(bad, 10000), null, '입력: ' + JSON.stringify(bad));
+  });
+  assert.strictEqual(ceilToUnit('99999999999999999999', 10000), null, '안전정수 초과');
+});
+test('applySaleRounding: 판매가1·2 만 올리고 시세·입고공급가는 건드리지 않는다', () => {
+  const form = { elements: {
+    goldPrice: { value: '990,000' },
+    inputSupplyPrice1: { value: '237,930' }, inputSupplyPrice2: { value: '173,418' },
+    salePrice1: { value: '786,000' }, salePrice2: { value: '573,000' }
+  } };
+  const changed = applySaleRounding(form, 10000);
+  assert.strictEqual(form.elements.salePrice1.value, '790,000');
+  assert.strictEqual(form.elements.salePrice2.value, '580,000');
+  assert.strictEqual(form.elements.goldPrice.value, '990,000', '시세는 불변');
+  assert.strictEqual(form.elements.inputSupplyPrice1.value, '237,930', '입고공급가는 불변(원가라 이익율 영향)');
+  assert.deepStrictEqual(Object.keys(changed).sort(), ['salePrice1', 'salePrice2']);
+});
+test('applySaleRounding: 판매가 필드가 없거나 비숫자면 아무것도 바꾸지 않는다', () => {
+  const form = { elements: { salePrice1: { value: '' }, salePrice2: { value: '-' } } };
+  assert.deepStrictEqual(applySaleRounding(form, 10000), {});
+  assert.strictEqual(form.elements.salePrice1.value, '');
+  assert.strictEqual(form.elements.salePrice2.value, '-');
+});
+test('formatLikeCell: 원래 표기 형식을 유지한다(단일↔이중)', () => {
+  assert.strictEqual(formatLikeCell('250,000', '260,000', ''), '260,000');
+  assert.strictEqual(formatLikeCell('2,200,000(1,850,000)', '2,300,000', '1,900,000'), '2,300,000(1,900,000)');
+  assert.strictEqual(formatLikeCell('2,200,000(1,850,000)', '2,300,000', ''), null,
+    '이중 표기였는데 짝이 없으면 형식이 깨지므로 건드리지 않는다');
+  assert.strictEqual(formatLikeCell('250,000', '', ''), null);
+});
+test('updateListRow: 시세·입고공급가·판매가 셀을 서버 확인값으로 갱신한다(체크박스 +1 오프셋)', () => {
+  const cells = [];
+  for (let i = 0; i < 22; i++) cells.push({ textContent: '' });
+  cells[1 + ORIG_COL.price].textContent = '900,000';
+  cells[1 + ORIG_COL.supply].textContent = '740,920(495,598)';
+  cells[1 + ORIG_COL.sale].textContent = '2,200,000(1,850,000)';
+  const row = { cells: cells };
+  const ok = updateListRow(row, '990,000', {
+    goldPrice: '990,000',
+    inputSupplyPrice1: '814,012', inputSupplyPrice2: '545,158',
+    salePrice1: '2,420,000', salePrice2: '2,040,000'
+  });
+  assert.strictEqual(ok, true);
+  assert.strictEqual(cells[1 + ORIG_COL.price].textContent, '990,000');
+  assert.strictEqual(cells[1 + ORIG_COL.supply].textContent, '814,012(545,158)');
+  assert.strictEqual(cells[1 + ORIG_COL.sale].textContent, '2,420,000(2,040,000)');
+});
+test('updateListRow: serverAfter 가 없으면 아무것도 바꾸지 않는다(추측으로 화면을 쓰지 않는다)', () => {
+  const cells = [];
+  for (let i = 0; i < 22; i++) cells.push({ textContent: 'X' });
+  assert.strictEqual(updateListRow({ cells: cells }, '990,000', null), false);
+  assert.strictEqual(cells[1 + ORIG_COL.price].textContent, 'X');
+});
+
 /* ── 판매가고정 강제 재계산(2026-08-05 라이브 실측 반영) ───────────────── */
 test('판매가고정(Y) 상품도 판매가가 재계산된다 — 계산 동안만 N 으로 내린다', async () => {
   resetFetch(); setServerFields(GOOD_FIELDS);
@@ -924,7 +990,9 @@ test('판매가고정(Y) 상품도 판매가가 재계산된다 — 계산 동�
   });
   const r = await processOneItem(iframe, '7646', '990,000', 60);
   assert.strictEqual(flagSeenByCalc, 'N', '계산 시점에 고정이 풀려 있어야 판매가가 재계산된다');
-  assert.strictEqual(r.recalced.salePrice1, '786,000', '판매가가 실제로 갱신돼야 한다');
+  // 재계산(786,000) + 만원 단위 올림 → 790,000. 두 기능이 이 순서로 함께 걸린다.
+  assert.strictEqual(r.recalced.salePrice1, '790,000',
+    '판매가가 재계산되고 만원 단위로 올림돼야 한다(786,000 → 790,000)');
 });
 test('판매가고정은 저장 전에 반드시 원래 값으로 복원된다(상품 속성 훼손 방지)', async () => {
   resetFetch(); setServerFields(GOOD_FIELDS);
@@ -1206,6 +1274,57 @@ test('G8(실행검증): processOneItem 내부(G2)는 통과했어도 표시용 �
   const list = readPriceLogListOrRecover();
   assert.strictEqual(list.length, 1);
   assert.strictEqual(list[0].status, 'unknown', 'processOneItem 내부는 통과했어도 표시용 재조회 불일치로 unknown 으로 재기록돼야 한다(G8)');
+});
+
+/* 🔴 배선 검증 — updateListRow 를 단위로만 테스트하면 "runBulkUpdate 가 그걸 부르는가"는
+ *  아무도 안 본다. 실제로 그 호출을 지우는 변이가 SURVIVED 했다(2026-08-05). 시범 1건과
+ *  나머지 건 **양쪽 다** 갱신되는지 실제 실행으로 확인한다. */
+test('목록 갱신(배선): 저장 성공한 행의 시세·입고공급가·판매가 셀이 서버 확인값으로 바뀐다', async () => {
+  resetLS(); resetFetch();
+  function makeRow(price, supply, sale) {
+    const cells = [];
+    for (let i = 0; i < 22; i++) cells.push({ textContent: '' });
+    cells[1 + ORIG_COL.price].textContent = price;
+    cells[1 + ORIG_COL.supply].textContent = supply;
+    cells[1 + ORIG_COL.sale].textContent = sale;
+    return { cells: cells };
+  }
+  const rows = [
+    makeRow('800,000', '740,920(495,598)', '2,200,000(1,850,000)'),   // 시범 1건
+    makeRow('800,000', '565,600(385,935)', '1,680,000(1,400,000)')    // 나머지 1건
+  ];
+  const items = [
+    { seq: '7646', itemCode: 'A', row: rows[0] },
+    { seq: '7647', itemCode: 'B', row: rows[1] }
+  ];
+  const iframe = makeScenario({ initialFields: GOOD_FIELDS, onClick(ctx) { ctx.succeedTo(GOOD_LANDING, 2); } });
+  const box = buildFullSandbox(makeFakeTopWindow([true, true]), makeFakeDocumentFor(iframe),
+    fakeLocalStorage, makeFakeFetchOk(fieldsToHtml(GOOD_FIELDS)));
+  await box.runBulkUpdate(null, items, '900,000', { setBusy() {}, setProgress() {} });
+
+  const 기대공급가 = GOOD_FIELDS.inputSupplyPrice1 + '(' + GOOD_FIELDS.inputSupplyPrice2 + ')';
+  const 기대판매가 = GOOD_FIELDS.salePrice1 + '(' + GOOD_FIELDS.salePrice2 + ')';
+  rows.forEach((r, i) => {
+    const 위치 = (i === 0 ? '시범 행' : '나머지 행');
+    assert.strictEqual(r.cells[1 + ORIG_COL.price].textContent, '900,000', 위치 + ' 시세가 안 바뀌었다');
+    assert.strictEqual(r.cells[1 + ORIG_COL.supply].textContent, 기대공급가, 위치 + ' 입고공급가가 안 바뀌었다');
+    assert.strictEqual(r.cells[1 + ORIG_COL.sale].textContent, 기대판매가, 위치 + ' 판매가가 안 바뀌었다');
+  });
+});
+test('목록 갱신(배선): 저장하지 못한 행은 건드리지 않는다(반영되지 않은 값을 화면에 쓰지 않는다)', async () => {
+  resetLS(); resetFetch();
+  const cells = [];
+  for (let i = 0; i < 22; i++) cells.push({ textContent: '' });
+  cells[1 + ORIG_COL.price].textContent = '800,000';
+  const row = { cells: cells };
+  // 시범 1건이 클릭 전에 실패하도록 — 저장 버튼을 못 찾는 상황
+  const iframe = makeScenario({ initialFields: GOOD_FIELDS, noSaveButton: true });
+  const box = buildFullSandbox(makeFakeTopWindow([true, true]), makeFakeDocumentFor(iframe),
+    fakeLocalStorage, makeFakeFetchOk(fieldsToHtml(GOOD_FIELDS)));
+  await box.runBulkUpdate(null, [{ seq: '7646', itemCode: 'A', row: row }], '900,000',
+    { setBusy() {}, setProgress() {} });
+  assert.strictEqual(cells[1 + ORIG_COL.price].textContent, '800,000',
+    '저장이 안 됐는데 목록만 새 값으로 바뀌면 화면이 거짓말을 한다');
 });
 
 /* ── N1 — 이 테스트 파일 자신의 구조 회귀가드 정확도(부분일치 오탐 방지) ─────────── */
