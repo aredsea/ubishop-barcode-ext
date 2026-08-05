@@ -878,25 +878,37 @@
     const f = document.forms['form1'];
     const el = f ? f.elements['salePrice'] : null;
     if (!el) { window.alert('판매가 입력칸(salePrice)을 찾지 못했습니다. 직접 수정하세요.\n\n바코드 ' + p.bc + ' → ' + p.newPrice); return; }
+    // 소비자가도 판매가와 같은 금액으로 맞춘다(사용자 요청).
+    // 수정 폼에서 두 칸은 "소비자가/판매가" 라벨 하나를 공유한다 —
+    // basicSalePrice = 소비자가, salePrice = 판매가 (2026-08-05 실측).
+    const conEl = f.elements['basicSalePrice'] || null;
     const before = String(el.value);
+    const beforeCon = conEl ? String(conEl.value) : null;
     el.value = p.newPrice;
+    if (conEl) conEl.value = p.newPrice;
 
     const same = String(before).replace(/[,\s]/g, '') === String(p.newPrice).replace(/[,\s]/g, '');
     const go = window.confirm(
-      '판매가를 기초상품관리 기준으로 변경합니다.\n\n' +
+      '소비자가·판매가를 기초상품관리 기준으로 변경합니다.\n\n' +
       '바코드   : ' + p.bc + '\n' +
       '상품코드 : ' + p.itemNum + '\n' +
       '함량     : ' + p.k + '\n\n' +
-      '현재 판매가 : ' + before + '\n' +
-      '변경 판매가 : ' + p.newPrice + (same ? '   ← 값이 같습니다' : '') + '\n\n' +
-      '저장할까요?'
+      '현재 판매가  : ' + before + '\n' +
+      (conEl ? '현재 소비자가 : ' + beforeCon + '\n' : '') +
+      '변경 금액    : ' + p.newPrice + (same ? '   ← 판매가와 값이 같습니다' : '') + '\n' +
+      (conEl ? '' : '\n⚠ 소비자가 칸(basicSalePrice)을 못 찾아 판매가만 바꿉니다.\n') +
+      '\n저장할까요?'
     );
-    if (!go) { el.value = before; dcmLog('사용자 취소', p.bc); return; }
+    if (!go) {
+      el.value = before;
+      if (conEl) conEl.value = beforeCon;
+      dcmLog('사용자 취소', p.bc); return;
+    }
 
     const btn = [...document.querySelectorAll('input[name="imageField22"]')].find((b) => b.form === f);
     if (!btn) { window.alert('저장 버튼을 찾지 못했습니다. 값은 채워 뒀으니 직접 저장하세요.'); return; }
     dcmAppendLog({ phase: 'price_saved', barcode: p.bc, itemNum: p.itemNum, k: p.k,
-                   from: before, to: p.newPrice, junNum: p.junNum });
+                   from: before, fromConsumer: beforeCon, to: p.newPrice, junNum: p.junNum });
     dcmLog('판매가 저장', p.bc, before, '→', p.newPrice);
     ubHlStore(p.bc);   // 저장 후 입고 화면으로 돌아가면 그 행을 강조
     btn.click();
