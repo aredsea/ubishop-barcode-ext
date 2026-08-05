@@ -552,6 +552,7 @@
   const STK_TAG = '[UB][stock]';
   const stkLog = (...a) => { try { console.log(STK_TAG, ...a); } catch (_) {} };
   function isInboundWrite() { return /\/input\/item\/inputItemWriteForm\.do/.test(location.pathname); }
+  function isInboundModify() { return /\/input\/item\/inputItemModifyForm\.do/.test(location.pathname); }
   function dateParams() {
     const d = new Date();
     return {
@@ -732,6 +733,69 @@
     } catch (_) { return false; }
   }
 
+  // 이중 표기 파싱 — "18K(14K)" · "3,900,000(3,270,000)" → {first, second}
+  function dcmSplitDual(s) {
+    const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+    const m = t.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+    return m ? { first: m[1].trim(), second: m[2].trim() } : { first: t, second: '' };
+  }
+  const dcmNormK = (x) => String(x == null ? '' : x).replace(/\s+/g, '').toUpperCase();
+
+  // 입고장 HTML 에서 그 바코드 품목의 수정 seq·마스터상품코드·함량·현재 판매가를 뽑는다.
+  // 품목 목록 열: 2 바코드상품번호 · 3 구분 · 4 매장명·상품정보 · 11 판매가 · 14 수정 (실측)
+  //  · 바코드 셀 = "210D7I D-R2-M-WG-DA-015N 매입처상품코드 : …" → 1번째=바코드, 2번째=마스터상품코드
+  //  · 상품정보 셀 = "누리엔점18K 7.22 g (17)" → 함량은 여기서 뽑는다
+  function dcmPickVoucherItem(html, barcode) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const want = String(barcode || '').trim().toUpperCase();
+    for (const t of doc.querySelectorAll('table.t_list')) {
+      for (const r of t.rows) {
+        const c = [...r.cells];
+        if (c.length < 15) continue;
+        const bcCell = (c[2].textContent || '').replace(/\s+/g, ' ').trim();
+        const toks = bcCell.split(/\s+/);
+        if ((toks[0] || '').toUpperCase() !== want) continue;
+        const m = r.innerHTML.match(/modify\(\s*'?(\d+)'?\s*\)/);
+        const info = (c[4].textContent || '').replace(/\s+/g, ' ');
+        const k = (info.match(/(\d+\s*K)/i) || [])[1] || '';
+        return {
+          itemSeq: m ? m[1] : null,
+          itemNum: toks[1] || '',
+          k: dcmNormK(k),
+          salePrice: (c[11].textContent || '').replace(/\s+/g, ' ').trim()
+        };
+      }
+    }
+    return null;
+  }
+
+  // 기초상품관리(품위정보보기)에서 마스터상품코드로 조회 → **바코드의 함량과 같은 품위**의 판매가.
+  // 열(실측): 2 마스터상품코드 · 9 품위 "18K(14K)" · 14 판매가 "3,900,000(3,270,000)"
+  // 품위가 이중이면 판매가도 같은 순서로 이중이라 자리를 맞춰 고른다.
+  async function dcmMasterPrice(itemNum, k) {
+    const { doc } = await dcmPostRaw('/master/item/masterItemList.do?tcode=master_item_k',
+      new URLSearchParams({ pageSize: '20', searchWordType2: 'itemNum', searchWord2: itemNum }));
+    for (const t of doc.querySelectorAll('table.t_list')) {
+      let hi = -1;
+      for (const r of t.rows) {
+        const c = [...r.cells].map((x) => x.textContent.replace(/\s+/g, ' ').trim());
+        if (c.some((v) => /마스터상품코드/.test(v))) { hi = r.rowIndex; break; }
+      }
+      if (hi < 0) continue;
+      for (let i = hi + 1; i < t.rows.length; i++) {
+        const c = [...t.rows[i].cells].map((x) => x.textContent.replace(/\s+/g, ' ').trim());
+        if (!/^\d+$/.test(c[0] || '')) continue;
+        if ((c[2] || '').trim().toUpperCase() !== String(itemNum || '').trim().toUpperCase()) continue;
+        const kk = dcmSplitDual(c[9]);
+        const pp = dcmSplitDual(c[14]);
+        if (dcmNormK(kk.first) === dcmNormK(k)) return { price: pp.first, k: kk.first };
+        if (kk.second && dcmNormK(kk.second) === dcmNormK(k)) return { price: pp.second, k: kk.second };
+        return { price: null, avail: kk };   // 코드는 찾았는데 함량이 안 맞는다
+      }
+    }
+    return null;
+  }
+
   let dcmBusy = false;
   async function dcmRun(barcode, setStatus) {
     barcode = (barcode || '').trim();
@@ -742,19 +806,7 @@
       const t = await dcmFindDeliv(barcode);
       if (!t.count) { setStatus('출고 기록이 없습니다 — 취소할 출고장이 없습니다', 'err'); return; }
 
-      const many = t.count > 1
-        ? '\n\n⚠ 이 바코드로 ' + t.count + '건이 검색됐습니다. 그중 가장 최근 1건만 지웁니다.' : '';
-      const go = window.confirm(
-        '출고 확인 취소 — 아래 출고장을 삭제합니다.\n\n' +
-        '바코드 : ' + barcode + '\n' +
-        '출고장 : ' + t.junNum + '\n' +
-        '출고일 : ' + t.delivDate + '\n' +
-        '매장   : ' + t.shop + '\n' +
-        '상태   : ' + t.status + many +
-        '\n\n삭제는 되돌릴 수 없습니다. 진행할까요?'
-      );
-      if (!go) { setStatus('취소했습니다', 'warn'); return; }
-
+      // 삭제 확인창은 두지 않는다(사용자 요청). 최종 확인은 판매가 변경 직전 한 번만 받는다.
       if (!dcmAppendLog({ phase: 'before_delete', barcode: barcode, junNum: t.junNum,
                           delivDate: t.delivDate, shop: t.shop, status: t.status,
                           idx: t.idx, count: t.count })) {
@@ -765,7 +817,7 @@
       const d = await dcmDelete(t, barcode);
       if (!d.ok) { setStatus('삭제 실패: ' + d.msg, 'err'); return; }
       dcmAppendLog({ phase: 'deleted', barcode: barcode, junNum: t.junNum });
-      dcmLog('삭제 완료', barcode, t.junNum);
+      dcmLog('삭제 완료', barcode, t.junNum, t.count > 1 ? '(' + t.count + '건 중 최신 1건)' : '');
 
       // 여기부터는 출고장이 이미 없다 — 어떤 실패든 그 사실을 문구에 반드시 포함한다.
       setStatus('입고장 조회 중…', 'go');
@@ -774,48 +826,80 @@
       const seq = await junNumToSeq(junNum);
       if (!seq) { setStatus('출고장은 삭제됐으나 입고장 seq를 못 찾았습니다 (' + junNum + ')', 'err'); return; }
 
-      setStatus('입고장 ' + junNum + ' 여는 중…', 'go');
-      try { sessionStorage.setItem(DCM_PENDING_KEY, JSON.stringify({ bc: barcode, ts: Date.now() })); } catch (_) {}
+      setStatus('상품 정보 확인 중…', 'go');
+      const vHtml = (await dcmPostRaw('/input/item/inputItemWriteForm.do?tcode=input_item',
+        new URLSearchParams({ jun: seq }))).html;
+      const it = dcmPickVoucherItem(vHtml, barcode);
+      if (!it) { setStatus('출고장은 삭제됐으나 입고장에서 그 바코드 품목을 못 찾았습니다', 'err'); return; }
+      if (!it.itemSeq) { setStatus('출고장은 삭제됐으나 수정 링크가 없습니다 — 취소가 반영되지 않았을 수 있습니다', 'err'); return; }
+      if (!it.itemNum) { setStatus('출고장은 삭제됐으나 상품번호를 못 읽었습니다', 'err'); return; }
+      if (!it.k) { setStatus('출고장은 삭제됐으나 함량을 못 읽었습니다 (' + it.itemNum + ')', 'err'); return; }
+
+      setStatus('기초상품 판매가 조회 중… (' + it.itemNum + ' / ' + it.k + ')', 'go');
+      const mp = await dcmMasterPrice(it.itemNum, it.k);
+      if (!mp) { setStatus('기초상품관리에서 ' + it.itemNum + ' 을 못 찾았습니다(출고장은 삭제됨)', 'err'); return; }
+      if (!mp.price) {
+        const av = mp.avail || {};
+        setStatus('함량 ' + it.k + ' 에 맞는 판매가가 없습니다(기초 품위: ' +
+          (av.first || '?') + (av.second ? ' / ' + av.second : '') + ') — 출고장은 삭제됨', 'err');
+        return;
+      }
+
+      // 수정 폼으로 이동한다. modify(seq) 는 단순 GET 이동이라 그대로 재현하면 된다(실측).
+      // 값 채우기·확인·저장은 그 페이지에서 dcmApplyPending 이 이어받는다.
+      try {
+        sessionStorage.setItem(DCM_PENDING_KEY, JSON.stringify({
+          bc: barcode, itemNum: it.itemNum, k: it.k,
+          oldPrice: it.salePrice, newPrice: mp.price, junNum: junNum, ts: Date.now()
+        }));
+      } catch (_) {}
       dcmSetHere = true;
-      ubHlStore(barcode);   // 로드된 새 문서가 해당 행을 강조·스크롤
-      loadVoucher(seq);     // 페이지 리로드 → 아래 dcmClickModifyPending 이 수정 링크를 누른다
+      setStatus('판매가 ' + it.salePrice + ' → ' + mp.price + ' 확인 중…', 'go');
+      location.href = '/input/item/inputItemModifyForm.do?tcode=input_item'
+        + '&seq=' + encodeURIComponent(it.itemSeq) + '&jun=' + encodeURIComponent(seq);
     } catch (e) {
       dcmLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
     } finally { dcmBusy = false; }
   }
 
-  // 입고장이 로드된 뒤 해당 바코드 행의 수정 링크를 눌러 편집 폼에 싣는다.
-  // 🔴 skin.js 는 ISOLATED world 라 페이지 전역 modify() 를 직접 부를 수 없다 →
-  //   실제 <a href="javascript:modify('...')"> 엘리먼트를 클릭해 페이지 컨텍스트에서 실행시킨다.
-  // 수정 링크가 끝내 안 나타나면 삭제가 실제로는 반영되지 않았다는 신호다 — 조용히 넘기지 않는다.
-  function dcmClickModifyPending(setStatus) {
-    if (!isInboundWrite() || dcmSetHere) return;
+  // 수정 폼에서 판매가를 채우고 **최종 확인 후** 저장한다(사용자가 금액을 눈으로 보는 자리).
+  // 🔴 저장 버튼은 <input type="image"> 라 form.elements 에서 제외된다(masterprice 에서 겪은 함정)
+  //   → 문서 조회 + form 소속 대조로 찾는다. 못 찾으면 저장하지 않는다(fail-closed).
+  function dcmApplyPending() {
+    if (!isInboundModify() || dcmSetHere) return;
     let raw = null;
     try { raw = sessionStorage.getItem(DCM_PENDING_KEY); } catch (_) {}
     if (!raw) return;
-    let bc = '';
-    try { bc = (JSON.parse(raw) || {}).bc || ''; } catch (_) {}
+    let p = null;
+    try { p = JSON.parse(raw); } catch (_) {}
     try { sessionStorage.removeItem(DCM_PENDING_KEY); } catch (_) {}
-    if (!bc) return;
-    let tries = 0;
-    const iv = setInterval(() => {
-      tries++;
-      const row = ubFindRow(bc);
-      const a = row ? row.querySelector('a[href*="modify("]') : null;
-      if (a) {
-        clearInterval(iv);
-        dcmLog('수정 링크 클릭', bc);
-        if (setStatus) setStatus(bc + ' 수정 폼을 열었습니다 — 판매가를 확인·수정하세요', 'ok');
-        a.click();
-        return;
-      }
-      if (tries > 40) {
-        clearInterval(iv);
-        const why = row ? '수정 링크가 없습니다(출고 취소가 반영되지 않았을 수 있습니다)' : '해당 바코드 행을 못 찾았습니다';
-        dcmLog('수정 진입 실패', bc, why);
-        if (setStatus) setStatus('출고장은 삭제됐으나 ' + why, 'err');
-      }
-    }, 100);
+    if (!p || !p.newPrice) return;
+
+    const f = document.forms['form1'];
+    const el = f ? f.elements['salePrice'] : null;
+    if (!el) { window.alert('판매가 입력칸(salePrice)을 찾지 못했습니다. 직접 수정하세요.\n\n바코드 ' + p.bc + ' → ' + p.newPrice); return; }
+    const before = String(el.value);
+    el.value = p.newPrice;
+
+    const same = String(before).replace(/[,\s]/g, '') === String(p.newPrice).replace(/[,\s]/g, '');
+    const go = window.confirm(
+      '판매가를 기초상품관리 기준으로 변경합니다.\n\n' +
+      '바코드   : ' + p.bc + '\n' +
+      '상품코드 : ' + p.itemNum + '\n' +
+      '함량     : ' + p.k + '\n\n' +
+      '현재 판매가 : ' + before + '\n' +
+      '변경 판매가 : ' + p.newPrice + (same ? '   ← 값이 같습니다' : '') + '\n\n' +
+      '저장할까요?'
+    );
+    if (!go) { el.value = before; dcmLog('사용자 취소', p.bc); return; }
+
+    const btn = [...document.querySelectorAll('input[name="imageField22"]')].find((b) => b.form === f);
+    if (!btn) { window.alert('저장 버튼을 찾지 못했습니다. 값은 채워 뒀으니 직접 저장하세요.'); return; }
+    dcmAppendLog({ phase: 'price_saved', barcode: p.bc, itemNum: p.itemNum, k: p.k,
+                   from: before, to: p.newPrice, junNum: p.junNum });
+    dcmLog('판매가 저장', p.bc, before, '→', p.newPrice);
+    ubHlStore(p.bc);   // 저장 후 입고 화면으로 돌아가면 그 행을 강조
+    btn.click();
   }
 
   /* ==========================================================================
@@ -3080,8 +3164,13 @@
       const dcmGoBtn = bar.querySelector('#ub-dcm-go');
       if (dcmGoBtn) dcmGoBtn.addEventListener('click', goDcm);
       dcmIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goDcm(); } });
-      // 리로드로 돌아온 경우: 대기 중인 바코드의 수정 링크를 눌러 편집 폼에 싣는다.
-      dcmClickModifyPending(setDcmStatus);
+      try {
+        const lastLog = JSON.parse(localStorage.getItem(DCM_LOG_KEY) || 'null');
+        const last = Array.isArray(lastLog) ? lastLog[lastLog.length - 1] : null;
+        if (last && last.phase === 'price_saved') {
+          setDcmStatus('직전: ' + last.barcode + ' 판매가 ' + last.from + ' → ' + last.to + ' ✓', 'ok');
+        }
+      } catch (_) {}
     }
 
     // 회전입고 배선 (rotateItemWriteForm.do) — 재렌더마다 재바인딩되니 정상.
@@ -3139,6 +3228,7 @@
       img.title = on('ubThumbEdit') ? '상품 수정 (새 창)' : '';
     });
     ubHighlightPending();   // 재고화·회전입고·메인석: 로드 후 검색 바코드 행 강조+스크롤
+    dcmApplyPending();      // 출고취소 흐름: 수정 폼에 도착했으면 판매가 채우고 확인 후 저장
     applyTabPref();         // v3.7.0: 전표 기본탭(설정 변경·다른 탭에서 바뀐 경우 포함)
   }
   let mo = null;
