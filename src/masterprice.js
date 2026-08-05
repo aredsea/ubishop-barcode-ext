@@ -745,12 +745,29 @@
         }
       }
 
-      form.elements['goldPrice'].value = newPriceFormatted;
-
       if (typeof win.calItemPrice !== 'function') {
         return { ok: false, status: 'not_applied', reason: 'calItemPrice 함수를 찾을 수 없습니다(페이지 스크립트 로드 실패?)' };
       }
-      win.calItemPrice(form);   // 🔴 changeGoldPrice 아님 — 파일 상단 주석 참조
+
+      // 🔴 판매가고정 강제 재계산 — 사용자 요구다. 판매가고정(fixPriceFlag='Y')은 "다른 요인으로
+      // 판매가가 제멋대로 바뀌는 것"을 막으려고 켜 둔 것이지, 시세를 의도적으로 바꿀 때까지
+      // 판매가를 묶어 두려는 게 아니다. 그런데 페이지의 calItemPrice 는 이 플래그를 보고 판매가
+      // 계산을 통째로 건너뛴다(실측: 고정 상태로 재계산하면 시세·입고공급가만 바뀐다).
+      // → 계산하는 동안에만 'N' 으로 내렸다가 **저장 전에 반드시 원래 값으로 되돌린다.**
+      //   저장되는 플래그는 원래 값 그대로이므로 상품의 고정 속성 자체는 건드리지 않는다.
+      // 실측 근거(2026-08-05, seq 7618): 'N' 으로 재계산하면 판매가 690,000→786,000 ·
+      // 580,000→573,000 으로 갱신되고, 플래그를 'Y' 로 되돌려도 그 값이 유지되며, 되돌린 뒤
+      // calItemPrice 를 다시 불러도 판매가가 원복되지 않는다.
+      const fixEl = form.elements['fixPriceFlag'] || null;
+      const fixOrig = fixEl ? String(fixEl.value) : null;
+      try {
+        if (fixEl) fixEl.value = 'N';
+        form.elements['goldPrice'].value = newPriceFormatted;
+        win.calItemPrice(form);   // 🔴 changeGoldPrice 아님 — 파일 상단 주석 참조
+      } finally {
+        // 예외로 빠져나가도 폼에 'N' 이 남지 않게 한다. 남은 채 저장되면 상품 속성이 바뀐다.
+        if (fixEl) fixEl.value = fixOrig;
+      }
       const recalced = readFormSnapshot(doc);
 
       // F2 — 계산식은 이식하지 않고 불변식만 검사한다. 걸리면 클릭하지 않는다(확실히 미반영).
@@ -764,6 +781,13 @@
 
       const saveBtn = findSaveButton(doc, form);
       if (!saveBtn) return { ok: false, status: 'not_applied', reason: '저장 버튼(imageField22)을 찾을 수 없습니다', before: before, recalced: recalced };
+
+      // 클릭 직전 마지막 방어 — 강제 재계산용으로 내렸던 판매가고정이 확실히 원복됐는지 본다.
+      // 'N' 인 채로 제출되면 사장님이 켜 둔 고정이 우리 손에 풀린다(상품 속성 훼손).
+      if (fixEl && String(fixEl.value) !== fixOrig) {
+        return { ok: false, status: 'not_applied', before: before, recalced: recalced,
+          reason: '판매가고정 값 복원 실패 — 상품 속성이 바뀔 수 있어 저장하지 않았습니다' };
+      }
 
       capturedAlert = null;   // F4 핵심 — 클릭 '직전'에 리셋해 클릭 이후에 뜬 dialog 만 신호로 쓴다.
       const outcome = waitForLoadOrDialog(iframe, () => capturedAlert, t);

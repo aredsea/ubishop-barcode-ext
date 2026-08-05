@@ -162,9 +162,10 @@ function test(name, fn) { tests.push({ name, fn }); }
  *   ② 유비샵 마크업에서 저장 버튼은 <form> 의 DOM 자손이 아니다 → form.querySelector 실패.
  *      문서 전체 조회로만 찾히고, 소속은 btn.form 으로만 확인된다.
  *  그래서 form 쪽에는 querySelector 를 아예 두지 않고, 문서 쪽에만 둔다. */
-function makeFakeFormDoc(fields) {
+function makeFakeFormDoc(fields, fixFlag) {
   const elements = {};
   Object.keys(fields || {}).forEach((k) => { elements[k] = { value: fields[k] }; });
+  if (fixFlag != null) elements['fixPriceFlag'] = { value: String(fixFlag) };   // 실제로는 <select> Y/N
   const form = Object.assign({ elements: elements }, elements);
   const extra = [];   // form.elements 에 안 들어가는 컨트롤(= input[type=image])
   const doc = {
@@ -197,11 +198,13 @@ function makeScenario(scenario) {
   let win = null, doc = null, clickCount = 0, nativeAlertCalls = 0, nativeConfirmCalls = 0;
 
   function mount(fields, href) {
-    doc = makeFakeFormDoc(fields);
+    doc = makeFakeFormDoc(fields, scenario.fixPriceFlag);
     win = {
       location: { href: href },
       alert() { nativeAlertCalls++; },
       confirm() { nativeConfirmCalls++; return (scenario.defaultConfirmReturn != null) ? scenario.defaultConfirmReturn : false; },
+      // 기본은 no-op 이다(재계산 결과를 바꾸지 않는다) — 기존 테스트들의 전제를 지킨다.
+      // 판매가고정 동작을 보려는 테스트는 scenario.calItemPrice 로 직접 흉내낸다.
       calItemPrice(form) { if (typeof scenario.calItemPrice === 'function') scenario.calItemPrice(form, win); }
     };
     const btn = {
@@ -904,6 +907,57 @@ test('F1(실행검증): 정상 응답이면 시간제한이 걸리지 않는다(
   resetFetch(); setServerFields(GOOD_FIELDS);
   const r = await refetchFieldsForSeq('7646', 2000);
   assert.strictEqual(r.goldPrice, GOOD_FIELDS.goldPrice);
+});
+
+/* ── 판매가고정 강제 재계산(2026-08-05 라이브 실측 반영) ───────────────── */
+test('판매가고정(Y) 상품도 판매가가 재계산된다 — 계산 동안만 N 으로 내린다', async () => {
+  resetFetch(); setServerFields(GOOD_FIELDS);
+  let flagSeenByCalc = null;
+  const iframe = makeScenario({
+    initialFields: GOOD_FIELDS, fixPriceFlag: 'Y',
+    calItemPrice(form) {
+      flagSeenByCalc = String(form.elements['fixPriceFlag'].value);
+      // 페이지 실제 동작: 'N' 일 때만 판매가를 갱신한다
+      if (flagSeenByCalc !== 'Y') form.elements['salePrice1'].value = '786,000';
+    },
+    onClick(ctx) { ctx.succeedTo(GOOD_LANDING, 2); }
+  });
+  const r = await processOneItem(iframe, '7646', '990,000', 60);
+  assert.strictEqual(flagSeenByCalc, 'N', '계산 시점에 고정이 풀려 있어야 판매가가 재계산된다');
+  assert.strictEqual(r.recalced.salePrice1, '786,000', '판매가가 실제로 갱신돼야 한다');
+});
+test('판매가고정은 저장 전에 반드시 원래 값으로 복원된다(상품 속성 훼손 방지)', async () => {
+  resetFetch(); setServerFields(GOOD_FIELDS);
+  let flagAtClick = null;
+  const iframe = makeScenario({
+    initialFields: GOOD_FIELDS, fixPriceFlag: 'Y',
+    onClick(ctx, win) {
+      flagAtClick = String(iframe.contentDocument.forms.form1.elements['fixPriceFlag'].value);
+      ctx.succeedTo(GOOD_LANDING, 2);
+    }
+  });
+  await processOneItem(iframe, '7646', '990,000', 60);
+  assert.strictEqual(flagAtClick, 'Y', "저장 시점에 'N' 이 남아 있으면 사장님이 켜 둔 고정이 풀린다");
+});
+test('calItemPrice 가 던져도 판매가고정은 원복된다(finally)', async () => {
+  resetFetch();
+  const iframe = makeScenario({
+    initialFields: GOOD_FIELDS, fixPriceFlag: 'Y',
+    calItemPrice() { throw new Error('계산 중 오류'); }
+  });
+  const r = await processOneItem(iframe, '7646', '990,000', 60);
+  assert.strictEqual(r.status, 'not_applied');
+  assert.strictEqual(iframe.contentDocument.forms.form1.elements['fixPriceFlag'].value, 'Y');
+  assert.strictEqual(iframe._clickCount(), 0);
+});
+test('판매가고정이 없는 상품(필드 부재)에서도 정상 동작한다', async () => {
+  resetFetch(); setServerFields(GOOD_FIELDS);
+  const iframe = makeScenario({
+    initialFields: GOOD_FIELDS,   // fixPriceFlag 미설정
+    onClick(ctx) { ctx.succeedTo(GOOD_LANDING, 2); }
+  });
+  const r = await processOneItem(iframe, '7646', '900,000', 60);
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
 });
 
 /* ── findSaveButton — 라이브 실측 제약 고정(2026-08-05 seq 7618) ───────── */
