@@ -122,7 +122,7 @@ const MAIN_NAMES = [
   'validateBulkInput', 'numOrNull', 'validateRecalc', 'serverValueMatches', 'verifyAgainstServer', 'decideTrialContinuation',
   'runSequential', 'augmentMasterTable', 'getSelectedItems',
   'escHtml', 'logFieldDisplay', 'buildLogViewerHtml',
-  'modifyFormUrl', 'waitForLoadOrTimeout', 'waitForLoadOrDialog', 'readFormSnapshot', 'refetchFieldsForSeq',
+  'modifyFormUrl', 'waitForLoadOrTimeout', 'waitForLoadOrDialog', 'readFormSnapshot', 'refetchFieldsForSeq', 'findSaveButton',
   'processOneItem', 'readPriceLogListOrRecover', 'appendPriceLog', 'updatePriceLog', 'processItemWithLog'
 ];
 
@@ -144,7 +144,7 @@ const {
   localJudgeSubmitUrl, judgeSubmitUrl, judgeLandingUrl,
   validateBulkInput, numOrNull, validateRecalc, serverValueMatches, verifyAgainstServer, decideTrialContinuation,
   runSequential, augmentMasterTable, getSelectedItems,
-  escHtml, logFieldDisplay, buildLogViewerHtml, refetchFieldsForSeq,
+  escHtml, logFieldDisplay, buildLogViewerHtml, refetchFieldsForSeq, findSaveButton,
   processOneItem, readPriceLogListOrRecover, appendPriceLog, updatePriceLog, processItemWithLog,
   ORIG_COL
 } = sandbox;
@@ -155,11 +155,30 @@ function test(name, fn) { tests.push({ name, fn }); }
 /* ==========================================================================
  *  가짜 iframe 하네스 — processOneItem 을 실제 실행 검증하기 위한 최소 iframe/문서/창.
  * ------------------------------------------------------------------------ */
+/* 🔴 이 가짜는 실제 DOM 의 두 가지 제약을 **반드시** 재현해야 한다(2026-08-05 라이브 실측으로
+ *  확인, seq 7618). 종전 하네스는 저장 버튼을 form.elements 에 그냥 꽂아 넣어서, 실제로는
+ *  절대 동작할 수 없는 코드가 4라운드·3인 검수를 통과했다:
+ *   ① form.elements 는 <input type="image"> 를 제외한다(HTML 명세). named access 도 같다.
+ *   ② 유비샵 마크업에서 저장 버튼은 <form> 의 DOM 자손이 아니다 → form.querySelector 실패.
+ *      문서 전체 조회로만 찾히고, 소속은 btn.form 으로만 확인된다.
+ *  그래서 form 쪽에는 querySelector 를 아예 두지 않고, 문서 쪽에만 둔다. */
 function makeFakeFormDoc(fields) {
   const elements = {};
   Object.keys(fields || {}).forEach((k) => { elements[k] = { value: fields[k] }; });
   const form = Object.assign({ elements: elements }, elements);
-  return { forms: { form1: form }, _elements: elements };
+  const extra = [];   // form.elements 에 안 들어가는 컨트롤(= input[type=image])
+  const doc = {
+    forms: { form1: form },
+    _elements: elements,
+    _extra: extra,
+    querySelectorAll(sel) {
+      const m = /^input\[name="([^"]+)"\]$/.exec(String(sel == null ? '' : sel));
+      if (!m) return [];   // 프로덕션이 다른 셀렉터를 쓰면 못 찾는다 — 일부러 그렇게 둔다
+      return extra.filter((e) => e.name === m[1]);
+    },
+    querySelector(sel) { return doc.querySelectorAll(sel)[0] || null; }
+  };
+  return doc;
 }
 
 const GOOD_LANDING = 'https://ubdstore.ubshop.biz/master/item/masterItemModifyForm.do?tcode=master_item&seq=7646';
@@ -202,9 +221,12 @@ function makeScenario(scenario) {
         (scenario.onClick || function (c) { c.succeedTo(GOOD_LANDING); })(ctx, win);
       }
     };
-    doc._elements.imageField22 = btn;
-    doc.forms.form1.imageField22 = btn;
-    doc.forms.form1.elements.imageField22 = btn;
+    // 실제 DOM 과 같게: form.elements 에도, form 의 자손으로도 넣지 않는다.
+    // 문서 전체 조회로만 찾히고 소속은 btn.form 으로만 드러난다.
+    btn.name = 'imageField22';
+    btn.type = 'image';
+    btn.form = doc.forms.form1;
+    doc._extra.push(btn);
   }
   function emitLoad() { [...loadCbs].forEach((fn) => { try { fn(); } catch (_) {} }); }
 
@@ -882,6 +904,30 @@ test('F1(실행검증): 정상 응답이면 시간제한이 걸리지 않는다(
   resetFetch(); setServerFields(GOOD_FIELDS);
   const r = await refetchFieldsForSeq('7646', 2000);
   assert.strictEqual(r.goldPrice, GOOD_FIELDS.goldPrice);
+});
+
+/* ── findSaveButton — 라이브 실측 제약 고정(2026-08-05 seq 7618) ───────── */
+test('저장버튼: form.elements 에 없고 form 자손도 아니어도 문서 조회+form 소속으로 찾는다', () => {
+  const form = { elements: {} };                       // ← 실제로 image 버튼은 여기 없다
+  const btn = { name: 'imageField22', type: 'image', form: form };
+  const doc = {
+    querySelectorAll(sel) { return sel === 'input[name="imageField22"]' ? [btn] : []; }
+  };
+  assert.strictEqual(findSaveButton(doc, form), btn);
+});
+test('저장버튼: 다른 폼 소속이면 누르지 않는다(fail-closed — 엉뚱한 폼 제출 방지)', () => {
+  const form = { elements: {} }, otherForm = { elements: {} };
+  const btn = { name: 'imageField22', type: 'image', form: otherForm };
+  const doc = { querySelectorAll() { return [btn]; } };
+  assert.strictEqual(findSaveButton(doc, form), null);
+});
+test('저장버튼: 소속을 알 수 없으면(form 미설정) 누르지 않는다', () => {
+  const form = { elements: {} };
+  const doc = { querySelectorAll() { return [{ name: 'imageField22', type: 'image' }]; } };
+  assert.strictEqual(findSaveButton(doc, form), null);
+});
+test('저장버튼: 문서에 없으면 null(상위에서 not_applied 로 중단)', () => {
+  assert.strictEqual(findSaveButton({ querySelectorAll() { return []; } }, { elements: {} }), null);
 });
 
 /* ── processItemWithLog(F1 write-ahead + G3 before 스냅샷) ────────────── */

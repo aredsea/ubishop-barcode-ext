@@ -662,6 +662,28 @@
     };
   }
 
+  // 🔴 저장 버튼 찾기 — form.elements 로는 **절대** 못 찾는다. 함정이 둘 겹쳐 있다
+  // (2026-08-05 라이브 실측, seq 7618):
+  //   ① 저장 버튼이 <input type="image"> 다. HTML 명세상 form.elements(HTMLFormControlsCollection)
+  //      는 Image Button 상태의 input 을 제외한다 → form.elements['imageField22'] 는 항상 undefined.
+  //      named access(form['imageField22'])도 같은 컬렉션 기반이라 똑같이 실패한다.
+  //   ② 유비샵 비정형 마크업 때문에 버튼이 <form> 의 DOM 자손도 아니다(form.contains(btn)=false)
+  //      → form.querySelector 도 실패한다. 파서 form pointer 로만 form1 에 귀속돼 있다
+  //      (btn.form === form1). 같은 계열 함정을 cache-intercept v2.4.11 에서 이미 밟았다.
+  // → 문서 전체에서 찾되, 엉뚱한 폼의 버튼을 누르지 않도록 form 소속을 반드시 확인한다.
+  //   소속을 확인할 수 없으면 누르지 않는다(fail-closed) — 잘못된 폼 제출이 라이브 데이터를 바꾼다.
+  function findSaveButton(doc, form) {
+    let list;
+    try {
+      list = (doc && doc.querySelectorAll) ? doc.querySelectorAll('input[name="imageField22"]') : null;
+    } catch (_) { return null; }
+    if (!list) return null;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] && list[i].form === form) return list[i];
+    }
+    return null;
+  }
+
   // 상품 1건 처리 — design doc §2.4 의 7단계 + 3자 검수 반영판(G2·G3·G7 포함).
   // timeoutMs 는 테스트에서 짧은 값을 주입하기 위한 선택 인자(기본 SAVE_TIMEOUT_MS).
   // onBefore(before) — 클릭 전 실제 폼 스냅샷을 얻는 즉시 호출된다(G3, write-ahead 로그 보강용).
@@ -740,7 +762,7 @@
         return { ok: false, status: 'not_applied', reason: '저장 전 검증에서 막혔습니다: ' + capturedAlert, before: before, recalced: recalced };
       }
 
-      const saveBtn = form.elements['imageField22'];
+      const saveBtn = findSaveButton(doc, form);
       if (!saveBtn) return { ok: false, status: 'not_applied', reason: '저장 버튼(imageField22)을 찾을 수 없습니다', before: before, recalced: recalced };
 
       capturedAlert = null;   // F4 핵심 — 클릭 '직전'에 리셋해 클릭 이후에 뜬 dialog 만 신호로 쓴다.
