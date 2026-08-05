@@ -772,9 +772,17 @@
   // 기초상품관리(품위정보보기)에서 마스터상품코드로 조회 → **바코드의 함량과 같은 품위**의 판매가.
   // 열(실측): 2 마스터상품코드 · 9 품위 "18K(14K)" · 14 판매가 "3,900,000(3,270,000)"
   // 품위가 이중이면 판매가도 같은 순서로 이중이라 자리를 맞춰 고른다.
+  // 🔴 전체 코드 정확일치를 요구하면 안 된다(2026-08-05 실측). ERP 의 상품코드 검색은 **끝자리
+  //   일련번호로 매칭**한다 — "00OK" · "QB-00OK" · "D-R2-Q-WG-QB-00OK" · "DR2QWGQB00OK" 가
+  //   전부 같은 1건(D-R2-Q-PG-QB-00OK)을 돌려준다. 마스터 상품은 일련번호 단위로 하나이고
+  //   색상 코드(WG/PG/RW)만 다른 변형은 같은 마스터를 공유하기 때문이다.
+  //   정확일치만 받으면 색상 변형 전부가 "코드 없음"으로 떨어진다(실제로 그렇게 실패했다).
+  // → ERP 가 1건으로 특정해 주면 그걸 쓰되, 코드가 다르면 approx 로 표시해 확인창에 드러낸다.
+  //   여러 건이면 사람이 골라야 하므로 저장하지 않는다(fail-closed).
   async function dcmMasterPrice(itemNum, k) {
     const { doc } = await dcmPostRaw('/master/item/masterItemList.do?tcode=master_item_k',
       new URLSearchParams({ pageSize: '20', searchWordType2: 'itemNum', searchWord2: itemNum }));
+    const rows = [];
     for (const t of doc.querySelectorAll('table.t_list')) {
       let hi = -1;
       for (const r of t.rows) {
@@ -784,16 +792,27 @@
       if (hi < 0) continue;
       for (let i = hi + 1; i < t.rows.length; i++) {
         const c = [...t.rows[i].cells].map((x) => x.textContent.replace(/\s+/g, ' ').trim());
-        if (!/^\d+$/.test(c[0] || '')) continue;
-        if ((c[2] || '').trim().toUpperCase() !== String(itemNum || '').trim().toUpperCase()) continue;
-        const kk = dcmSplitDual(c[9]);
-        const pp = dcmSplitDual(c[14]);
-        if (dcmNormK(kk.first) === dcmNormK(k)) return { price: pp.first, k: kk.first };
-        if (kk.second && dcmNormK(kk.second) === dcmNormK(k)) return { price: pp.second, k: kk.second };
-        return { price: null, avail: kk };   // 코드는 찾았는데 함량이 안 맞는다
+        if (/^\d+$/.test(c[0] || '')) rows.push(c);
       }
+      break;
     }
-    return null;
+    if (!rows.length) return null;
+
+    const want = String(itemNum || '').trim().toUpperCase();
+    let row = rows.find((c) => (c[2] || '').trim().toUpperCase() === want);
+    let approx = false;
+    if (!row) {
+      if (rows.length !== 1) {
+        return { price: null, ambiguous: rows.map((c) => (c[2] || '').trim()).slice(0, 5) };
+      }
+      row = rows[0]; approx = true;   // 색상 변형 — ERP 가 이 1건으로 특정했다
+    }
+    const matchedCode = (row[2] || '').trim();
+    const kk = dcmSplitDual(row[9]);
+    const pp = dcmSplitDual(row[14]);
+    if (dcmNormK(kk.first) === dcmNormK(k)) return { price: pp.first, k: kk.first, matchedCode: matchedCode, approx: approx };
+    if (kk.second && dcmNormK(kk.second) === dcmNormK(k)) return { price: pp.second, k: kk.second, matchedCode: matchedCode, approx: approx };
+    return { price: null, avail: kk, matchedCode: matchedCode };   // 코드는 찾았는데 함량이 안 맞는다
   }
 
   let dcmBusy = false;
@@ -838,10 +857,15 @@
       setStatus('기초상품 판매가 조회 중… (' + it.itemNum + ' / ' + it.k + ')', 'go');
       const mp = await dcmMasterPrice(it.itemNum, it.k);
       if (!mp) { setStatus('기초상품관리에서 ' + it.itemNum + ' 을 못 찾았습니다(출고장은 삭제됨)', 'err'); return; }
+      if (mp.ambiguous) {
+        setStatus('기초상품이 여러 건이라 어느 것인지 정할 수 없습니다(' + mp.ambiguous.join(', ') +
+          ') — 직접 수정하세요. 출고장은 삭제됨', 'err');
+        return;
+      }
       if (!mp.price) {
         const av = mp.avail || {};
-        setStatus('함량 ' + it.k + ' 에 맞는 판매가가 없습니다(기초 품위: ' +
-          (av.first || '?') + (av.second ? ' / ' + av.second : '') + ') — 출고장은 삭제됨', 'err');
+        setStatus('함량 ' + it.k + ' 에 맞는 판매가가 없습니다(기초 ' + (mp.matchedCode || it.itemNum) +
+          ' 품위: ' + (av.first || '?') + (av.second ? ' / ' + av.second : '') + ') — 출고장은 삭제됨', 'err');
         return;
       }
 
@@ -850,6 +874,7 @@
       try {
         sessionStorage.setItem(DCM_PENDING_KEY, JSON.stringify({
           bc: barcode, itemNum: it.itemNum, k: it.k,
+          masterCode: mp.matchedCode || it.itemNum, approx: !!mp.approx,
           oldPrice: it.salePrice, newPrice: mp.price, junNum: junNum, ts: Date.now()
         }));
       } catch (_) {}
@@ -892,6 +917,8 @@
       '소비자가·판매가를 기초상품관리 기준으로 변경합니다.\n\n' +
       '바코드   : ' + p.bc + '\n' +
       '상품코드 : ' + p.itemNum + '\n' +
+      (p.approx && p.masterCode && p.masterCode !== p.itemNum
+        ? '기초코드 : ' + p.masterCode + '   ← 색상만 다른 같은 상품\n' : '') +
       '함량     : ' + p.k + '\n\n' +
       '현재 판매가  : ' + before + '\n' +
       (conEl ? '현재 소비자가 : ' + beforeCon + '\n' : '') +
