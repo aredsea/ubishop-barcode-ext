@@ -638,6 +638,187 @@
   }
 
   /* ==========================================================================
+   *  5.5a) 출고 확인 취소 → 판매가 수정 진입 — inputItemWriteForm.do 사이드바 섹션.
+   *   바코드 1개로 ①매장출고전표에서 그 바코드의 최신 출고장 삭제(= 출고 확인 취소)
+   *   ②입고장 조회 ③입고장 로드 후 해당 품목의 수정 링크를 눌러 편집 폼에 싣기까지.
+   *   ⚠ 판매가 입력·저장은 하지 않는다 — 기존 판매가를 보고 사람이 값을 정하는 작업이다.
+   *   ⚠ 재출고도 하지 않는다(담당자가 인지하고 직접 한다).
+   *   🔴 출고된 품목은 입고장에서 수정 링크가 사라진다(구분이 아니라 출고 여부가 가른다 —
+   *      2026-08-05 실측). 그래서 삭제가 먼저다. 이게 이 기능이 존재하는 이유다.
+   *   spec: docs/superpowers/specs/2026-08-05-delivcancel-to-price-edit-design.md
+   * ========================================================================== */
+  const DCM_TAG = '[UB][delivcancel]';
+  const dcmLog = (...a) => { try { console.log(DCM_TAG, ...a); } catch (_) {} };
+  const DCM_PENDING_KEY = 'UB_DCM_PENDING';
+  const DCM_LOG_KEY = 'UB_DCM_LOG';
+  let dcmSetHere = false;   // 이 문서가 flag 를 세팅했으면 자기가 소비하지 않는다(ubHlSetHere 와 같은 규율)
+
+  // 🔴 postDoc 은 doc 만 돌려줘서 성공 판정을 할 수 없다. 유비샵은 POST-redirect-GET 이고
+  //   성공·실패 모두 폼페이지로 리다이렉트되며 **실패일 때만** URL 쿼리 msg 에 사유가 실린다.
+  //   응답 본문의 alert 문구 스캔은 항상 오탐이다(폼페이지에 검증 alert 이 상시 박혀 있음).
+  async function dcmPostRaw(action, params) {
+    const r = await fetch(action, {
+      method: 'POST', credentials: 'include', cache: 'no-cache',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: params.toString()
+    });
+    const buf = await r.arrayBuffer();
+    let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+    return { html: html, url: r.url, doc: new DOMParser().parseFromString(html, 'text/html') };
+  }
+
+  // 🔴 유비샵은 폼 중첩이 깨져 있어 DOMParser 의 form.elements 가 hidden 을 놓친다(0개~일부만).
+  //   HTML 문자열에서 정규식으로 직접 뽑는다. sKey 를 빠뜨리면 서버가 처리하지 않는다.
+  function dcmHidden(html, name) {
+    const re = new RegExp('<input[^>]*\\bname\\s*=\\s*["\']?' + name + '["\']?[^>]*>', 'i');
+    const tag = (String(html || '').match(re) || [])[0];
+    if (!tag) return null;
+    const m = tag.match(/\bvalue\s*=\s*"([^"]*)"/i) || tag.match(/\bvalue\s*=\s*'([^']*)'/i);
+    return m ? m[1] : '';
+  }
+
+  // 검색 조건 — 전체 기간. searchSortType=seq 로 받아야 서버가 seq 내림차순으로 주고,
+  // 그 첫 행이 '가장 최근' 출고 건이다(출고일 문자열 정렬은 같은 날 다건에서 안 갈린다).
+  function dcmSearchParams(barcode) {
+    return Object.assign({}, dateParams(), {
+      pageSize: '100', searchSortType: 'seq', searchDateType: 'delivDate', searchBarcode: barcode
+    });
+  }
+
+  // 출고전표에서 그 바코드의 출고 건을 찾는다.
+  // 🔴 바코드는 검색폼에 echo 되므로 html.includes(barcode) 로 결과 유무를 판별하면 안 된다.
+  //   idx 체크박스 value(`423961,26079J,46885,0` — 2번째 칸이 바코드)의 토큰 정확일치로 찾는다.
+  async function dcmFindDeliv(barcode) {
+    const { html, doc } = await dcmPostRaw('/jun/delivitem/delivItemList.do?tcode=deliv_item',
+      new URLSearchParams(dcmSearchParams(barcode)));
+    const want = String(barcode || '').trim().toUpperCase();
+    const hits = [...doc.querySelectorAll('input[name=idx]')]
+      .filter((b) => (b.value || '').split(',').some((s) => s.trim().toUpperCase() === want));
+    const sKey = dcmHidden(html, 'sKey');
+    if (!hits.length) return { count: 0, sKey: sKey };
+    const tr = hits[0].closest('tr');
+    const c = tr ? [...tr.cells].map((x) => (x.textContent || '').replace(/\s+/g, ' ').trim()) : [];
+    // 열: 0 No · 2 출고장번호 · 4 출고일(확인일) · 8 매장명·상품정보 · 14 상태
+    return {
+      count: hits.length, sKey: sKey, idx: hits[0].value,
+      junNum: c[2] || '', delivDate: c[4] || '', shop: (c[8] || '').slice(0, 30), status: c[14] || ''
+    };
+  }
+
+  // 삭제 — 페이지 del() 과 같은 구조다:
+  //   idx_form.action = "/jun/delivitem/delivItemDelete.do?tcode=deliv_item" + CONST_URL; submit()
+  // CONST_URL 은 현재 검색조건이라 우리가 같은 조건을 실어 보낸다. 본문엔 sKey + 체크된 idx.
+  async function dcmDelete(target, barcode) {
+    const p = new URLSearchParams(dcmSearchParams(barcode));
+    p.set('sKey', target.sKey == null ? '' : target.sKey);
+    p.set('idx', target.idx);
+    const { url } = await dcmPostRaw('/jun/delivitem/delivItemDelete.do?tcode=deliv_item', p);
+    let msg = '';
+    try { msg = new URL(url, location.origin).searchParams.get('msg') || ''; } catch (_) {}
+    return { ok: !msg, msg: msg };
+  }
+
+  // 처리 로그 — 삭제는 되돌릴 수 없으므로 **삭제 전에** 남긴다. 되돌려야 할 때의 유일한 근거다.
+  function dcmAppendLog(entry) {
+    try {
+      let list = [];
+      const raw = localStorage.getItem(DCM_LOG_KEY);
+      if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) list = p; }
+      list.push(Object.assign({ ts: Date.now() }, entry));
+      if (list.length > 500) list.splice(0, list.length - 500);
+      localStorage.setItem(DCM_LOG_KEY, JSON.stringify(list));
+      return true;
+    } catch (_) { return false; }
+  }
+
+  let dcmBusy = false;
+  async function dcmRun(barcode, setStatus) {
+    barcode = (barcode || '').trim();
+    if (!barcode) { setStatus('바코드를 입력하세요', 'warn'); return; }
+    if (dcmBusy) return; dcmBusy = true;
+    try {
+      setStatus('출고 내역 조회 중…', 'go');
+      const t = await dcmFindDeliv(barcode);
+      if (!t.count) { setStatus('출고 기록이 없습니다 — 취소할 출고장이 없습니다', 'err'); return; }
+
+      const many = t.count > 1
+        ? '\n\n⚠ 이 바코드로 ' + t.count + '건이 검색됐습니다. 그중 가장 최근 1건만 지웁니다.' : '';
+      const go = window.confirm(
+        '출고 확인 취소 — 아래 출고장을 삭제합니다.\n\n' +
+        '바코드 : ' + barcode + '\n' +
+        '출고장 : ' + t.junNum + '\n' +
+        '출고일 : ' + t.delivDate + '\n' +
+        '매장   : ' + t.shop + '\n' +
+        '상태   : ' + t.status + many +
+        '\n\n삭제는 되돌릴 수 없습니다. 진행할까요?'
+      );
+      if (!go) { setStatus('취소했습니다', 'warn'); return; }
+
+      if (!dcmAppendLog({ phase: 'before_delete', barcode: barcode, junNum: t.junNum,
+                          delivDate: t.delivDate, shop: t.shop, status: t.status,
+                          idx: t.idx, count: t.count })) {
+        setStatus('처리 로그를 남길 수 없어 삭제하지 않았습니다', 'err'); return;
+      }
+
+      setStatus('출고장 ' + t.junNum + ' 삭제 중…', 'go');
+      const d = await dcmDelete(t, barcode);
+      if (!d.ok) { setStatus('삭제 실패: ' + d.msg, 'err'); return; }
+      dcmAppendLog({ phase: 'deleted', barcode: barcode, junNum: t.junNum });
+      dcmLog('삭제 완료', barcode, t.junNum);
+
+      // 여기부터는 출고장이 이미 없다 — 어떤 실패든 그 사실을 문구에 반드시 포함한다.
+      setStatus('입고장 조회 중…', 'go');
+      const junNum = await barcodeToJunNum(barcode);
+      if (!junNum) { setStatus('출고장은 삭제됐으나 입고장을 못 찾았습니다 — 직접 확인하세요', 'err'); return; }
+      const seq = await junNumToSeq(junNum);
+      if (!seq) { setStatus('출고장은 삭제됐으나 입고장 seq를 못 찾았습니다 (' + junNum + ')', 'err'); return; }
+
+      setStatus('입고장 ' + junNum + ' 여는 중…', 'go');
+      try { sessionStorage.setItem(DCM_PENDING_KEY, JSON.stringify({ bc: barcode, ts: Date.now() })); } catch (_) {}
+      dcmSetHere = true;
+      ubHlStore(barcode);   // 로드된 새 문서가 해당 행을 강조·스크롤
+      loadVoucher(seq);     // 페이지 리로드 → 아래 dcmClickModifyPending 이 수정 링크를 누른다
+    } catch (e) {
+      dcmLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
+    } finally { dcmBusy = false; }
+  }
+
+  // 입고장이 로드된 뒤 해당 바코드 행의 수정 링크를 눌러 편집 폼에 싣는다.
+  // 🔴 skin.js 는 ISOLATED world 라 페이지 전역 modify() 를 직접 부를 수 없다 →
+  //   실제 <a href="javascript:modify('...')"> 엘리먼트를 클릭해 페이지 컨텍스트에서 실행시킨다.
+  // 수정 링크가 끝내 안 나타나면 삭제가 실제로는 반영되지 않았다는 신호다 — 조용히 넘기지 않는다.
+  function dcmClickModifyPending(setStatus) {
+    if (!isInboundWrite() || dcmSetHere) return;
+    let raw = null;
+    try { raw = sessionStorage.getItem(DCM_PENDING_KEY); } catch (_) {}
+    if (!raw) return;
+    let bc = '';
+    try { bc = (JSON.parse(raw) || {}).bc || ''; } catch (_) {}
+    try { sessionStorage.removeItem(DCM_PENDING_KEY); } catch (_) {}
+    if (!bc) return;
+    let tries = 0;
+    const iv = setInterval(() => {
+      tries++;
+      const row = ubFindRow(bc);
+      const a = row ? row.querySelector('a[href*="modify("]') : null;
+      if (a) {
+        clearInterval(iv);
+        dcmLog('수정 링크 클릭', bc);
+        if (setStatus) setStatus(bc + ' 수정 폼을 열었습니다 — 판매가를 확인·수정하세요', 'ok');
+        a.click();
+        return;
+      }
+      if (tries > 40) {
+        clearInterval(iv);
+        const why = row ? '수정 링크가 없습니다(출고 취소가 반영되지 않았을 수 있습니다)' : '해당 바코드 행을 못 찾았습니다';
+        dcmLog('수정 진입 실패', bc, why);
+        if (setStatus) setStatus('출고장은 삭제됐으나 ' + why, 'err');
+      }
+    }, 100);
+  }
+
+  /* ==========================================================================
    *  5.5b) 메인석 입고 자동화 — inputStoneWriteForm.do 사이드바 섹션.
    *   바코드1개로 ①inputStoneList.do(searchBarcode,태초~오늘)→입고장번호
    *   ②inputStoneJunList.do(searchJunNum)→seq(선택셀 setSeting(form2,'seq'))
@@ -2750,6 +2931,14 @@
           </div>
           <div class="ub-stk-st" id="ub-stk-st"></div>
         </div>
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.barcode}<span>출고취소 → 판매가 수정</span></div>
+          <div class="ub-stk-row">
+            <input id="ub-dcm-in" class="ub-stk-in" placeholder="바코드 입력 후 Enter" autocomplete="off" spellcheck="false">
+            <button class="ub-sb-btn ub-stk-go" id="ub-dcm-go">출고취소</button>
+          </div>
+          <div class="ub-stk-st" id="ub-dcm-st"></div>
+        </div>
       ` : ''}
 
       ${isRotateWrite() ? `
@@ -2880,6 +3069,19 @@
         if (last && last.junNum) setStkStatus('직전: ' + last.barcode + ' → 입고장 ' + last.junNum + ' 불러옴 ✓', 'ok');
       } catch (_) {}
       setTimeout(() => { try { stkIn.focus(); } catch (_) {} }, 400);
+    }
+
+    // 출고취소 → 판매가 수정 배선 (inputItemWriteForm.do). 포커스는 뺏지 않는다(재고화가 기본).
+    const dcmIn = bar.querySelector('#ub-dcm-in');
+    const dcmStEl = bar.querySelector('#ub-dcm-st');
+    if (dcmIn && dcmStEl) {
+      const setDcmStatus = (t, k) => { dcmStEl.textContent = t || ''; dcmStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
+      const goDcm = () => dcmRun(dcmIn.value, setDcmStatus);
+      const dcmGoBtn = bar.querySelector('#ub-dcm-go');
+      if (dcmGoBtn) dcmGoBtn.addEventListener('click', goDcm);
+      dcmIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goDcm(); } });
+      // 리로드로 돌아온 경우: 대기 중인 바코드의 수정 링크를 눌러 편집 폼에 싣는다.
+      dcmClickModifyPending(setDcmStatus);
     }
 
     // 회전입고 배선 (rotateItemWriteForm.do) — 재렌더마다 재바인딩되니 정상.
