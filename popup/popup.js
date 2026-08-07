@@ -124,7 +124,10 @@
     ambiguous_page: '페이지 상태 불명',
     wrong_account: '다른 계정으로 로그인됨',
     max_attempts: '전환 반복 초과',
-    decrypt_fail: '계정 정보 복호화 실패'
+    decrypt_fail: '계정 정보 복호화 실패 — 계정을 다시 등록해야 합니다',
+    account_missing: '계정 정보를 찾을 수 없음',
+    // fsm 이 내는 코드인데 표에 없어 실패해도 문구가 안 떴다(Sol 검수 지적).
+    captcha_present: '보안문자(캡차)가 떠 있어 중단 — 직접 로그인하세요'
   };
   const terminalText = {
     unrelated_host: '다른 페이지로 이동되어 전환 중단',
@@ -137,6 +140,14 @@
   statusEl.setAttribute('role', 'status');
   statusEl.style.cssText = STATUS_FAIL;
   listEl.parentNode.insertBefore(statusEl, listEl);
+  // 전환을 시작조차 못 한 경우를 즉시 보여준다(flow 가 기록되지 않아 renderFlowStatus 로는 안 뜬다).
+  function showFail(text) {
+    try {
+      statusEl.style.cssText = STATUS_FAIL;
+      statusEl.textContent = text;
+      statusEl.style.display = 'block';
+    } catch (_) {}
+  }
 
   async function renderFlowStatus() {
     try {
@@ -232,7 +243,20 @@
     // 현재 화면 판별 → 로그아웃 → 로그인 → PMS 진입까지 진행한다.
     let tab = null;
     try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch (_) {}
-    try { chrome.runtime.sendMessage({ source: 'ub', type: 'ubSwitchAccount', accountId: id, tabId: tab && tab.id, tabUrl: tab && tab.url }); } catch (_) {}
+    // 🔴 응답을 기다린다. 종전엔 보내자마자 팝업을 닫아서, startSwitch 가 즉시
+    //   'account not found' / 'no tab' 으로 거절해도 flow 가 기록되지 않아 **이전 실패 문구가
+    //   그대로 남았다**(Sol 검수 지적). 시작조차 못 한 것과 진행 중 실패는 구분돼야 한다.
+    let res = null;
+    try {
+      res = await chrome.runtime.sendMessage({
+        source: 'ub', type: 'ubSwitchAccount', accountId: id, tabId: tab && tab.id, tabUrl: tab && tab.url
+      });
+    } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    if (res && res.ok === false) {
+      const m = { 'account not found': '계정 정보를 찾을 수 없음', 'no tab': '활성 탭을 찾을 수 없음' };
+      showFail(m[res.error] || ('전환을 시작하지 못했습니다: ' + res.error));
+      return;   // 팝업을 닫지 않는다 — 사용자가 사유를 봐야 한다
+    }
     window.close();
   }
 

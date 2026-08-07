@@ -424,7 +424,9 @@ async function ubSaveLoginName(accountId, loginName) {
   try {
     const { ubAccounts } = await chrome.storage.local.get('ubAccounts');
     const list = ubAccounts || [];
-    const acc = list.find(a => a.id === accountId || ubNormName(a.loginName || a.userid) === ubNormName(accountId));
+    // 같은 규칙을 쓴다 — 여기도 종전엔 loginName 이 userid 를 가려서, 한 번 저장된 뒤로는
+    // 대상 계정을 다시 찾지 못하고 갱신이 조용히 건너뛰어졌다.
+    const acc = list.find(a => ubMatchAccount(a, accountId));
     if (!acc || acc.loginName === loginName) return;
     acc.loginName = loginName;
     await chrome.storage.local.set({ ubAccounts: list });
@@ -439,9 +441,23 @@ async function ubVaultKey() {
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
     base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
 }
+// 🔴 계정 조회는 id · userid · loginName 을 **모두** 후보로 본다.
+//   종전엔 `a.loginName || a.userid` 로 **둘 중 하나만** 비교했다. loginName 은 첫 전환이
+//   성공한 뒤 ubSaveLoginName 이 저장하는데, startSwitch 는 flow.accountId 에 **userid** 를
+//   넣는다. 그래서 loginName 이 저장된 순간부터 로그인 폼 단계의 재조회
+//   ubAccount(flow.accountId=userid) 가 매번 실패했다 — "처음엔 되고 그 뒤로 안 됨" 의 정체다.
+//   (예: loginName "홍해진" vs userid "홍해진@디102" → 종전 규칙은 userid 를 안 본다.)
+//   빈 문자열은 비교하지 않는다 — 안 그러면 loginName 이 없는 계정이 전부 걸린다.
+function ubMatchAccount(a, id) {
+  if (!a) return false;
+  if (a.id === id) return true;
+  const want = ubNormName(id);
+  if (!want) return false;
+  return ubNormName(a.userid) === want || ubNormName(a.loginName) === want;
+}
 async function ubAccount(id) {
   const { ubAccounts } = await chrome.storage.local.get('ubAccounts');
-  return (ubAccounts || []).find(a => a.id === id || ubNormName(a.loginName || a.userid) === ubNormName(id));
+  return (ubAccounts || []).find(a => ubMatchAccount(a, id));
 }
 // 계정 저장소 자가진단 — "계정은 보이는데 전환만 실패" 의 원인을 한 번에 가른다.
 // 🔴 비밀은 노출하지 않는다: 복호화를 **시도만** 하고 평문은 즉시 버리며, 남기는 것은

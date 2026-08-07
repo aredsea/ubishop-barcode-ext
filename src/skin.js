@@ -3625,39 +3625,11 @@
       });
     } catch (_) {}
   }
-  // 계정 저장소 자가진단 — "계정은 보이는데 전환만 실패" 의 원인을 한 번에 가른다.
-  // 🔴 실제 복호화 검증은 **service worker 에 맡긴다.** ubdstore 는 http 라 콘텐츠
-  //   스크립트가 비보안 컨텍스트이고, 거기선 crypto.subtle 이 undefined 다.
-  //   (이 저장소가 loader-integrity 설계 때 이미 실측해 문서에 남긴 함정인데, 처음
-  //    자가진단을 여기서 돌렸다가 "importKey of undefined" 로 헛돌았다.)
-  //   비밀은 노출되지 않는다 — SW 가 복호화를 시도만 하고 성공 boolean 만 돌려준다.
-  async function acctSelfCheck() {
-    let out = {};
-    try {
-      out = await new Promise((resolve) => {
-        let done = false;
-        const t = setTimeout(() => { if (!done) { done = true; resolve({ err: 'SW 무응답(15초)' }); } }, 15000);
-        try {
-          // 🔴 source:'ub' 가 없으면 background 라우터 첫 줄(msg.source !== 'ub')에서 그대로
-          //   걸러지고, 리스너가 즉시 반환하면서 포트가 닫혀 "message port closed" 가 난다.
-          chrome.runtime.sendMessage({ source: 'ub', type: 'ubAcctDiag' }, (res) => {
-            if (done) return; done = true; clearTimeout(t);
-            const le = chrome.runtime.lastError;
-            resolve(le ? { err: 'SW 오류: ' + le.message } : (res || { err: '빈 응답' }));
-          });
-        } catch (e) { if (!done) { done = true; clearTimeout(t); resolve({ err: String((e && e.message) || e) }); } }
-      });
-      // 미러와의 솔트 일치는 여기서만 볼 수 있다(미러는 페이지 origin 의 localStorage).
-      try {
-        const d = await chrome.storage.local.get('ubLoginSalt');
-        const m = JSON.parse(localStorage.getItem(ACCT_MIRROR_KEY) || 'null');
-        out.saltMatchesMirror = !!(d && d.ubLoginSalt) && d.ubLoginSalt === (m && m.ubLoginSalt);
-      } catch (_) {}
-    } catch (e) { out = { err: String((e && e.message) || e) }; }
-    try { document.documentElement.dataset.ubAcctDiag = JSON.stringify(out); } catch (_) {}
-    try { console.log('[UB][acct] 저장소 자가진단', out); } catch (_) {}
-    return out;
-  }
+  // 🔴 계정 저장소 자가진단은 **콘텐츠 스크립트에서 돌리지 않는다**(Sol 검수 지적 2026-08-05).
+  //   skin.js 는 all_frames:true 라 페이지·프레임마다 PBKDF2 10만 회 × 계정 수가 돌고,
+  //   결과를 공유 DOM(dataset)에 남기면 ERP 페이지 스크립트가 계정 id·alias·loginName 을
+  //   읽을 수 있다. 비밀번호는 아니지만 "구조만 노출" 보다 범위가 넓다.
+  //   진단이 필요하면 background 의 ubAcctDiag 메시지를 **팝업(확장 페이지)에서** 부른다.
 
   function restoreAccountsFromMirror() {
     try {
@@ -5474,7 +5446,6 @@
     initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
-    setTimeout(() => { try { acctSelfCheck(); } catch (_) {} }, 800);   // 복원이 끝난 뒤 상태 점검
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
     startObserver();
