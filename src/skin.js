@@ -3625,47 +3625,33 @@
       });
     } catch (_) {}
   }
-  // 계정 저장소 자가진단 — "계정은 보이는데 전환만 실패" 를 눈으로 가릴 수 있게 한다.
-  // 🔴 비밀은 절대 노출하지 않는다: 복호화를 **시도만** 하고 평문은 즉시 버리며,
-  //    남기는 것은 존재 여부·길이·성공 boolean 뿐이다. 결과는 <html data-ub-acct-diag>.
-  // 이걸 넣은 이유: 저장소가 ISOLATED world 전용이라 페이지에서 상태를 볼 수 없었고,
-  // 그 탓에 원인을 데이터/코드 어느 쪽인지 계속 추측만 하게 됐다.
+  // 계정 저장소 자가진단 — "계정은 보이는데 전환만 실패" 의 원인을 한 번에 가른다.
+  // 🔴 실제 복호화 검증은 **service worker 에 맡긴다.** ubdstore 는 http 라 콘텐츠
+  //   스크립트가 비보안 컨텍스트이고, 거기선 crypto.subtle 이 undefined 다.
+  //   (이 저장소가 loader-integrity 설계 때 이미 실측해 문서에 남긴 함정인데, 처음
+  //    자가진단을 여기서 돌렸다가 "importKey of undefined" 로 헛돌았다.)
+  //   비밀은 노출되지 않는다 — SW 가 복호화를 시도만 하고 성공 boolean 만 돌려준다.
   async function acctSelfCheck() {
-    const out = { accounts: 0, saltPresent: false, saltLen: 0, saltMatchesMirror: false, items: [], decrypt: [] };
+    let out = {};
     try {
-      const d = await chrome.storage.local.get(['ubAccounts', 'ubLoginSalt']);
-      const accs = (d && d.ubAccounts) || [];
-      const salt = (d && d.ubLoginSalt) || '';
-      let mirrorSalt = '';
-      try { const m = JSON.parse(localStorage.getItem(ACCT_MIRROR_KEY) || 'null'); mirrorSalt = (m && m.ubLoginSalt) || ''; } catch (_) {}
-      out.accounts = accs.length;
-      out.saltPresent = !!salt;
-      out.saltLen = salt.length;
-      out.saltMatchesMirror = !!salt && salt === mirrorSalt;
-      out.items = accs.map((a) => ({
-        hasPwEnc: !!a.pwEnc,
-        ivLen: a.pwEnc ? String(a.pwEnc.iv || '').length : 0,
-        ctLen: a.pwEnc ? String(a.pwEnc.ct || '').length : 0
-      }));
-      if (salt && accs.length) {
-        const rawSalt = Uint8Array.from(atob(salt), (c) => c.charCodeAt(0));
-        const base = await crypto.subtle.importKey('raw',
-          new TextEncoder().encode('ubshop-acct-vault-v2'), 'PBKDF2', false, ['deriveKey']);
-        const key = await crypto.subtle.deriveKey(
-          { name: 'PBKDF2', salt: rawSalt, iterations: 100000, hash: 'SHA-256' },
-          base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-        for (const a of accs) {
-          let ok = false;
-          try {
-            const iv = Uint8Array.from(atob(a.pwEnc.iv), (c) => c.charCodeAt(0));
-            const ct = Uint8Array.from(atob(a.pwEnc.ct), (c) => c.charCodeAt(0));
-            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);   // 평문은 받지 않는다
-            ok = true;
-          } catch (_) {}
-          out.decrypt.push(ok);
-        }
-      }
-    } catch (e) { out.err = String((e && e.message) || e); }
+      out = await new Promise((resolve) => {
+        let done = false;
+        const t = setTimeout(() => { if (!done) { done = true; resolve({ err: 'SW 무응답(15초)' }); } }, 15000);
+        try {
+          chrome.runtime.sendMessage({ type: 'ubAcctDiag' }, (res) => {
+            if (done) return; done = true; clearTimeout(t);
+            const le = chrome.runtime.lastError;
+            resolve(le ? { err: 'SW 오류: ' + le.message } : (res || { err: '빈 응답' }));
+          });
+        } catch (e) { if (!done) { done = true; clearTimeout(t); resolve({ err: String((e && e.message) || e) }); } }
+      });
+      // 미러와의 솔트 일치는 여기서만 볼 수 있다(미러는 페이지 origin 의 localStorage).
+      try {
+        const d = await chrome.storage.local.get('ubLoginSalt');
+        const m = JSON.parse(localStorage.getItem(ACCT_MIRROR_KEY) || 'null');
+        out.saltMatchesMirror = !!(d && d.ubLoginSalt) && d.ubLoginSalt === (m && m.ubLoginSalt);
+      } catch (_) {}
+    } catch (e) { out = { err: String((e && e.message) || e) }; }
     try { document.documentElement.dataset.ubAcctDiag = JSON.stringify(out); } catch (_) {}
     try { console.log('[UB][acct] 저장소 자가진단', out); } catch (_) {}
     return out;

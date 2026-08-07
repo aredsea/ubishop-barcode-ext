@@ -42,6 +42,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ---- 계정 빠른 전환 오케스트레이션(팝업 → SW) ----
   if (msg.type === 'ubSwitchAccount') { startSwitch(msg).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+  // 🔴 저장소 자가진단은 **반드시 SW 에서** 돈다. ubdstore 는 http 라 콘텐츠 스크립트에서는
+  //   crypto.subtle 이 undefined 다(비보안 컨텍스트 — loader-integrity 설계문서에 실측 기록).
+  //   SW·팝업만 보안 컨텍스트라 실제 복호화 검증이 가능하다.
+  if (msg.type === 'ubAcctDiag') { ubAcctDiag().then(sendResponse).catch(e => sendResponse({ err:String(e&&e.message||e) })); return true; }
 
   // ---- 자동화 오케스트레이터 ----
   if (msg.type === 'ubAutoCreateJob')  { sendResponse(ubAutoCreateJob(msg, sender)); return false; }
@@ -439,6 +443,37 @@ async function ubAccount(id) {
   const { ubAccounts } = await chrome.storage.local.get('ubAccounts');
   return (ubAccounts || []).find(a => a.id === id || ubNormName(a.loginName || a.userid) === ubNormName(id));
 }
+// 계정 저장소 자가진단 — "계정은 보이는데 전환만 실패" 의 원인을 한 번에 가른다.
+// 🔴 비밀은 노출하지 않는다: 복호화를 **시도만** 하고 평문은 즉시 버리며, 남기는 것은
+//   존재 여부·길이·성공 boolean 뿐이다. 이 함수는 SW(보안 컨텍스트)에서만 의미가 있다.
+async function ubAcctDiag() {
+  const out = { accounts: 0, saltPresent: false, saltLen: 0, ids: [], items: [], decrypt: [] };
+  try {
+    const d = await chrome.storage.local.get(['ubAccounts', 'ubLoginSalt']);
+    const accs = (d && d.ubAccounts) || [];
+    const salt = (d && d.ubLoginSalt) || '';
+    out.accounts = accs.length;
+    out.saltPresent = !!salt;
+    out.saltLen = salt.length;
+    // id 는 전환 요청이 계정을 찾는 열쇠라 앞부분만 남긴다(account_missing 진단용).
+    out.ids = accs.map((a) => String(a.id || '').slice(0, 6));
+    out.items = accs.map((a) => ({
+      alias: a.alias || '',
+      hasPwEnc: !!a.pwEnc,
+      ivLen: a.pwEnc ? String(a.pwEnc.iv || '').length : 0,
+      ctLen: a.pwEnc ? String(a.pwEnc.ct || '').length : 0,
+      loginName: a.loginName || ''
+    }));
+    if (!salt || !accs.length) return out;
+    for (const a of accs) {
+      let ok = false;
+      try { await ubDecrypt(a); ok = true; } catch (_) {}   // 평문은 받지 않는다
+      out.decrypt.push(ok);
+    }
+  } catch (e) { out.err = String((e && e.message) || e); }
+  return out;
+}
+
 async function ubDecrypt(acc) {
   const key = await ubVaultKey(); if (!key) throw new Error('no key');
   const o = acc.pwEnc; const iv = Uint8Array.from(atob(o.iv), c => c.charCodeAt(0)); const ct = Uint8Array.from(atob(o.ct), c => c.charCodeAt(0));
