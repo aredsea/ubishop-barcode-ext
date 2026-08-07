@@ -95,13 +95,28 @@ test('scenario 4: overall flow deadline is enforced independently', () => {
   assert.equal(result.terminalReason, 'flow_deadline');
 });
 
-test('observed target postcondition wins at the overall deadline', () => {
+// 마감 시점에도 "관측된 대상" 이 우선한다는 원래 의도는 **PMS 링크가 있을 때** 그대로 유지된다.
+test('observed target postcondition wins at the overall deadline (PMS 링크 있음)', () => {
+  const result = decide(
+    flow('submitted', { submittedFor: 'B', enteredAt: DEADLINE.flow - 1000 }),
+    probe({ hasLogout: true, loginName: 'B', pmsHref: 'https://www.honsu114.com/pamasLogin.do' }),
+    DEADLINE.flow + 1
+  );
+  assert.equal(result.action, 'navigatePms');
+});
+
+// 🔴 종전엔 PMS 링크가 없어도 succeed 로 끝냈다. 그래서 로그인은 됐는데 PMS 로 못 넘어간 채
+//   main.ubs 에 남고, 성공 처리라 watchdog 도 꺼져 사용자는 "왜 멈췄는지" 알 수 없었다
+//   (실제 사용자 신고 증상). 이제는 유예 뒤 pms_link_missing 으로 명시 실패시켜 문구를 띄운다.
+//   로그인 자체는 성공했으므로 계정은 바뀌어 있다 — 문구가 다음 행동을 안내한다.
+test('마감 시점에 PMS 링크가 없으면 pms_link_missing 으로 명시 실패한다 (조용한 멈춤 금지)', () => {
   const result = decide(
     flow('submitted', { submittedFor: 'B', enteredAt: DEADLINE.flow - 1000 }),
     probe({ hasLogout: true, loginName: 'B' }),
     DEADLINE.flow + 1
   );
-  assert.equal(result.action, 'succeed');
+  assert.equal(result.action, 'fail');
+  assert.equal(result.failureCode, 'pms_link_missing');
 });
 
 test('scenario 5: conflicting signals wait then fail ambiguous_page', () => {
@@ -138,17 +153,21 @@ test('first submitted login bootstraps an unknown targetLoginName', () => {
 test('scenario 7: resumed submitted flow trusts live target evidence', () => {
   const withPms = decide(flow('submitted', { submittedFor: 'B' }), probe({ hasLogout: true, loginName: 'B', pmsHref: 'https://pms.example/' }), 100);
   assert.equal(withPms.action, 'navigatePms');
+  // PMS 링크가 아직 없으면 **성공으로 끝내지 않고 기다린다** — 링크가 늦게 그려지는 페이지가 있다.
+  // 유예 안에 안 나타나면 위의 pms_link_missing 테스트가 명시 실패를 보증한다.
   const withoutPms = decide(flow('submitted', { submittedFor: 'B' }), probe({ hasLogout: true, loginName: 'B' }), 100);
-  assert.equal(withoutPms.action, 'succeed');
+  assert.equal(withoutPms.action, 'wait');
 });
 
 test('targetLoginName verifies display identity without changing submittedFor accountId', () => {
   const result = decide(
     flow('submitted', { accountId: 'userid-b', targetLoginName: 'Shop B', submittedFor: 'userid-b' }),
-    probe({ hasLogout: true, loginName: ' shop b ' }),
+    // 이 테스트의 의도는 **표시명 정규화**(' shop b ' ↔ 'Shop B')가 통하는지다. PMS 동작이 아니므로
+    // 링크를 줘서 그 축을 고정한다 — 링크가 없을 때의 동작은 pms_link_missing 테스트가 따로 본다.
+    probe({ hasLogout: true, loginName: ' shop b ', pmsHref: 'https://www.honsu114.com/pamasLogin.do' }),
     100
   );
-  assert.equal(result.action, 'succeed');
+  assert.equal(result.action, 'navigatePms');
 });
 
 test('scenario 7: resumed submitted flow never fills a reappeared form', () => {

@@ -126,13 +126,23 @@
     max_attempts: '전환 반복 초과',
     decrypt_fail: '계정 정보 복호화 실패 — 계정을 다시 등록해야 합니다',
     account_missing: '계정 정보를 찾을 수 없음',
+    fields_missing: '로그인 입력칸을 찾지 못했습니다 — 페이지를 새로고침한 뒤 다시 시도하세요',
+    readback_mismatch: '로그인 입력값 확인에 실패했습니다 — 자동완성을 끄고 다시 시도하세요',
+    login_not_submitted: '로그인이 제출되지 않았습니다 — 직접 로그인한 뒤 다시 시도하세요',
+    login_injection_failed: '로그인 자동 입력에 실패했습니다 — 탭을 새로고침한 뒤 다시 시도하세요',
+    logout_injection_failed: '자동 로그아웃에 실패했습니다 — 직접 로그아웃한 뒤 다시 시도하세요',
+    pms_link_missing: 'PMS 이동 링크를 찾지 못했습니다 — 페이지를 새로고침한 뒤 다시 시도하세요',
+    orchestrator_error: '계정 전환 중 오류가 발생했습니다 — 페이지를 새로고침한 뒤 다시 시도하세요',
+    tab_gone: '전환하던 탭이 닫혔습니다 — 탭을 다시 연 뒤 시도하세요',
     // fsm 이 내는 코드인데 표에 없어 실패해도 문구가 안 떴다(Sol 검수 지적).
     captcha_present: '보안문자(캡차)가 떠 있어 중단 — 직접 로그인하세요'
   };
   const terminalText = {
     unrelated_host: '다른 페이지로 이동되어 전환 중단',
     flow_deadline: '시간 초과 — 다시 시도',
-    account_missing: '계정 정보를 찾을 수 없음'
+    account_missing: '계정 정보를 찾을 수 없음',
+    orchestrator_error: '계정 전환 중 오류가 발생했습니다 — 페이지를 새로고침한 뒤 다시 시도하세요',
+    tab_gone: '전환하던 탭이 닫혔습니다 — 탭을 다시 연 뒤 시도하세요'
   };
   const STATUS_BASE = 'display:none;margin:0 0 8px;padding:8px 10px;border-radius:8px;font-size:11px;font-weight:700;line-height:1.4;';
   const STATUS_FAIL = STATUS_BASE + 'background:#fff3f3;color:#b42318;border:1px solid #f0b4b4;';

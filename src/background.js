@@ -398,22 +398,34 @@ function UB_FILL_LOGIN(userid, pw) {
   //  실제 login() 의 최종 제출 기전(동기 form.submit / requestSubmit / AJAX)은 라이브 조사가 필요하다.
   //  현재는 위 동기 read-back 으로 흔한 케이스만 닫았고, 진단 로그로 잔여 오작동을 관측한다.
   let via = '';
-  try { if (typeof login === 'function') { login(); via = 'login()'; } } catch (e) { via = 'err'; }
-  if (via !== 'login()') {
+  let submitted = false;
+  try {
+    if (typeof login === 'function') { login(); via = 'login()'; submitted = true; }
+  } catch (e) { via = 'login_error'; }
+  if (!submitted) {
     const btn = document.querySelector('a.btn_submit, [onclick*="login" i]');
-    if (btn) { btn.click(); via += '|btn'; }
-    else { try { pwEl.form.submit(); via += '|submit'; } catch (e) {} }
+    if (btn) {
+      try { btn.click(); via += '|btn'; submitted = true; } catch (e) { via += '|btn_error'; }
+    } else {
+      try { pwEl.form.submit(); via += '|submit'; submitted = true; } catch (e) { via += '|submit_error'; }
+    }
   }
   try { console.log('[UB][login] submit', { via, useridPrefix: String(userid).slice(0, 4) }); } catch (e) {}
-  return { okId, okPw, via, submitted: true };
+  return submitted
+    ? { okId, okPw, via, submitted: true }
+    : { okId, okPw, via, submitted: false, reason: 'login_not_submitted' };
 }
 
 /* ---- exec / 상태 / 복호화 ---- */
 async function ubExec(tabId, func, args) {
   try {
-    const res = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args: args || [] });
-    return res && res[0] ? res[0].result : null;
-  } catch (_) { ubLog('exec 실패'); return null; }
+    const frames = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args: args || [] });
+    if (!frames || !frames.length) return { ok: false, reason: 'no_result' };
+    return { ok: true, value: frames[0].result };
+  } catch (e) {
+    ubLog('exec 실패', e && e.message);
+    return { ok: false, reason: 'exec_failed' };
+  }
 }
 const ubGetFlow = async () => (await chrome.storage.local.get('ubLoginFlow')).ubLoginFlow;
 const ubSetFlow = (f) => chrome.storage.local.set({ ubLoginFlow: f });
@@ -502,7 +514,7 @@ const _ubStepInFlight = {};
 let _ubActiveFlowId = null;
 
 function ubArmWatchdog() {
-  try { chrome.alarms.create(UB_WATCHDOG, { delayInMinutes: 0.5 }); } catch (_) {}
+  try { chrome.alarms.create(UB_WATCHDOG, { periodInMinutes: 0.5 }); } catch (_) {}
 }
 
 function ubClearWatchdog() {
@@ -596,7 +608,8 @@ async function ubApplyDecision(flow, probe, decision, now) {
   if (_ubActiveFlowId !== flow.flowId) return;
   flow.lastObservedPage = ubObservedPage(probe);
 
-  if (['navigatePms', 'succeed', 'skip'].includes(decision.action) && probe.loginName) {
+  if (['navigatePms', 'succeed', 'skip'].includes(decision.action) && probe.loginName
+      && decision.terminalReason !== 'target_login_bootstrapped') {
     await ubSaveLoginName(flow.accountId, probe.loginName);
     if (_ubActiveFlowId !== flow.flowId) return;
   }
@@ -635,7 +648,15 @@ async function ubApplyDecision(flow, probe, decision, now) {
       await ubSetFlow(flow);
       if (_ubActiveFlowId !== flow.flowId) return;
       ubArmWatchdog();
-      await ubExec(flow.tabId, UB_FILL_LOGIN, [acc.userid, pw]);
+      const exec = await ubExec(flow.tabId, UB_FILL_LOGIN, [acc.userid, pw]);
+      if (_ubActiveFlowId !== flow.flowId) return;
+      if (!exec.ok) { await ubTerminal(flow, 'failed', 'login_injection_failed', exec.reason, Date.now()); return; }
+      const fill = exec.value;
+      if (!fill || fill.submitted !== true) {
+        const code = (fill && fill.reason) || 'login_not_submitted';
+        await ubTerminal(flow, 'failed', code, code, Date.now());
+        return;
+      }
     } finally { pw = ''; }
     return;
   }
@@ -645,17 +666,29 @@ async function ubApplyDecision(flow, probe, decision, now) {
   await ubSetFlow(flow);
   if (_ubActiveFlowId !== flow.flowId) return;
   ubArmWatchdog();
-  if (decision.action === 'logout') await ubExec(flow.tabId, UB_DO_LOGOUT);
-  else if (decision.action === 'navigateLogin') await chrome.tabs.update(flow.tabId, { url: UB_LOGIN_URL });
-  else if (decision.action === 'navigatePms' && probe.pmsHref) await chrome.tabs.update(flow.tabId, { url: probe.pmsHref });
+  if (decision.action === 'logout') {
+    const exec = await ubExec(flow.tabId, UB_DO_LOGOUT);
+    if (_ubActiveFlowId !== flow.flowId) return;
+    if (!exec.ok) await ubTerminal(flow, 'failed', 'logout_injection_failed', exec.reason, Date.now());
+  } else if (decision.action === 'navigateLogin' || (decision.action === 'navigatePms' && probe.pmsHref)) {
+    const url = decision.action === 'navigateLogin' ? UB_LOGIN_URL : probe.pmsHref;
+    try { await chrome.tabs.update(flow.tabId, { url }); }
+    catch (_) {
+      if (_ubActiveFlowId !== flow.flowId) return;
+      await ubTerminal(flow, 'failed', 'tab_gone', 'tab_gone', Date.now());
+    }
+  }
 }
 
 async function ubStep(tabId, expectedFlowId) {
   const stepKey = expectedFlowId || 'tab-' + tabId;
-  if (_ubStepInFlight[stepKey]) return;
-  _ubStepInFlight[stepKey] = true;
+  const prior = _ubStepInFlight[stepKey];
+  if (prior && Date.now() - prior.startedAt <= 45000) return;
+  const inFlight = { startedAt: Date.now() };
+  _ubStepInFlight[stepKey] = inFlight;
+  let flow = null;
   try {
-    let flow = await ubGetFlow();
+    flow = await ubGetFlow();
     if (!flow || !flow.active || flow.tabId !== tabId) return;
     if (expectedFlowId && flow.flowId !== expectedFlowId) return;
     if (!flow.flowId) flow.flowId = ubFlowId(Date.now());
@@ -667,16 +700,40 @@ async function ubStep(tabId, expectedFlowId) {
     ubArmWatchdog();
 
     let probe = await ubForeignProbe(tabId);
-    if (!probe) probe = normalizeProbe(await ubExec(tabId, UB_PROBE));
+    if (!probe) {
+      const exec = await ubExec(tabId, UB_PROBE);
+      probe = normalizeProbe(exec.ok ? exec.value : null);
+    }
 
     flow = await ubGetFlow();
     if (!flow || !flow.active || flow.tabId !== tabId || flow.flowId !== expectedFlowId) return;
     const now = Date.now();
     const decision = decide(flow, probe, now);
     await ubApplyDecision(flow, probe, decision, now);
+  } catch (e) {
+    ubLog('오케스트레이터 오류', e && e.message);
+    try {
+      const latest = await ubGetFlow();
+      if (latest && latest.active && latest.tabId === tabId
+          && (!expectedFlowId || latest.flowId === expectedFlowId)) {
+        _ubActiveFlowId = latest.flowId;
+        await ubTerminal(latest, 'failed', 'orchestrator_error', 'orchestrator_error', Date.now());
+      }
+    } catch (terminalError) {
+      ubLog('오케스트레이터 오류 기록 실패', terminalError && terminalError.message);
+      ubClearWatchdog();
+    }
   } finally {
-    delete _ubStepInFlight[stepKey];
+    if (_ubStepInFlight[stepKey] === inFlight) delete _ubStepInFlight[stepKey];
   }
+}
+
+async function ubOnWatchdogAlarm(alarm) {
+  if (!alarm || alarm.name !== UB_WATCHDOG) return;
+  const flow = await ubGetFlow();
+  // 플로우가 없거나 끝났으면 알람을 스스로 끈다.
+  if (!flow || !flow.active) { ubClearWatchdog(); return; }
+  await ubStep(flow.tabId, flow.flowId);
 }
 
 async function startSwitch(msg) {
@@ -727,12 +784,7 @@ try {
       });
     }, 300);
   });
-  chrome.alarms.onAlarm.addListener(alarm => {
-    if (!alarm || alarm.name !== UB_WATCHDOG) return;
-    ubGetFlow().then(flow => {
-      if (flow && flow.active) ubStep(flow.tabId, flow.flowId);
-    });
-  });
+  chrome.alarms.onAlarm.addListener(ubOnWatchdogAlarm);
 } catch (e) {}
 
 // SW 재시작 시 저장 phase가 아니라 live probe로 재조정한다.

@@ -82,7 +82,7 @@ function decide(flow, rawProbe, now) {
   if (probe.hasLogout && observed && observed === target) {
     if (probe.pmsHref) return fsmWithAttemptCap(flow, { action: 'navigatePms', nextPhase: 'enteringPms' });
     if (phase === 'start') return { action: 'skip', nextPhase: 'done', terminalReason: 'already_target' };
-    return { action: 'succeed', nextPhase: 'done', terminalReason: 'target_login_verified' };
+    return (expired || flowExpired) ? fsmFail('pms_link_missing') : { action: 'wait' };
   }
 
   if ((phase === 'submitted' || submittedForTarget) && probe.hasLogout && observed && !targetKnown) {
