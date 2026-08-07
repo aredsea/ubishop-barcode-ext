@@ -3613,15 +3613,64 @@
       chrome.storage.local.get(['ubAccounts', 'ubLoginSalt'], d => {
         try {
           // 계정이 하나라도 있을 때만 미러(빈 값으로 백업 덮어쓰지 않음).
-          if (d && d.ubAccounts && d.ubAccounts.length) {
+          // 🔴 솔트 없이 미러하면 안 된다 — 비밀번호는 그 솔트로 파생한 열쇠로만 풀린다.
+          //   솔트 없는 백업을 복원하면 계정 목록은 살아나고 열쇠만 사라져, 화면에는
+          //   계정이 멀쩡히 보이는데 전환만 복호화 실패로 죽는 상태가 된다(진단이 어렵다).
+          if (d && d.ubAccounts && d.ubAccounts.length && d.ubLoginSalt) {
             localStorage.setItem(ACCT_MIRROR_KEY, JSON.stringify({
-              ubAccounts: d.ubAccounts, ubLoginSalt: d.ubLoginSalt || ''
+              ubAccounts: d.ubAccounts, ubLoginSalt: d.ubLoginSalt
             }));
           }
         } catch (_) {}
       });
     } catch (_) {}
   }
+  // 계정 저장소 자가진단 — "계정은 보이는데 전환만 실패" 를 눈으로 가릴 수 있게 한다.
+  // 🔴 비밀은 절대 노출하지 않는다: 복호화를 **시도만** 하고 평문은 즉시 버리며,
+  //    남기는 것은 존재 여부·길이·성공 boolean 뿐이다. 결과는 <html data-ub-acct-diag>.
+  // 이걸 넣은 이유: 저장소가 ISOLATED world 전용이라 페이지에서 상태를 볼 수 없었고,
+  // 그 탓에 원인을 데이터/코드 어느 쪽인지 계속 추측만 하게 됐다.
+  async function acctSelfCheck() {
+    const out = { accounts: 0, saltPresent: false, saltLen: 0, saltMatchesMirror: false, items: [], decrypt: [] };
+    try {
+      const d = await chrome.storage.local.get(['ubAccounts', 'ubLoginSalt']);
+      const accs = (d && d.ubAccounts) || [];
+      const salt = (d && d.ubLoginSalt) || '';
+      let mirrorSalt = '';
+      try { const m = JSON.parse(localStorage.getItem(ACCT_MIRROR_KEY) || 'null'); mirrorSalt = (m && m.ubLoginSalt) || ''; } catch (_) {}
+      out.accounts = accs.length;
+      out.saltPresent = !!salt;
+      out.saltLen = salt.length;
+      out.saltMatchesMirror = !!salt && salt === mirrorSalt;
+      out.items = accs.map((a) => ({
+        hasPwEnc: !!a.pwEnc,
+        ivLen: a.pwEnc ? String(a.pwEnc.iv || '').length : 0,
+        ctLen: a.pwEnc ? String(a.pwEnc.ct || '').length : 0
+      }));
+      if (salt && accs.length) {
+        const rawSalt = Uint8Array.from(atob(salt), (c) => c.charCodeAt(0));
+        const base = await crypto.subtle.importKey('raw',
+          new TextEncoder().encode('ubshop-acct-vault-v2'), 'PBKDF2', false, ['deriveKey']);
+        const key = await crypto.subtle.deriveKey(
+          { name: 'PBKDF2', salt: rawSalt, iterations: 100000, hash: 'SHA-256' },
+          base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+        for (const a of accs) {
+          let ok = false;
+          try {
+            const iv = Uint8Array.from(atob(a.pwEnc.iv), (c) => c.charCodeAt(0));
+            const ct = Uint8Array.from(atob(a.pwEnc.ct), (c) => c.charCodeAt(0));
+            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);   // 평문은 받지 않는다
+            ok = true;
+          } catch (_) {}
+          out.decrypt.push(ok);
+        }
+      }
+    } catch (e) { out.err = String((e && e.message) || e); }
+    try { document.documentElement.dataset.ubAcctDiag = JSON.stringify(out); } catch (_) {}
+    try { console.log('[UB][acct] 저장소 자가진단', out); } catch (_) {}
+    return out;
+  }
+
   function restoreAccountsFromMirror() {
     try {
       chrome.storage.local.get(['ubAccounts', 'ubLoginSalt'], d => {
@@ -3631,9 +3680,14 @@
           const raw = localStorage.getItem(ACCT_MIRROR_KEY);
           if (!raw) return;
           const m = JSON.parse(raw);
-          if (m && m.ubAccounts && m.ubAccounts.length) {
-            chrome.storage.local.set({ ubAccounts: m.ubAccounts, ubLoginSalt: m.ubLoginSalt || '' });
+          // 🔴 솔트가 없는 백업은 복원하지 않는다(fail-closed). 복원해 봐야 비밀번호를 풀 수
+          //   없고, 계정 목록만 살아나 "보이는데 안 되는" 상태를 만든다. 그럴 바엔 계정이
+          //   없는 상태로 두고 사용자가 다시 등록하게 하는 편이 정직하다.
+          if (m && m.ubAccounts && m.ubAccounts.length && m.ubLoginSalt) {
+            chrome.storage.local.set({ ubAccounts: m.ubAccounts, ubLoginSalt: m.ubLoginSalt });
             try { console.log('[UB][skin] 계정 데이터 로컬 백업에서 복원 ' + m.ubAccounts.length + '건'); } catch (_) {}
+          } else if (m && m.ubAccounts && m.ubAccounts.length) {
+            try { console.warn('[UB][skin] 계정 백업에 솔트가 없어 복원하지 않았다 — 계정을 다시 등록해야 한다'); } catch (_) {}
           }
         } catch (_) {}
       });
@@ -5432,6 +5486,7 @@
     initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
+    setTimeout(() => { try { acctSelfCheck(); } catch (_) {} }, 800);   // 복원이 끝난 뒤 상태 점검
     // v3.1.1: Phase 2 transparent caching 은 src/cache-intercept.js (loader 동적로드)
     applyAll();
     startObserver();

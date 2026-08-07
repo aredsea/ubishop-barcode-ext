@@ -567,7 +567,12 @@ async function ubApplyDecision(flow, probe, decision, now) {
 
   if (decision.action === 'fillLogin') {
     const acc = await ubAccount(flow.accountId);
-    if (!acc) { await ubTerminal(flow, 'failed', 'decrypt_fail', 'account_missing', now); return; }
+    // 🔴 계정을 못 찾은 것과 복호화가 깨진 것은 **원인도 조치도 다르다**. 종전엔 둘 다
+    //   failureCode 'decrypt_fail' 로 보내 화면에 똑같이 "계정 정보 복호화 실패" 로 떴고,
+    //   그래서 실제로는 계정 조회가 실패한 경우에도 열쇠 문제를 의심하게 됐다.
+    //   popup 의 상태 문구 표에 account_missing('계정 정보를 찾을 수 없음')이 이미 있는데
+    //   그 코드를 아무도 보내지 않고 있었다.
+    if (!acc) { await ubTerminal(flow, 'failed', 'account_missing', 'account_missing', now); return; }
     // 진단 — 채우려는 대상 계정이 팝업이 요청한 target 인지 확인(이전 계정 아님).
     ubLog('target', { phase: flow.phase, requested: flow.accountId, useridPrefix: String(acc.userid).slice(0, 4) });
     let pw = '';
