@@ -3638,7 +3638,9 @@
         let done = false;
         const t = setTimeout(() => { if (!done) { done = true; resolve({ err: 'SW 무응답(15초)' }); } }, 15000);
         try {
-          chrome.runtime.sendMessage({ type: 'ubAcctDiag' }, (res) => {
+          // 🔴 source:'ub' 가 없으면 background 라우터 첫 줄(msg.source !== 'ub')에서 그대로
+          //   걸러지고, 리스너가 즉시 반환하면서 포트가 닫혀 "message port closed" 가 난다.
+          chrome.runtime.sendMessage({ source: 'ub', type: 'ubAcctDiag' }, (res) => {
             if (done) return; done = true; clearTimeout(t);
             const le = chrome.runtime.lastError;
             resolve(le ? { err: 'SW 오류: ' + le.message } : (res || { err: '빈 응답' }));
