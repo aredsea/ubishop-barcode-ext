@@ -89,6 +89,39 @@ test('scenario 4: blank navigation reaches a phase deadline', () => {
   assert.equal(result.failureCode, 'nav_timeout');
 });
 
+test('loggingOut에서 로그아웃 링크가 만료까지 남으면 logout_no_effect로 실패한다', () => {
+  const loggedIn = probe({ hasLogout: true, loginName: 'A' });
+  const before = decide(flow('loggingOut'), loggedIn, DEADLINE.loggingOut);
+  assert.equal(before.action, 'wait');
+  const expired = decide(flow('loggingOut'), loggedIn, DEADLINE.loggingOut + 1);
+  assert.equal(expired.action, 'fail');
+  assert.equal(expired.failureCode, 'logout_no_effect');
+});
+
+test('enteringPms가 honsu114로 되튕기면 만료 전 대기하고 만료 뒤 pms_entry_bounced로 실패한다', () => {
+  const bounced = probe({ hasLogout: true, hasPms: false, loginName: 'B', pmsHref: 'http://ubdstore.ubshop.biz/pamasLogin.do?sessiontype=newsess' });
+  assert.equal(decide(flow('enteringPms'), bounced, DEADLINE.enteringPms).action, 'wait');
+  const expired = decide(flow('enteringPms'), bounced, DEADLINE.enteringPms + 1);
+  assert.equal(expired.action, 'fail');
+  assert.equal(expired.failureCode, 'pms_entry_bounced');
+});
+
+test('enteringPms 되튕김은 phase 마감 전이어도 전체 마감이 지나면 실패한다', () => {
+  const now = DEADLINE.flow + 1;
+  const bounced = probe({ hasLogout: true, hasPms: false, loginName: 'B' });
+  const result = decide(flow('enteringPms', { enteredAt: now - 100, startedAt: 0 }), bounced, now);
+  assert.equal(result.action, 'fail');
+  assert.equal(result.failureCode, 'pms_entry_bounced');
+  assert.equal(result.terminalReason, 'pms_entry_bounced');
+});
+
+test('enteringPms에서 PMS 호스트가 관측되면 기존대로 성공한다', () => {
+  const result = decide(flow('enteringPms'), probe({
+    host: 'ubdstore.ubshop.biz', url: 'http://ubdstore.ubshop.biz/', path: '/', hasPms: true
+  }), 100);
+  assert.equal(result.action, 'succeed');
+});
+
 test('scenario 4: overall flow deadline is enforced independently', () => {
   const result = decide(flow('toLogin', { enteredAt: DEADLINE.flow - 1000 }), probe(), DEADLINE.flow + 1);
   assert.equal(result.action, 'fail');

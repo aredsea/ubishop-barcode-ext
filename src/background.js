@@ -42,6 +42,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ---- 계정 빠른 전환 오케스트레이션(팝업 → SW) ----
   if (msg.type === 'ubSwitchAccount') { startSwitch(msg).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
+  if (msg.type === 'ubCancelSwitch') { ubCancelSwitch(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
   // 🔴 저장소 자가진단은 **반드시 SW 에서** 돈다. ubdstore 는 http 라 콘텐츠 스크립트에서는
   //   crypto.subtle 이 undefined 다(비보안 컨텍스트 — loader-integrity 설계문서에 실측 기록).
   //   SW·팝업만 보안 컨텍스트라 실제 복호화 검증이 가능하다.
@@ -366,13 +367,130 @@ function UB_PROBE() {
     hasForm, hasLogout: !!logout, hasPms: onPms, pmsHref: pms ? pms.href : null, captcha: !!captcha, loginName, ambiguous: false };
 }
 function UB_DO_LOGOUT() {
-  try { if (typeof link === 'function') { link('logout'); return { via: 'link' }; } } catch (e) {}
+  const before = String(location.href || '');
+  try {
+    if (typeof link === 'function') {
+      link('logout');
+      const after = String(location.href || '');
+      if (after !== before) return { via: 'link', navigated: true, href: after };
+    }
+  } catch (e) {}
+  // location.href 는 동기 갱신되지 않으므로 이 폴백은 사실상 항상 실행된다.
+  // 앵커 href 가 javascript:link('logout') 이면 link('logout') 이 두 번 불리지만 의도된 것이다.
+  // 로그아웃은 멱등하고 link() 단독 호출이 무효였던 실측(2026-08-05) 때문에 사용자와 동일한 앵커 click 을 반드시 태운다.
+  // 중복 호출 제거를 이유로 link() 뒤에서 조기 반환하지 마라. 그것이 원래 버그다.
   const a = [...document.querySelectorAll('a[href]')].find(x => {
     const t = (x.textContent || '').replace(/\s/g, ''); const h = x.getAttribute('href') || '';
     return /로그아웃|logout/i.test(t) || /logout/i.test(h);
   });
-  if (a) { const h = a.getAttribute('href') || ''; if (!/^javascript:/i.test(h)) { location.href = new URL(h, location.href).href; return { via: 'href' }; } }
-  location.href = '/logout.do'; return { via: 'fallback' };
+  if (a) {
+    const attempted = a.getAttribute('href') || '';
+    try {
+      a.click();
+      const after = String(location.href || '');
+      return { via: 'href', navigated: after !== before, href: after !== before ? after : attempted };
+    } catch (e) {}
+  }
+  return { via: 'none', navigated: false, href: '' };
+}
+
+function UB_SWITCH_OVERLAY(state) {
+  const id = 'ub-switch-overlay';
+  let root = document.getElementById(id);
+  if (!root) {
+    root = document.createElement('section');
+    root.id = id;
+    root.setAttribute('role', 'status');
+    root.setAttribute('aria-live', 'polite');
+    root.style.cssText = 'all:initial;position:fixed;top:16px;right:16px;z-index:2147483647;box-sizing:border-box;width:300px;max-width:calc(100vw - 32px);padding:14px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:12px;box-shadow:0 8px 24px rgba(15,23,42,0.18);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;font-style:normal;font-weight:400;line-height:1.45;letter-spacing:normal;text-align:left;text-decoration:none;text-transform:none;white-space:normal;pointer-events:auto;';
+
+    const title = document.createElement('div');
+    title.id = 'ub-switch-overlay-title';
+    title.style.cssText = 'all:initial;display:block;box-sizing:border-box;margin:0 0 4px 0;padding:0;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;font-style:normal;font-weight:700;line-height:1.4;letter-spacing:normal;text-align:left;white-space:normal;';
+    root.appendChild(title);
+
+    const detail = document.createElement('div');
+    detail.id = 'ub-switch-overlay-detail';
+    detail.style.cssText = 'all:initial;display:block;box-sizing:border-box;margin:0;padding:0;color:#374151;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;font-style:normal;font-weight:500;line-height:1.45;letter-spacing:normal;text-align:left;white-space:normal;';
+    root.appendChild(detail);
+
+    const slow = document.createElement('div');
+    slow.id = 'ub-switch-overlay-slow';
+    slow.style.cssText = 'all:initial;display:none;box-sizing:border-box;margin:6px 0 0 0;padding:0;color:#b45309;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;font-style:normal;font-weight:700;line-height:1.4;letter-spacing:normal;text-align:left;white-space:normal;';
+    slow.textContent = '예상보다 오래 걸립니다';
+    root.appendChild(slow);
+
+    const note = document.createElement('div');
+    note.id = 'ub-switch-overlay-note';
+    note.style.cssText = 'all:initial;display:block;box-sizing:border-box;margin:8px 0 0 0;padding:8px;background:#f3f4f6;color:#4b5563;border:0;border-radius:7px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:11px;font-style:normal;font-weight:400;line-height:1.4;letter-spacing:normal;text-align:left;white-space:normal;';
+    note.textContent = '취소해도 이미 진행된 로그아웃·로그인 상태는 되돌리지 않습니다.';
+    root.appendChild(note);
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'all:initial;display:flex;box-sizing:border-box;gap:8px;margin:10px 0 0 0;padding:0;align-items:center;justify-content:flex-end;';
+    const cancel = document.createElement('button');
+    cancel.id = 'ub-switch-overlay-cancel';
+    cancel.type = 'button';
+    cancel.style.cssText = 'all:initial;display:inline-block;box-sizing:border-box;margin:0;padding:7px 10px;background:#ffffff;color:#374151;border:1px solid #9ca3af;border-radius:7px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;font-style:normal;font-weight:700;line-height:1.2;letter-spacing:normal;text-align:center;white-space:nowrap;cursor:pointer;';
+    cancel.textContent = '취소';
+    actions.appendChild(cancel);
+    const manual = document.createElement('button');
+    manual.id = 'ub-switch-overlay-manual';
+    manual.type = 'button';
+    manual.style.cssText = 'all:initial;display:inline-block;box-sizing:border-box;margin:0;padding:7px 10px;background:#2563eb;color:#ffffff;border:1px solid #2563eb;border-radius:7px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;font-style:normal;font-weight:700;line-height:1.2;letter-spacing:normal;text-align:center;white-space:nowrap;cursor:pointer;';
+    manual.textContent = '직접 로그인';
+    actions.appendChild(manual);
+    root.appendChild(actions);
+    (document.body || document.documentElement).appendChild(root);
+  }
+
+  root.__ubSwitchState = state || {};
+  const render = () => {
+    const current = root.__ubSwitchState || {};
+    const phases = {
+      start: '전환 시작', loggingOut: '로그아웃 중', toLogin: '로그인 화면으로 이동 중',
+      submitted: '로그인 제출됨 · 결과 확인 중', enteringPms: 'PMS 진입 중'
+    };
+    const base = Number.isFinite(current.startedAt) ? current.startedAt : Date.now();
+    const ageMs = Math.max(0, Date.now() - base);
+    const title = document.getElementById('ub-switch-overlay-title');
+    const detail = document.getElementById('ub-switch-overlay-detail');
+    const slow = document.getElementById('ub-switch-overlay-slow');
+    if (title) title.textContent = (phases[current.phase] || '계정 전환 중') + ' · ' + Math.floor(ageMs / 1000) + '초 경과';
+    if (detail) detail.textContent = '대상 계정: ' + (current.targetAlias || '알 수 없음');
+    if (slow) slow.style.display = ageMs > 20000 ? 'block' : 'none';
+  };
+  render();
+  if (!root.__ubSwitchTimer) root.__ubSwitchTimer = setInterval(render, 1000);
+  return { id, created: true };
+}
+
+function UB_BIND_SWITCH_OVERLAY(flowId) {
+  const bind = (id, mode) => {
+    const button = document.getElementById(id);
+    if (!button || button.__ubSwitchBoundFlowId === flowId) return;
+    button.__ubSwitchBoundFlowId = flowId;
+    button.addEventListener('click', () => {
+      if (mode === 'manual') {
+        const root = document.getElementById('ub-switch-overlay');
+        if (root) root.style.display = 'none';
+      }
+      try {
+        const result = chrome.runtime.sendMessage({ source: 'ub', type: 'ubCancelSwitch', flowId, mode });
+        if (result && typeof result.catch === 'function') result.catch(() => {});
+      } catch (e) {}
+    });
+  };
+  bind('ub-switch-overlay-cancel', 'cancel');
+  bind('ub-switch-overlay-manual', 'manual');
+}
+
+function UB_REMOVE_SWITCH_OVERLAY() {
+  const root = document.getElementById('ub-switch-overlay');
+  if (!root) return { removed: false };
+  if (root.__ubSwitchTimer) clearInterval(root.__ubSwitchTimer);
+  root.remove();
+  return { removed: true };
 }
 function UB_FILL_LOGIN(userid, pw) {
   const q = s => document.querySelector(s);
@@ -447,6 +565,33 @@ async function ubExec(tabId, func, args) {
     ubLog('exec 실패', e && e.message);
     return { ok: false, reason: 'exec_failed' };
   }
+}
+async function ubShowSwitchOverlay(flow) {
+  if (!flow || !flow.active || flow.tabId == null) return;
+  try {
+    await ubExec(flow.tabId, UB_SWITCH_OVERLAY, [{
+      phase: flow.phase,
+      startedAt: flow.startedAt,
+      targetAlias: flow.targetAlias || flow.targetLoginName || flow.accountId || '',
+      flowId: flow.flowId
+    }]);
+    await chrome.scripting.executeScript({
+      target: { tabId: flow.tabId },
+      world: 'ISOLATED',
+      func: UB_BIND_SWITCH_OVERLAY,
+      args: [flow.flowId]
+    });
+  } catch (_) {}
+  try {
+    const current = await ubGetFlow();
+    if (!current || current.active !== true || current.flowId !== flow.flowId) {
+      await ubRemoveSwitchOverlay(flow.tabId);
+    }
+  } catch (_) {}
+}
+async function ubRemoveSwitchOverlay(tabId) {
+  if (tabId == null) return;
+  try { await ubExec(tabId, UB_REMOVE_SWITCH_OVERLAY); } catch (_) {}
 }
 const ubGetFlow = async () => (await chrome.storage.local.get('ubLoginFlow')).ubLoginFlow;
 const ubSetFlow = (f) => chrome.storage.local.set({ ubLoginFlow: f });
@@ -611,6 +756,7 @@ async function ubTerminal(flow, phase, failureCode, terminalReason, now) {
   flow.lastTransition = { from, to: phase, at: now, reason: flow.terminalReason };
   await ubSetFlow(flow);
   ubClearWatchdog();
+  await ubRemoveSwitchOverlay(flow.tabId);
 }
 
 async function ubForeignProbe(tabId) {
@@ -640,6 +786,7 @@ async function ubUpgradeFlow(flow) {
   if (acc) {
     flow.accountId = acc.userid;
     flow.targetLoginName = acc.loginName || null;
+    flow.targetAlias = acc.alias || acc.loginName || acc.userid;
   }
   if (flow.submittedFor == null) flow.submittedFor = flow.phase === 'submitted' ? flow.accountId : null;
   if (!Object.prototype.hasOwnProperty.call(flow, 'lastObservedPage')) flow.lastObservedPage = null;
@@ -693,6 +840,8 @@ async function ubApplyDecision(flow, probe, decision, now) {
       ubTransition(flow, decision, now);
       await ubSetFlow(flow);
       if (_ubActiveFlowId !== flow.flowId) return;
+      await ubShowSwitchOverlay(flow);
+      if (_ubActiveFlowId !== flow.flowId) return;
       ubArmWatchdog();
       const exec = await ubExec(flow.tabId, UB_FILL_LOGIN, [acc.userid, pw]);
       if (_ubActiveFlowId !== flow.flowId) return;
@@ -712,11 +861,16 @@ async function ubApplyDecision(flow, probe, decision, now) {
   ubTransition(flow, decision, now);
   await ubSetFlow(flow);
   if (_ubActiveFlowId !== flow.flowId) return;
+  await ubShowSwitchOverlay(flow);
+  if (_ubActiveFlowId !== flow.flowId) return;
   ubArmWatchdog();
   if (decision.action === 'logout') {
     const exec = await ubExec(flow.tabId, UB_DO_LOGOUT);
     if (_ubActiveFlowId !== flow.flowId) return;
     if (!exec.ok) await ubTerminal(flow, 'failed', 'logout_injection_failed', exec.reason, Date.now());
+    else if (exec.value && exec.value.via === 'none') {
+      await ubTerminal(flow, 'failed', 'logout_no_effect', 'logout_no_effect', Date.now());
+    }
     else ubQuickRepoll(flow.tabId, flow.flowId);
   } else if (decision.action === 'navigateLogin' || (decision.action === 'navigatePms' && probe.pmsHref)) {
     const url = decision.action === 'navigateLogin' ? UB_LOGIN_URL : probe.pmsHref;
@@ -800,6 +954,7 @@ async function startSwitch(msg) {
     flowId: ubFlowId(now),
     accountId: acc.userid,
     targetLoginName: acc.loginName || null,
+    targetAlias: acc.alias || acc.loginName || acc.userid,
     tabId,
     phase: 'start',
     enteredAt: now,
@@ -813,9 +968,22 @@ async function startSwitch(msg) {
   };
   _ubActiveFlowId = flow.flowId;
   await ubSetFlow(flow);
+  await ubShowSwitchOverlay(flow);
   ubArmWatchdog();
   ubStep(tabId, flow.flowId);
   return { ok: true, flowId: flow.flowId };
+}
+
+async function ubCancelSwitch(msg, sender) {
+  const flow = await ubGetFlow();
+  if (!flow || !flow.active) return { ok: false, error: 'no active flow' };
+  if (msg && msg.flowId && msg.flowId !== flow.flowId) return { ok: false, error: 'stale flow' };
+  if (sender && sender.tab && sender.tab.id != null && sender.tab.id !== flow.tabId) {
+    return { ok: false, error: 'wrong tab' };
+  }
+  _ubActiveFlowId = null;
+  await ubTerminal(flow, 'failed', 'user_cancelled', 'user_cancelled', Date.now());
+  return { ok: true };
 }
 
 /* ---- 탭 로딩 완료마다 다음 단계 ---- */
@@ -831,6 +999,7 @@ try {
       delete _ubStepTimer[tabId];
       chrome.storage.local.get('ubLoginFlow', ({ ubLoginFlow }) => {
         if (!ubLoginFlow || !ubLoginFlow.active || ubLoginFlow.tabId !== tabId) return;
+        ubShowSwitchOverlay(ubLoginFlow);
         ubStep(tabId, ubLoginFlow.flowId);
       });
     }, 300);
@@ -840,7 +1009,7 @@ try {
 
 // SW 재시작 시 저장 phase가 아니라 live probe로 재조정한다.
 ubGetFlow().then(flow => {
-  if (flow && flow.active) { ubArmWatchdog(); ubStep(flow.tabId, flow.flowId); }
+  if (flow && flow.active) { ubShowSwitchOverlay(flow); ubArmWatchdog(); ubStep(flow.tabId, flow.flowId); }
 });
 
 /* =============================================================================

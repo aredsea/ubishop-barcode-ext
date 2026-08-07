@@ -79,6 +79,12 @@ function decide(flow, rawProbe, now) {
     return { action: 'succeed', nextPhase: 'done', terminalReason: 'pms_observed' };
   }
 
+  // PMS 세션 생성이 거부되면 honsu114 로 되튕긴다. 이동 중인 짧은 구간과 구분하기 위해
+  // enteringPms 마감 전에는 기다리고, 마감된 뒤에만 원인을 특정해 실패시킨다.
+  if (phase === 'enteringPms' && !probe.hasPms && /(^|\.)honsu114\.com$/i.test(probe.host)) {
+    return (expired || flowExpired) ? fsmFail('pms_entry_bounced') : { action: 'wait' };
+  }
+
   if (probe.hasLogout && observed && observed === target) {
     if (probe.pmsHref) return fsmWithAttemptCap(flow, { action: 'navigatePms', nextPhase: 'enteringPms' });
     if (phase === 'start') return { action: 'skip', nextPhase: 'done', terminalReason: 'already_target' };
@@ -100,7 +106,10 @@ function decide(flow, rawProbe, now) {
       : { action: 'wait' };
   }
 
-  if (flowExpired) return fsmFail(phase === 'submitted' ? 'probe_timeout' : 'nav_timeout', 'flow_deadline');
+  if (flowExpired) {
+    if (phase === 'loggingOut' && probe.hasLogout) return fsmFail('logout_no_effect', 'flow_deadline');
+    return fsmFail(phase === 'submitted' ? 'probe_timeout' : 'nav_timeout', 'flow_deadline');
+  }
 
   if (probe.hasForm) {
     if (flow.submittedFor) return fsmFail('login_reappeared');
@@ -124,7 +133,7 @@ function decide(flow, rawProbe, now) {
   }
 
   if (phase === 'loggingOut') {
-    if (probe.hasLogout) return expired ? fsmFail('nav_timeout') : { action: 'wait' };
+    if (probe.hasLogout) return expired ? fsmFail('logout_no_effect') : { action: 'wait' };
     // 착지 경로 무관하게 진행한다 — 로그아웃 후 어느 탭(ERP=ubshop.biz 포함)에서 떨어져도
     // 로그아웃만 됐으면(로그아웃 링크 없음) 로그인 페이지로 네비게이트한다. 무관 호스트는
     // line ~68 의 호스트 안전판이 여전히 막고, ubshop.biz·honsu114.com 는 통과한다.

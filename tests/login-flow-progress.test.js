@@ -60,6 +60,17 @@ test('inactive 실패는 기존 실패 문구를 유지한다', () => {
   assert.equal(text, '다른 계정으로 로그인됨');
 });
 
+test('Phase 5 전용 실패 코드는 사용자의 다음 행동을 정확히 안내한다', () => {
+  assert.equal(
+    status.flowStatusText({ active: false, lastFailureCode: 'logout_no_effect' }, Date.now()),
+    '로그아웃이 되지 않았습니다 — 직접 로그아웃한 뒤 다시 시도하세요'
+  );
+  assert.equal(
+    status.flowStatusText({ active: false, lastFailureCode: 'pms_entry_bounced' }, Date.now()),
+    'PMS 진입이 거부됐습니다 — PMS 버튼을 직접 눌러 주세요'
+  );
+});
+
 test('flow가 없으면 문구도 없다', () => {
   assert.equal(status.flowStatusText(null, Date.now()), null);
 });

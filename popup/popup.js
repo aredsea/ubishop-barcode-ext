@@ -120,6 +120,9 @@
   const failureText = {
     login_reappeared: '로그인 실패 — 비밀번호 확인',
     nav_timeout: '시간 초과 — 다시 시도',
+    logout_no_effect: '로그아웃이 되지 않았습니다 — 직접 로그아웃한 뒤 다시 시도하세요',
+    pms_entry_bounced: 'PMS 진입이 거부됐습니다 — PMS 버튼을 직접 눌러 주세요',
+    user_cancelled: '계정 전환을 취소했습니다 — 현재 로그인 상태는 되돌리지 않았습니다',
     probe_timeout: '시간 초과 — 다시 시도',
     ambiguous_page: '페이지 상태 불명',
     wrong_account: '다른 계정으로 로그인됨',

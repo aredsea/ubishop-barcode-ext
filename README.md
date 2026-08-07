@@ -47,8 +47,12 @@ loader 로 못 받던 파일. **D102 인쇄 프로그램(ExtSync)** 이 `shell-f
 
 - **로직만 수정**: `app-files.json` version 올림 → `git push`.
 - **껍데기 수정**(skin.js 등): manifest `version` 올림(규칙: patch>9→minor) →
-  `pwsh build-shell-index.ps1`(shell-files.json 갱신) → `git push`. 프로그램이 감지·동기화 →
-  다음 재시작 시 반영. **재설치 불필요.**
+  `pwsh build-shell-index.ps1`(shell-files.json 갱신) → **`node tests/loader-integrity.test.js`** →
+  `git push`. 프로그램이 감지·동기화 → 다음 재시작 시 반영. **재설치 불필요.**
+
+> ⚠ 가운데 테스트 단계를 건너뛰지 마라. `shell-files.json` 을 재생성한 **뒤에 소스를 또 고치면**
+> 해시가 조용히 낡고, 그대로 push 하면 매장이 낡은 인덱스를 받는다. 실제로 3번 밟았다.
+> 그 검사(Task3)는 **인덱스를 재생성한 뒤**부터 켜진다 — 재생성 전 작업 중에는 일부러 건너뛴다.
 
 > manifest `key` 로 확장 ID(`kejfp…`)가 고정돼 폴더를 교체해도 계정·설정이 유지된다.
 > force-install crx 는 비도메인 Windows 에서 원천 불가라 폐기(레거시 update.xml/crx).

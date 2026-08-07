@@ -68,22 +68,24 @@ const BG_CONSTS = [
   '_ubStepInFlight'
 ];
 const BG_FNS = [
-  'UB_PROBE', 'UB_DO_LOGOUT', 'UB_FILL_LOGIN', 'ubExec', 'ubMatchAccount', 'ubAccount',
+  'UB_PROBE', 'UB_DO_LOGOUT', 'UB_SWITCH_OVERLAY', 'UB_BIND_SWITCH_OVERLAY',
+  'UB_REMOVE_SWITCH_OVERLAY', 'UB_FILL_LOGIN', 'ubExec', 'ubShowSwitchOverlay',
+  'ubRemoveSwitchOverlay', 'ubMatchAccount', 'ubAccount',
   'ubSaveLoginName', 'ubArmWatchdog', 'ubClearWatchdog', 'ubObservedPage', 'ubTransition',
-  'ubTerminal', 'ubApplyDecision', 'ubStep', 'ubOnWatchdogAlarm'
+  'ubTerminal', 'ubApplyDecision', 'ubStep', 'ubOnWatchdogAlarm', 'ubCancelSwitch'
 ];
 const bg = {};
 
 // eslint-disable-next-line no-new-func
 new Function('exports', 'chrome', 'crypto', 'console', 'normalizeProbe', 'decide',
-  'ubDecrypt', 'ubForeignProbe', 'ubUpgradeFlow',
+  'ubDecrypt', 'ubForeignProbe', 'ubUpgradeFlow', 'ubQuickRepoll',
   BG_CONSTS.map(name => extractConst(BG, name, 'background.js')).join('\n') + '\n' +
   'let _ubActiveFlowId = null;\n' +
   BG_FNS.map(name => extractFn(BG, name, 'background.js')).join('\n') + '\n' +
   [...BG_CONSTS, ...BG_FNS].map(name => `exports.${name} = ${name};`).join('\n') + '\n' +
   'exports.setActiveFlowId = value => { _ubActiveFlowId = value; };'
 )(bg, fakeChrome, { randomUUID: () => 'generated-flow' }, { log() {} }, normalizeProbe, decide,
-  async () => 'test-password', async () => null, async flow => flow);
+  async () => 'test-password', async () => null, async flow => flow, () => {});
 
 function fullProbe(patch) {
   return {
@@ -175,6 +177,50 @@ test('로그아웃 executeScript reject는 logout_injection_failed로 끝난다'
   assert.equal(storageState.ubLoginFlow.lastFailureCode, 'logout_injection_failed');
 });
 
+test('로그아웃 수단이 없으면 logout_no_effect로 즉시 끝난다', async () => {
+  const flow = activeFlow({ phase: 'start', submittedFor: null });
+  reset({ ubLoginFlow: flow });
+  bg.setActiveFlowId(flow.flowId);
+  executeScript = async options => options.func === bg.UB_DO_LOGOUT
+    ? [{ result: { via: 'none' } }]
+    : [{ result: {} }];
+  await bg.ubApplyDecision(flow, fullProbe({ hasLogout: true, loginName: 'A' }), {
+    action: 'logout', nextPhase: 'loggingOut'
+  }, Date.now());
+  assert.equal(storageState.ubLoginFlow.active, false);
+  assert.equal(storageState.ubLoginFlow.phase, 'failed');
+  assert.equal(storageState.ubLoginFlow.lastFailureCode, 'logout_no_effect');
+  assert.equal(storageState.ubLoginFlow.terminalReason, 'logout_no_effect');
+});
+
+test('로그아웃 링크를 실행했으면 흐름을 유지한다', async () => {
+  const flow = activeFlow({ phase: 'start', submittedFor: null });
+  reset({ ubLoginFlow: flow });
+  bg.setActiveFlowId(flow.flowId);
+  executeScript = async options => options.func === bg.UB_DO_LOGOUT
+    ? [{ result: { via: 'link', navigated: true } }]
+    : [{ result: {} }];
+  await bg.ubApplyDecision(flow, fullProbe({ hasLogout: true, loginName: 'A' }), {
+    action: 'logout', nextPhase: 'loggingOut'
+  }, Date.now());
+  assert.equal(storageState.ubLoginFlow.active, true);
+  assert.equal(storageState.ubLoginFlow.phase, 'loggingOut');
+});
+
+test('로그아웃 주입 결과가 없어도 호환성을 위해 흐름을 유지한다', async () => {
+  const flow = activeFlow({ phase: 'start', submittedFor: null });
+  reset({ ubLoginFlow: flow });
+  bg.setActiveFlowId(flow.flowId);
+  executeScript = async options => options.func === bg.UB_DO_LOGOUT
+    ? [{ result: undefined }]
+    : [{ result: {} }];
+  await bg.ubApplyDecision(flow, fullProbe({ hasLogout: true, loginName: 'A' }), {
+    action: 'logout', nextPhase: 'loggingOut'
+  }, Date.now());
+  assert.equal(storageState.ubLoginFlow.active, true);
+  assert.equal(storageState.ubLoginFlow.phase, 'loggingOut');
+});
+
 test('탭 네비게이션 reject는 기다리지 않고 tab_gone으로 끝난다', async () => {
   const flow = activeFlow({ phase: 'loggingOut', submittedFor: null });
   reset({ ubLoginFlow: flow });
@@ -205,6 +251,92 @@ test('끝난 flow에서 watchdog이 발화하면 알람을 스스로 해제한�
   assert.ok(alarms.has(bg.UB_WATCHDOG));
   await bg.ubOnWatchdogAlarm({ name: bg.UB_WATCHDOG });
   assert.equal(alarms.has(bg.UB_WATCHDOG), false);
+});
+
+test('오버레이 주입 뒤 저장된 흐름이 끝났으면 방금 만든 오버레이를 제거한다', async () => {
+  const staleFlow = activeFlow();
+  reset({ ubLoginFlow: { ...staleFlow, active: false, phase: 'done' } });
+  const injected = [];
+  executeScript = async options => { injected.push(options.func); return [{ result: {} }]; };
+  await bg.ubShowSwitchOverlay(staleFlow);
+  assert.ok(injected.includes(bg.UB_REMOVE_SWITCH_OVERLAY));
+});
+
+test('오버레이 주입 뒤 같은 active flow가 유지되면 제거하지 않는다', async () => {
+  const flow = activeFlow();
+  reset({ ubLoginFlow: flow });
+  const injected = [];
+  executeScript = async options => { injected.push(options.func); return [{ result: {} }]; };
+  await bg.ubShowSwitchOverlay(flow);
+  assert.equal(injected.includes(bg.UB_REMOVE_SWITCH_OVERLAY), false);
+});
+
+test('오버레이 주입 뒤 flowId가 바뀌었으면 방금 만든 오버레이를 제거한다', async () => {
+  const staleFlow = activeFlow();
+  reset({ ubLoginFlow: activeFlow({ flowId: 'flow-2' }) });
+  const injected = [];
+  executeScript = async options => { injected.push(options.func); return [{ result: {} }]; };
+  await bg.ubShowSwitchOverlay(staleFlow);
+  assert.ok(injected.includes(bg.UB_REMOVE_SWITCH_OVERLAY));
+});
+
+test('오버레이 취소 메시지는 active flow를 user_cancelled로 끝낸다', async () => {
+  const flow = activeFlow({ phase: 'loggingOut' });
+  reset({ ubLoginFlow: flow });
+  await bg.ubCancelSwitch({ flowId: flow.flowId, mode: 'cancel' }, { tab: { id: flow.tabId } });
+  assert.equal(storageState.ubLoginFlow.active, false);
+  assert.equal(storageState.ubLoginFlow.phase, 'failed');
+  assert.equal(storageState.ubLoginFlow.lastFailureCode, 'user_cancelled');
+  assert.equal(storageState.ubLoginFlow.terminalReason, 'user_cancelled');
+  assert.equal(alarms.has(bg.UB_WATCHDOG), false);
+});
+
+test('취소 뒤 진행 중이던 같은 flow는 로그인을 주입하거나 흐름을 되살리지 않는다', async () => {
+  const storedFlow = activeFlow({ phase: 'toLogin', submittedFor: null });
+  const decisionFlow = { ...storedFlow, attempts: { ...storedFlow.attempts } };
+  reset({
+    ubLoginFlow: storedFlow,
+    ubAccounts: [{ id: 'account-b', userid: 'user-b', loginName: 'B' }]
+  });
+  bg.setActiveFlowId(storedFlow.flowId);
+  const injected = [];
+  executeScript = async options => {
+    injected.push(options.func);
+    if (options.func === bg.UB_FILL_LOGIN) return [{ result: { submitted: true } }];
+    return [{ result: {} }];
+  };
+
+  await bg.ubCancelSwitch(
+    { flowId: storedFlow.flowId, mode: 'cancel' },
+    { tab: { id: storedFlow.tabId } }
+  );
+  await bg.ubApplyDecision(decisionFlow, fullProbe({ hasForm: true }), {
+    action: 'fillLogin', nextPhase: 'submitted', setSubmittedFor: 'user-b'
+  }, Date.now());
+
+  assert.equal(injected.includes(bg.UB_FILL_LOGIN), false);
+  assert.equal(storageState.ubLoginFlow.active, false);
+});
+
+test('취소하지 않은 정상 flow는 로그인을 주입한다', async () => {
+  const flow = activeFlow({ phase: 'toLogin', submittedFor: null });
+  reset({
+    ubLoginFlow: flow,
+    ubAccounts: [{ id: 'account-b', userid: 'user-b', loginName: 'B' }]
+  });
+  bg.setActiveFlowId(flow.flowId);
+  const injected = [];
+  executeScript = async options => {
+    injected.push(options.func);
+    if (options.func === bg.UB_FILL_LOGIN) return [{ result: { submitted: true } }];
+    return [{ result: {} }];
+  };
+
+  await bg.ubApplyDecision(flow, fullProbe({ hasForm: true }), {
+    action: 'fillLogin', nextPhase: 'submitted', setSubmittedFor: 'user-b'
+  }, Date.now());
+
+  assert.equal(injected.includes(bg.UB_FILL_LOGIN), true);
 });
 
 test('ubStep의 예상 밖 예외는 orchestrator_error terminal로 기록한다', async () => {
