@@ -513,13 +513,30 @@ async function ubAcctDiag() {
       ctLen: a.pwEnc ? String(a.pwEnc.ct || '').length : 0,
       loginName: a.loginName || ''
     }));
-    if (!salt || !accs.length) return out;
-    for (const a of accs) {
-      let ok = false;
-      try { await ubDecrypt(a); ok = true; } catch (_) {}   // 평문은 받지 않는다
-      out.decrypt.push(ok);
+    if (salt && accs.length) {
+      for (const a of accs) {
+        let ok = false;
+        try { await ubDecrypt(a); ok = true; } catch (_) {}   // 평문은 받지 않는다
+        out.decrypt.push(ok);
+      }
     }
   } catch (e) { out.err = String((e && e.message) || e); }
+  try {
+    const { ubLoginFlow } = await chrome.storage.local.get('ubLoginFlow');
+    out.flow = ubLoginFlow ? {
+      active: !!ubLoginFlow.active,
+      phase: ubLoginFlow.phase,
+      startedAt: ubLoginFlow.startedAt,
+      enteredAt: ubLoginFlow.enteredAt,
+      ageMs: Date.now() - (ubLoginFlow.enteredAt || ubLoginFlow.startedAt || Date.now()),
+      lastFailureCode: ubLoginFlow.lastFailureCode || null,
+      terminalReason: ubLoginFlow.terminalReason || null,
+      attempts: ubLoginFlow.attempts || null
+    } : null;
+  } catch (_) { out.flow = null; }
+  // watchdog 예약 여부는 탭 이벤트를 놓친 뒤에도 복구 고리가 남아 있는지 보여준다.
+  try { const al = await chrome.alarms.get(UB_WATCHDOG); out.watchdogScheduled = !!al; }
+  catch (_) { out.watchdogScheduled = null; }
   return out;
 }
 
@@ -540,6 +557,14 @@ function ubArmWatchdog() {
 
 function ubClearWatchdog() {
   try { chrome.alarms.clear(UB_WATCHDOG); } catch (_) {}
+}
+
+// side effect 직후 SW가 살아 있는 동안 빠르게 재탐침한다. 이 타이머가 유실돼도
+// 30초 watchdog이 복구하며, ubStep의 in-flight/flowId 가드가 중복·구형 호출을 거른다.
+function ubQuickRepoll(tabId, flowId) {
+  [1000, 2000, 4000].forEach((ms) => {
+    setTimeout(() => { try { ubStep(tabId, flowId); } catch (_) {} }, ms);
+  });
 }
 
 function ubFlowId(now) {
@@ -678,6 +703,7 @@ async function ubApplyDecision(flow, probe, decision, now) {
         await ubTerminal(flow, 'failed', code, code, Date.now());
         return;
       }
+      ubQuickRepoll(flow.tabId, flow.flowId);
     } finally { pw = ''; }
     return;
   }
@@ -691,9 +717,13 @@ async function ubApplyDecision(flow, probe, decision, now) {
     const exec = await ubExec(flow.tabId, UB_DO_LOGOUT);
     if (_ubActiveFlowId !== flow.flowId) return;
     if (!exec.ok) await ubTerminal(flow, 'failed', 'logout_injection_failed', exec.reason, Date.now());
+    else ubQuickRepoll(flow.tabId, flow.flowId);
   } else if (decision.action === 'navigateLogin' || (decision.action === 'navigatePms' && probe.pmsHref)) {
     const url = decision.action === 'navigateLogin' ? UB_LOGIN_URL : probe.pmsHref;
-    try { await chrome.tabs.update(flow.tabId, { url }); }
+    try {
+      await chrome.tabs.update(flow.tabId, { url });
+      ubQuickRepoll(flow.tabId, flow.flowId);
+    }
     catch (_) {
       if (_ubActiveFlowId !== flow.flowId) return;
       await ubTerminal(flow, 'failed', 'tab_gone', 'tab_gone', Date.now());

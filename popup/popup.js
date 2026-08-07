@@ -146,6 +146,15 @@
   };
   const STATUS_BASE = 'display:none;margin:0 0 8px;padding:8px 10px;border-radius:8px;font-size:11px;font-weight:700;line-height:1.4;';
   const STATUS_FAIL = STATUS_BASE + 'background:#fff3f3;color:#b42318;border:1px solid #f0b4b4;';
+  const STATUS_PROGRESS = STATUS_BASE + 'background:#eef6ff;color:#1d4ed8;border:1px solid #bfd7f5;';
+  const phaseText = {
+    start: '시작',
+    loggingOut: '로그아웃 중',
+    toLogin: '로그인 화면으로 이동 중',
+    submitted: '로그인 제출됨 · 결과 확인 중',
+    enteringPms: 'PMS 진입 중',
+    done: '완료'
+  };
   const statusEl = document.createElement('div');
   statusEl.setAttribute('role', 'status');
   statusEl.style.cssText = STATUS_FAIL;
@@ -159,14 +168,26 @@
     } catch (_) {}
   }
 
+  function flowStatusText(flow, now) {
+    if (!flow) return null;
+    if (!flow.active) return failureText[flow.lastFailureCode] || terminalText[flow.terminalReason] || null;
+    const phase = phaseText[flow.phase] || '전환 진행 중';
+    const base = Number.isFinite(flow.startedAt) ? flow.startedAt
+      : (Number.isFinite(flow.enteredAt) ? flow.enteredAt : now);
+    const ageMs = Math.max(0, now - base);
+    const seconds = Math.floor(ageMs / 1000);
+    const slow = ageMs > 20000
+      ? ' · 예상보다 오래 걸립니다 — 그대로 두시면 자동으로 계속됩니다'
+      : '';
+    return phase + ' · ' + seconds + '초 경과' + slow;
+  }
+
   async function renderFlowStatus() {
     try {
       const { ubLoginFlow } = await chrome.storage.local.get('ubLoginFlow');
-      if (!ubLoginFlow) return;
-      const text = !ubLoginFlow.active &&
-        (failureText[ubLoginFlow.lastFailureCode] || terminalText[ubLoginFlow.terminalReason]);
-      if (!text) return;
-      statusEl.style.cssText = STATUS_FAIL;
+      const text = flowStatusText(ubLoginFlow, Date.now());
+      if (!text) { statusEl.style.display = 'none'; return; }
+      statusEl.style.cssText = ubLoginFlow.active ? STATUS_PROGRESS : STATUS_FAIL;
       statusEl.textContent = text;
       statusEl.style.display = 'block';
     } catch (_) {}
@@ -276,5 +297,11 @@
   $('acct-save').addEventListener('click', add);
   $('acct-cancel').addEventListener('click', () => { formEl.style.display = 'none'; });
   renderFlowStatus();
+  setInterval(renderFlowStatus, 1000);
+  try {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' && changes && changes.ubLoginFlow) renderFlowStatus();
+    });
+  } catch (_) {}
   renderList();
 })();
