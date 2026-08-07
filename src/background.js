@@ -322,18 +322,39 @@ const ubLog = (...a) => { try { console.log('[UB][login]', ...a); } catch (_) {}
 function UB_PROBE() {
   const q = s => document.querySelector(s);
   const pw = q('input[name="sysUser.fpasswd"]') || q('input[type=password]');
-  const vis = el => !!(el && el.offsetParent !== null && el.getClientRects().length);
+  const visStrict = (el) => {
+    if (!el || !el.getClientRects().length || el.offsetParent === null) return false;
+    const cs = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+    if (!cs) return true;
+    if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+    if (parseFloat(cs.opacity) === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
   const logout = [...document.querySelectorAll('a[href]')].find(a => {
     const t = (a.textContent || '').replace(/\s/g, ''); const h = a.getAttribute('href') || '';
     return /로그아웃|logout/i.test(t) || /logout|logoff|signout/i.test(h);
   });
   const pms = q('a.pms') || q('a[href*="pamasLogin.do" i]');
   const onPms = /(^|\.)ubshop\.biz$/i.test(location.hostname);
-  // 사용자가 '직접 풀어야 하는' 캡차만 트리거한다: honsu114 텍스트 캡차(sysUser.fcaptcha)가
-  // 실제로 보이거나, reCAPTCHA 이미지 챌린지 팝업(api2/bframe)이 떠 있을 때. 항상 떠 있는
-  // invisible reCAPTCHA 배지/앵커는 로그인 클릭 시 자동 검증되므로 제외 — 이걸 캡차로
-  // 오인해 아이디·비번은 채워진 채 login.ubs 에서 반자동이 멈춰 있었다(사용자 실측).
-  const captcha = vis(q('input[name="sysUser.fcaptcha"]')) || vis(q('iframe[src*="recaptcha/api2/bframe" i]'));
+  // 🔴 가시성으로 캡차를 판정하면 안 된다(2026-08-05 라이브 측정).
+  //   서버 원본 HTML 에는 캡차 컨테이너(#fwordcaptcha·#reCaptcha)가 숨겨져 있지 않고,
+  //   $(document).ready 안의 $(...).hide() 가 나중에 숨긴다. probe 가 그보다 먼저 돌면
+  //   캡차가 "실제로 보이는" 상태라 오탐이 난다 — 화면엔 아무것도 없는데 전환이 중단됐다.
+  //   사이트의 로그인 함수도 #fcount 로만 캡차를 요구한다:
+  //     if($("#fcount").val()!="0" && $("#fcaptcha").val()=="") { alert(...) }
+  //   이 사이트는 비밀번호가 틀렸을 때만 캡차를 띄우므로, 저장된 자격증명으로 전환하는
+  //   경로에서 fcount 는 정상적으로 "0" 이다.
+  const fcEl = q('#fcount') || q('input[name="comSysLoginCheck.fcount"]');
+  const fcount = fcEl ? String(fcEl.value == null ? '' : fcEl.value).trim() : null;
+  let captcha;
+  if (fcount !== null) {
+    captcha = fcount !== '' && fcount !== '0';   // 사이트 기준: 실패 횟수가 0 이 아니면 캡차 필요
+  } else {
+    // #fcount 를 못 찾았다 = 페이지 구조가 바뀌었다. 그때만 가시성 폴백을 쓴다.
+    captcha = visStrict(q('input[name="sysUser.fcaptcha"]')) || visStrict(q('iframe[src*="recaptcha/api2/bframe" i]'));
+  }
+  if (captcha) { try { console.log('[UB][login] captcha-gate', { fcount, byFallback: fcount === null }); } catch (e) {} }
   // 로그인된 홈의 현재 계정 표시(li.user "쇼핑몰 님" 등) → "님" 접미사·중복공백 제거.
   // PMS 관리자 화면 등 표시 요소가 없으면 '' (비교 불가로 안전하게 일반 진행).
   const u = q('li.user') || q('.user');
