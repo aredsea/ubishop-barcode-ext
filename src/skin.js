@@ -616,6 +616,122 @@
     f2.submit();
     return true;
   }
+  /* ── 재고화 바코드 보관함 — 재고배정 팝업 강조용 ─────────────────────────
+   *  재고화 조회에 성공한 바코드를 모아뒀다가, 상품주문전표에서 '본사확인' 을 눌러 뜨는
+   *  재고상품 검색 팝업(orderItemPopCurrentSettingModifyForm.do)에서 그 행을 강조·스크롤한다.
+   *  방금 재고화한 상품은 입고일자가 최신이라 그 목록 **맨 아래**에 있고 팝업은 400×300 이다
+   *  — 매번 끝까지 굴려 찾던 수고를 없애는 것이 이 기능의 전부다.
+   *
+   *  ★저장소가 chrome.storage.local 인 이유. 팝업은 다른 창이라 sessionStorage 가 안 넘어가고
+   *   (입고 화면은 애초에 다른 탭이다), localStorage 는 **http 와 https 가 서로 다른 저장소**다
+   *   — 이 사이트는 둘 다 쓴다(manifest 가 양쪽을 매칭한다). 그러면 조용히 빈 목록이 되어
+   *   '아무 일도 안 하는' 실패가 된다. chrome.storage 는 이 파일이 창간 신호(ASG_KEY)에 이미
+   *   쓰고 있는 검증된 경로다.
+   *  ★기존 ubHlStore 를 재사용하지 않는 이유: 그건 바코드 1개를 찾는 즉시 지우는 1회성이라,
+   *   '여러 건을 모아 팝업을 열 때마다 반복 강조' 와 수명이 정반대다.
+   *
+   *  ★배정했다고 보관함에서 빼지 않는다(한 번 넣었다가 뺐다 — 되살리지 마라). 빼면
+   *   **배정 → 잘못 골랐음을 알고 선택취소** 한 건이 영영 강조되지 않는다. 취소하면 그 재고는
+   *   다시 후보 목록에 뜨는데 보관함엔 없어서, 이 기능이 없애려던 '400×300 창을 맨 아래까지
+   *   굴리기' 가 하필 그 건에서 되살아난다(Opus 5 검수 F3). 안 빼면 이 시나리오가 공짜로 맞는다.
+   *   빼지 않아 생기는 손해도 없다 — 배정된 재고는 후보 목록에서 빠지므로(실측: 같은 주문 후보가
+   *   30분 만에 144→142, spec 2026-07-20) 강조될 일이 없고, 자리는 50개 상한이 오래된 것부터
+   *   밀어내며 7일이면 만료된다.
+   * -------------------------------------------------------------------- */
+  const STK_RECENT_KEY = 'ubStockRecent';
+  const STK_RECENT_MAX = 50;                       // 보관 개수 (사장님 지시 2026-08-18)
+  const STK_RECENT_TTL = 7 * 24 * 60 * 60 * 1000;  // 보관 기간 7일
+
+  //  바코드는 대문자로 통일해 저장·비교한다. 유비샵은 대문자로 보관하는데 사용자는 소문자로
+  //  입력할 수 있고(실측: 2607dl → 목록 2607DL), 서버 검색은 대소문자를 무시하지만 강조는
+  //  클라이언트 매칭이라 정규화가 없으면 '검색은 되는데 강조만 안 되는' 어긋남이 생긴다.
+  function stkNorm(bc) { return String(bc == null ? '' : bc).trim().toUpperCase(); }
+
+  //  보관함 정규화 — 만료·중복·형식오류·초과분을 한 번에 턴다. 결과는 **최신순**(index 0 이 최근).
+  //  ⚠ 저장값은 남의 손을 탈 수 있다(옛 버전이 쓴 형태·수동 편집). 통째로 버리지 말고 살릴 수
+  //   있는 것만 살린다 — 보관함 하나 깨졌다고 기능이 통째로 죽으면 안 된다.
+  //  ⚠ now 가 숫자가 아니면 만료 판정을 건너뛴다(시계를 못 믿을 때 지우는 쪽보다 남기는 쪽).
+  function stkRecentNormalize(list, now) {
+    const t = (typeof now === 'number' && isFinite(now)) ? now : 0;
+    const rows = [];
+    (Array.isArray(list) ? list : []).forEach((e) => {
+      const bc = stkNorm(e && e.bc);
+      const ts = (e && typeof e.ts === 'number' && isFinite(e.ts)) ? e.ts : 0;
+      if (!bc) return;
+      if (t && (t - ts > STK_RECENT_TTL)) return;
+      rows.push({ bc: bc, ts: ts });
+    });
+    //  ★정렬을 중복제거보다 **먼저** 한다. 순서가 반대면 '먼저 만난 것' 이 남아 같은 바코드의
+    //   옛 기록이 최신 기록을 이길 수 있고, 그러면 그 바코드가 실제보다 일찍 만료된다.
+    rows.sort((a, b) => b.ts - a.ts);
+    const out = [], seen = Object.create(null);
+    for (let i = 0; i < rows.length; i++) {
+      if (seen[rows[i].bc]) continue;
+      seen[rows[i].bc] = 1;
+      out.push(rows[i]);
+      if (out.length >= STK_RECENT_MAX) break;
+    }
+    return out;
+  }
+  function stkRecentPut(list, barcode, now) {
+    const bc = stkNorm(barcode);
+    if (!bc) return stkRecentNormalize(list, now);   // 빈 바코드는 넣지 않는다
+    return stkRecentNormalize([{ bc: bc, ts: now }].concat(Array.isArray(list) ? list : []), now);
+  }
+  //  강조 대상 고르기 — 보관함(최신순)과 화면에 있는 행 바코드들을 받아 ①강조할 바코드 집합
+  //  ②스크롤 기준 하나를 정한다. 겹치는 게 없으면 빈 결과 → 호출부는 아무것도 하지 않는다.
+  //  focus 는 **가장 최근 재고화한 것**이다(보관함이 최신순이라 첫 일치가 그것).
+  function stkPickHighlight(recent, rowBarcodes) {
+    const rows = Object.create(null);
+    (Array.isArray(rowBarcodes) ? rowBarcodes : []).forEach((b) => { const n = stkNorm(b); if (n) rows[n] = 1; });
+    const marks = (Array.isArray(recent) ? recent : [])
+      .map((e) => stkNorm(e && e.bc))
+      .filter((bc) => bc && rows[bc]);
+    return { marks: marks, focus: marks.length ? marks[0] : '' };
+  }
+
+  //  ── chrome.storage 접근(부작용) ─────────────────────────────────────────
+  //  실패는 전부 삼킨다. 이 기능이 안 되는 것보다 재고화·배정 자체가 멈추는 게 훨씬 나쁘다.
+  //  ⚠ 읽고-고쳐-쓰기라 두 창이 동시에 쓰면 한쪽이 덮일 수 있다. 쓰기 지점이 재고화 한 곳뿐이고
+  //   (사람이 바코드를 하나씩 치는 흐름이다) 잃어도 '강조가 한 건 빠지는' 정도라 잠금은 두지 않았다.
+  //  ★반환은 `{ ok, list }` 다 — 읽기 실패와 '정말 비어 있음' 을 반드시 구분해야 한다.
+  //   구분하지 않으면 일시적 읽기 실패 한 번이 "빈 보관함" 으로 읽히고, 그 위에 덮어쓰는
+  //   순간 기존 49건이 통째로 날아간다(Opus 5 검수 F2). 모르면 쓰지 않는다.
+  function stkRecentLoad() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get(STK_RECENT_KEY, (d) => {
+          const e = chrome.runtime.lastError;
+          if (e) { stkLog('보관함 읽기 실패', e.message || e); resolve({ ok: false, list: [] }); return; }
+          try { resolve({ ok: true, list: stkRecentNormalize((d || {})[STK_RECENT_KEY], Date.now()) }); }
+          catch (err) { stkLog('보관함 파싱 실패', err); resolve({ ok: false, list: [] }); }
+        });
+      } catch (err) { stkLog('보관함 읽기 예외', err); resolve({ ok: false, list: [] }); }
+    });
+  }
+  function stkRecentSave(list) {
+    return new Promise((resolve) => {
+      try {
+        const rec = {}; rec[STK_RECENT_KEY] = list;
+        chrome.storage.local.set(rec, () => {
+          const e = chrome.runtime.lastError;
+          if (e) stkLog('보관함 쓰기 실패', e.message || e);
+          resolve();
+        });
+      } catch (_) { resolve(); }
+    });
+  }
+  async function stkRecentAdd(barcode) {
+    const bc = stkNorm(barcode);
+    if (!bc) return;
+    const cur = await stkRecentLoad();
+    // 못 읽었으면 쓰지 않는다 — 덮어쓰면 남아 있던 보관함을 이 한 건으로 갈아버린다.
+    if (!cur.ok) { stkLog('보관함을 못 읽어 저장을 건너뜀', bc); return; }
+    const next = stkRecentPut(cur.list, bc, Date.now());
+    await stkRecentSave(next);
+    stkLog('보관함 +', bc, '(' + next.length + '건)');
+  }
+
   let stkBusy = false;
   async function run(barcode, setStatus) {
     barcode = (barcode || '').trim();
@@ -632,6 +748,10 @@
       stkLog('barcode', barcode, '→ junNum', junNum, '→ seq', seq);
       setStatus('입고장 ' + junNum + ' 불러오는 중…', 'go');
       ubHlStore(barcode);        // 검색 바코드 저장 → 로드된 새 문서 init 이 강조+스크롤
+      // ★보관함 저장은 loadVoucher **앞에서** 기다린다 — submit 이 이 문서를 떠나면 진행 중이던
+      //  chrome.storage 쓰기가 유실될 수 있다. 다만 저장이 늦는다고 재고화가 멈추면 안 되므로
+      //  짧게 끊는다(보관 실패 < 재고화 먹통).
+      await Promise.race([stkRecentAdd(barcode), new Promise((r) => setTimeout(r, 1500))]);
       loadVoucher(seq);   // 페이지 리로드 → 입고장 로드(사람이 확인 후 재고화 등록)
     } catch (e) {
       stkLog('실패', e); setStatus('실패: ' + (e && e.message ? e.message : e), 'err');
@@ -1071,6 +1191,32 @@
       ubHlPolling = false;   // 소진: flag 유지(60초 만료) → 옵저버/다음 로드가 재시도
     };
     tick();   // 첫 틱 동기 OK — ubHlSetHere 가드로 outgoing 소비가 원천 차단(시간 의존 없음)
+  }
+  //  행 강조 규칙(언스코프: 페이지 표 대상, D102 틸 #4abcc7).
+  //  ★상수로 뺀 이유 — 사이드바가 없는 화면(재고배정 팝업)도 이 규칙을 쓴다. SIDEBAR_CSS 는
+  //   renderSidebar 안에서만 주입되므로 팝업에는 들어가지 않는다. 규칙을 두 벌로 두면 반드시
+  //   갈라지므로(색만 바꾸고 한쪽을 잊는다) 원본을 하나로 두고 양쪽이 이걸 참조한다.
+  const HL_CSS = `
+    tr.ub-ms-hl > td {
+      background: rgba(74,188,199,.16) !important;
+      border-top: 1px solid #4abcc7 !important;
+      border-bottom: 1px solid #4abcc7 !important;
+    }
+    tr.ub-ms-hl > td:first-child { box-shadow: inset 4px 0 0 0 #4abcc7; }
+    tr.ub-ms-hl { animation: ubMsHl .85s ease-in-out 3; }
+    @keyframes ubMsHl {
+      0%, 100% { outline: 2px solid rgba(74,188,199,.15); outline-offset: -2px; }
+      50%      { outline: 3px solid rgba(74,188,199,.95); outline-offset: -3px; }
+    }
+  `;
+  const HL_STYLE_ID = 'ub-hl-style';
+  //  사이드바 없는 화면용 최소 주입. 사이드바가 있는 화면은 SIDEBAR_CSS 가 이미 싣고 있어
+  //  이걸 부를 일이 없다(부르면 같은 규칙이 두 번 들어갈 뿐 동작은 같다).
+  function ensureHlStyle() {
+    if (document.getElementById(HL_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = HL_STYLE_ID; s.textContent = HL_CSS;
+    (document.head || document.documentElement).appendChild(s);
   }
 
   /* ==========================================================================
@@ -1697,6 +1843,46 @@
       });
     } catch (e) { asgLog('신호 기록 실패', e); }
   }
+  // ── 팝업: 재고화 보관함 바코드 강조·스크롤 ─────────────────────────────────
+  //  후보 표는 `No | 입고일자 | 바코드 | 선택` 4열이고, 선택 칸이
+  //  `<a href="javascript:setCurrent('<바코드>')">` 다(실측 2026-07-20, spec orderitem-batch).
+  //  행에 idx 체크박스 같은 키가 없으므로 **그 앵커가 곧 행의 바코드**다 — ubFindRow 를
+  //  못 쓰는 이유가 이것이고, 그래서 팝업 전용 행 스캐너를 따로 둔다.
+  function asgPopupRows() {
+    const out = [];
+    document.querySelectorAll('a[href*="setCurrent"]').forEach((a) => {
+      const bc = stkNorm(parseSetCurrentBarcode(a.getAttribute('href')));
+      const tr = a.closest ? a.closest('tr') : null;
+      if (bc && tr) out.push({ bc: bc, tr: tr });
+    });
+    return out;
+  }
+  function asgHighlightRecent() {
+    stkRecentLoad().then((cur) => {
+      const recent = cur.list;
+      if (!recent.length) return;                 // 보관함이 비었거나 못 읽었으면 조용히 끝
+      const rows = asgPopupRows();
+      // 행을 하나도 못 찾으면 링크 형태가 바뀐 것이다. 조용히 아무 일도 안 하면 원인을 못 찾으니
+      //  로그는 남긴다(동작은 그대로 네이티브).
+      if (!rows.length) { asgLog('팝업에서 setCurrent 행을 못 찾음 — 강조 생략'); return; }
+      const pick = stkPickHighlight(recent, rows.map((r) => r.bc));
+      if (!pick.marks.length) return;             // 이 페이지엔 재고화한 게 없다
+      ensureHlStyle();                            // 팝업엔 사이드바가 없어 규칙이 안 실려 있다
+      const marks = Object.create(null);
+      pick.marks.forEach((bc) => { marks[bc] = 1; });
+      let focusTr = null;
+      rows.forEach((r) => {
+        if (!marks[r.bc]) return;
+        r.tr.classList.add('ub-ms-hl');
+        if (!focusTr && r.bc === pick.focus) focusTr = r.tr;
+      });
+      if (focusTr) {
+        try { focusTr.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        catch (_) { try { focusTr.scrollIntoView(); } catch (_) {} }
+      }
+      asgLog('재고화 보관함 강조', pick.marks.length + '건', '스크롤 →', pick.focus);
+    }).catch((e) => asgLog('보관함 강조 실패', e));
+  }
   function bindAssignPopupForm() {
     // ★nonce 는 '팝업이 처음 열린 순간' 잡아 sessionStorage 에 박아둔다.
     //  클릭 시점의 location.search 에서 읽으면, 사용자가 팝업 안에서 검색하거나 다음 페이지로
@@ -1707,6 +1893,11 @@
       const urlNonce = new URLSearchParams(location.search).get(ASG_NONCE_PARAM);
       if (urlNonce) sessionStorage.setItem(ASG_OURS_KEY, urlNonce);
     } catch (_) {}
+    // 재고화해 둔 바코드가 이 후보 목록에 있으면 강조·스크롤한다. 검색·페이징으로 페이지가
+    //  새로 뜰 때마다 skin.js 가 다시 초기화되므로 매 페이지에서 자동으로 다시 걸린다.
+    //  ⚠ 우리가 연 팝업(nonce)인지와 무관하게 한다 — 읽기 전용 표시이고, 네이티브로 열린
+    //   팝업에서도 사람이 겪는 불편(맨 아래까지 스크롤)은 똑같기 때문이다.
+    asgHighlightRecent();
     const hidden = (n) => {
       const el = document.querySelector('input[name="' + n + '"]');
       return el ? el.value : '';
@@ -2699,18 +2890,7 @@
     #ub-sb-handle:hover { background: #2bb5e0; width: 28px; }
     #ub-sb-handle svg { width: 16px; height: 16px; stroke-width: 2.4; }
 
-    /* 메인석 입고 — 로드된 전표에서 찾은 바코드 행 강조(언스코프: 페이지 표 대상, D102 틸) */
-    tr.ub-ms-hl > td {
-      background: rgba(74,188,199,.16) !important;
-      border-top: 1px solid #4abcc7 !important;
-      border-bottom: 1px solid #4abcc7 !important;
-    }
-    tr.ub-ms-hl > td:first-child { box-shadow: inset 4px 0 0 0 #4abcc7; }
-    tr.ub-ms-hl { animation: ubMsHl .85s ease-in-out 3; }
-    @keyframes ubMsHl {
-      0%, 100% { outline: 2px solid rgba(74,188,199,.15); outline-offset: -2px; }
-      50%      { outline: 3px solid rgba(74,188,199,.95); outline-offset: -3px; }
-    }
+    ${HL_CSS}
 
     /* 전표 기본탭 설정 */
     .ub-sidebar .ub-tp-sel {
