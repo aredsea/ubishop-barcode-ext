@@ -274,12 +274,17 @@ test('★패널을 열 때마다 세대가 오른다 — 안 오르면 재사용
 test('★목록 갱신을 먼저 걸고, 성공했을 때만 패널을 닫는다', () => {
   // 반대 순서면 갱신이 안 걸렸을 때 패널까지 사라져, 사용자는 옛 값이 남은 목록만 보고
   // 방금 저장한 화면으로 돌아갈 방법이 없다. 별도 창 시절의 fail-closed 순서와 같다.
+  //  ⚠ 함수 전체로 재면 안 된다 — 취소 분기(2026-08-20)가 **의도적으로** 갱신 없이 먼저 닫는다.
+  //   이 순서 규칙은 '완료' 분기의 것이므로 그 분기만 잘라 잰다.
   const fn = extractFn(SRC, 'epEnsurePanel');
-  const iReload = fn.indexOf('epReloadList');
-  const iClose = fn.indexOf('epClosePanel(');
+  const iDone = fn.indexOf("ubEpDone !== '1'");
+  assert.ok(iDone >= 0, '완료 분기를 찾지 못했다 — 판정 조건이 바뀌었으면 이 가드도 같이 고쳐라');
+  const done = fn.slice(iDone);
+  const iReload = done.indexOf('epReloadList');
+  const iClose = done.indexOf('epClosePanel(');
   assert.ok(iReload >= 0 && iClose >= 0, '완료 감시가 갱신·닫기를 둘 다 다뤄야 한다');
   assert.ok(iReload < iClose, 'epReloadList() 가 epClosePanel() 보다 앞서야 한다');
-  assert.match(fn, /if\s*\(\s*!epReloadList\(\)\s*\)[\s\S]{0,220}?return;/,
+  assert.match(done, /if\s*\(\s*!epReloadList\(\)\s*\)[\s\S]{0,220}?return;/,
     '갱신 실패 시 닫지 않고 빠져나가는 경로가 없다');
 });
 
@@ -424,12 +429,24 @@ test('제출 신호 + 아는 저장 착지에서만 닫는다(done)', () => {
   assert.equal(epPopupAction('/jun/orderitem/orderItemList.do', true), 'done');     // 목록 리다이렉트
 });
 
-test('★제출 증거가 없으면 아는 경로여도 닫지 않는다 — 인과 없이 완료로 치지 않는다', () => {
-  // 사용자가 저장하지 않고 메뉴로 목록에 간 것도 경로만 보면 '저장 완료' 로 오인한다.
-  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do', false), 'stay');
+test('★제출 증거가 없으면 아는 경로여도 완료(done)로 치지 않는다 — 인과 없이 갱신하지 않는다', () => {
+  // 저장 경로(Modify.do)에 제출 증거 없이 착지한 것은 설명되지 않는 상태다 → 손대지 않는다.
   assert.equal(epPopupAction('/jun/orderitem/orderItemModify.do', false), 'stay');
-  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do'), 'stay');           // 인자 생략
-  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do', 'yes'), 'stay');    // true 만 인정
+  // 목록 착지는 '취소'다 — 닫되(close) **목록 갱신은 하지 않는다**. done 과 혼동하면 안 된다.
+  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do', false), 'close');
+  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do'), 'close');          // 인자 생략
+  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do', 'yes'), 'close');   // true 만 done
+});
+
+test('★[취소하기] = 저장 없이 목록으로 되돌아옴 → 패널만 닫는다(close)', () => {
+  //  2026-08-20 사장님 지적: 취소를 누르면 패널 **안**에 주문전표 목록이 다시 그려져
+  //  목록 위에 목록이 겹쳐 보였다. 저장한 게 없으니 갱신할 것도 없다 → 닫기만 한다.
+  //  ⚠ close 는 done 이 아니다 — done 은 목록을 다시 받아 오고, close 는 받아 오지 않는다.
+  assert.equal(epPopupAction('/jun/orderitem/orderItemList.do', false), 'close');
+  assert.notEqual(epPopupAction('/jun/orderitem/orderItemList.do', false), 'done');
+  //  ⚠ 목록 **말고** 다른 곳에 저장 없이 착지한 것은 여전히 stay 다(오류·권한 화면 보호).
+  assert.equal(epPopupAction('/error.jsp', false), 'stay');
+  assert.equal(epPopupAction('/mall/login.ubs', false), 'stay');
 });
 
 test("★모르는 곳에서는 창을 닫지 않는다(stay) — 저장 안 한 작업·오류 화면을 잃지 않게", () => {
@@ -899,4 +916,54 @@ test('★회귀(소스 대조) — 패널 높이를 저장하지 않는다', () 
   const body = extractFn(SRC, 'epPanelSavePos');
   assert.equal(body.includes('ubEpH'), false, 'epPanelSavePos 가 높이를 다시 저장하고 있다');
   assert.equal(body.includes('ubEpW'), true, '폭·위치는 계속 저장해야 한다');
+});
+
+/* ══ [취소하기] → 패널 닫기 (2026-08-20) ═══════════════════════════════════════
+ *  자식(iframe)이 속성을 세우고 부모(목록)가 그걸 본다. 양쪽이 **한 이름**을 쓰지 않으면
+ *  아무 일도 안 일어나는데, 자식은 이미 이동을 막은 뒤라 [취소하기]가 통째로 죽는다.
+ *  node 로 실행할 수 없는 배선이라 소스로 못 박는다.
+ * ========================================================================== */
+
+test('★회귀(소스 대조) — 취소 신호는 세대 검사를 통과해야 선다(fail-closed)', () => {
+  const sig = extractFn(SRC, 'epSignalCancel');
+  assert.match(sig, /ubEpGen/, '취소 신호가 세대를 대조하지 않는다 — 낡은 문서가 남의 패널을 닫는다');
+  assert.match(sig, /!mine/, '세대가 비었을 때 통과시키고 있다(fail-open)');
+  assert.match(sig, /ubEpCancel\s*=\s*'1'/, '취소 신호가 속성을 세우지 않는다');
+});
+
+test('★회귀(소스 대조) — 신호가 걸렸을 때만 네이티브 이동을 막는다', () => {
+  //  ⚠ 무조건 preventDefault 하면(신호 실패 시) [취소하기]가 아무 반응 없는 버튼이 된다.
+  //   못 닫을 때는 네이티브 이동이 살아 있어야 사용자가 폼을 빠져나갈 수 있다.
+  const watch = extractFn(SRC, 'epWatchSubmit');
+  assert.match(watch, /if\s*\(\s*epSignalCancel\(epFrameIdentity\(\)\)\s*\)\s*\{[\s\S]{0,160}?preventDefault/,
+    '취소 신호 성공 여부와 무관하게 이동을 막고 있다');
+  assert.equal((watch.match(/preventDefault/g) || []).length, 1,
+    'epWatchSubmit 에 가드 밖 preventDefault 가 생겼다');
+});
+
+test('★회귀(소스 대조) — 부모가 취소 속성을 보고 있고, 취소에는 목록을 다시 받지 않는다', () => {
+  const ens = extractFn(SRC, 'epEnsurePanel');
+  assert.match(ens, /attributeFilter:[\s\S]{0,160}'data-ub-ep-cancel'/,
+    "관측자가 'data-ub-ep-cancel' 을 안 본다 — 자식은 이동을 막았는데 부모는 모른다");
+  const m = /ubEpCancel === '1'\)\s*\{([\s\S]*?)\}/.exec(ens);
+  assert.ok(m, '부모에 취소 분기가 없다');
+  assert.equal(m[1].includes('epClosePanel'), true, '취소 분기가 패널을 닫지 않는다');
+  assert.equal(m[1].includes('epReloadList'), false,
+    '취소인데 목록을 다시 받아 온다 — 저장한 게 없으니 갱신할 것도 없다');
+  assert.equal(m[1].includes('return'), true, '취소 분기가 완료 처리로 흘러 내려간다');
+});
+
+test('★회귀(소스 대조) — 앞 문서의 취소가 새로 연 패널을 닫지 않는다', () => {
+  assert.match(extractFn(SRC, 'epOpenPanel'), /delete fr\.dataset\.ubEpCancel/,
+    'epOpenPanel 이 앞 문서의 취소 속성을 비우지 않는다');
+});
+
+test("★회귀(소스 대조) — 목록 착지(close)도 닫되, 로그인 화면이면 닫지 않는다", () => {
+  const init = extractFn(SRC, 'initEditPopupWindow');
+  assert.match(init, /action === 'close'/, "initEditPopupWindow 가 'close' 를 처리하지 않는다");
+  const m = /action === 'close'\)\s*\{([\s\S]*?)\n      \}/.exec(init);
+  assert.ok(m, "'close' 분기를 찾지 못했다");
+  assert.equal(m[1].includes('epLooksLogin'), true,
+    '세션 만료(로그인 화면)를 취소로 오인해 창을 닫는다');
+  assert.equal(m[1].includes('epSignalCancel'), true, 'close 인데 취소 신호를 보내지 않는다');
 });

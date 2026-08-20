@@ -1423,6 +1423,7 @@
   //  패널 안 프레임이 지금 어디에 있느냐로 할 일을 정한다.
   //   'dress' = 수정폼 → 크롬 걷어내고 폼만 보여준다
   //   'done'  = 저장 결과로 **알려진** 착지 → 목록 갱신·패널 닫기
+  //   'close' = 저장 없이 목록으로 되돌아옴(= 취소) → 목록 갱신 없이 패널만 닫기
   //   'stay'  = 그 밖의 모든 곳 → 아무것도 하지 않고 창을 열어둔다
   //  ★'수정폼이 아니면 전부 done' 은 위험하다 — 사용자가 폼 안에서 다른 데로 이동했거나
   //   서버 오류·권한 화면에 착지했을 때도 창을 닫아버려, 저장 안 한 작업을 잃고 오류 내용을
@@ -1432,10 +1433,16 @@
   //  ★submitted = 이 창에서 **실제로 폼 제출이 일어났다**는 관측 신호. 경로만 보고 판정하면
   //   사용자가 저장하지 않고 메뉴로 목록에 간 것도 '저장 완료' 로 오인해 창을 닫는다.
   //   인과 증거 없이 완료로 치지 않는다.
+  //  ★'close' 는 'done' 의 완화가 아니라 **다른 사건**이다(2026-08-20 사장님 지적). 폼에서
+  //   [취소하기]를 누르면 네이티브가 목록으로 되돌아가는데, 그게 패널 **안**에서 일어나
+  //   목록 위에 목록이 겹쳐 보인다. 저장한 게 없으니 갱신할 것도 없다 → 패널만 닫는다.
+  //  ⚠ 이 판정이 fail-closed 원칙을 깨지 않는 이유: 여기 도달한 시점엔 이미 폼을 떠났으므로
+  //   지켜 줄 입력이 남아 있지 않고, 착지가 **주문전표 목록** 하나로 특정된다(오류·권한
+  //   화면은 여전히 stay). 잃는 것이 없는 착지에서만 닫는다.
   function epPopupAction(pathname, submitted) {
     const p = String(pathname == null ? '' : pathname);
     if (p === EP_FORM_PATH) return 'dress';
-    if (submitted !== true) return 'stay';                    // 제출 신호 없음 → 관여하지 않는다
+    if (submitted !== true) return p === EP_LIST_PATH ? 'close' : 'stay';   // 저장 없이 목록 = 취소
     if (p === EP_SAVE_PATH || p === EP_LIST_PATH) return 'done';
     return 'stay';
   }
@@ -4199,6 +4206,13 @@
             delete fr.dataset.ubEpFit;        // 소비한다 — 다음 신호를 새 변경으로 받기 위해
             if (epApplyFit(el, fit)) epLog('패널 높이 맞춤', fit);
           }
+          //  ★취소 — 저장한 게 없으니 목록을 다시 받아 오지 않는다. 완료와 달리 갱신 실패로
+          //   패널을 붙잡아 둘 이유도 없다(사용자가 닫으라고 눌렀다).
+          if (fr.dataset.ubEpCancel === '1') {
+            epLog('취소 신호 수신 → 목록 갱신 없이 패널 닫기');
+            epClosePanel();
+            return;
+          }
           if (fr.dataset.ubEpDone !== '1') return;
           //  ★갱신을 **먼저** 걸고, 걸렸을 때만 닫는다(별도 창 시절의 fail-closed 순서).
           //   반대로 하면 갱신이 안 걸린 경우 패널까지 사라져, 사용자는 옛 값이 남은 목록만
@@ -4211,7 +4225,8 @@
           epLog('저장 완료 신호 수신 → 목록 갱신·패널 닫기');
           epClosePanel();
         } catch (_) {}
-      }).observe(fr, { attributes: true, attributeFilter: ['data-ub-ep-done', 'data-ub-ep-fit'] });
+      }).observe(fr, { attributes: true,
+                       attributeFilter: ['data-ub-ep-done', 'data-ub-ep-cancel', 'data-ub-ep-fit'] });
     } catch (e) { epLog('완료 감시 장착 실패', e); }
     return el;
   }
@@ -4236,6 +4251,7 @@
     fr.dataset.ubEpSeq = String(orderSeq);
     fr.dataset.ubEpGen = String(++_epGenSeq);
     delete fr.dataset.ubEpDone;
+    delete fr.dataset.ubEpCancel;   // 앞 문서의 취소가 새로 연 패널을 닫지 않게
     delete fr.dataset.ubEpFit;      // 앞 문서가 남긴 높이를 새 문서 것으로 오인하지 않게
     fr.src = url;
     epLog('수정 패널 열림', orderSeq);
@@ -4360,10 +4376,21 @@
       }, true);
       //  '취소'(목록으로 이동)는 저장하지 않겠다는 뜻이다 — 남아 있던 제출 증거를 버린다.
       //  안 그러면 저장 시도가 검증에 막힌 뒤 취소를 눌렀을 때 목록 착지가 완료로 오인된다.
+      //  ★그리고 **이 창을 닫는다**(2026-08-20 사장님 지적). 이동을 그대로 두면 패널 안에
+      //   주문전표 목록이 다시 그려져 목록 위에 목록이 겹친다. 여기서 막으면 그 왕복 자체가
+      //   없어진다 — 요청도 안 나가고 깜빡임도 없다.
+      //  ⚠ 신호가 안 걸리면(우리 프레임이 아니거나 세대가 낡음) **막지 않는다**. 그때는
+      //   네이티브 이동이 살아 있어야 사용자가 어떻게든 폼을 빠져나갈 수 있다(fail-safe).
+      //   그 경우에도 목록에 착지하면 epPopupAction 이 'close' 로 잡아 패널을 닫는다(2중 그물).
       document.addEventListener('click', (e) => {
         try {
           const a = e.target && e.target.closest ? e.target.closest('a[href*="list("]') : null;
-          if (a) { epClearSubmitted(); epLog('취소(목록으로) → 제출 증거 철회'); }
+          if (!a) return;
+          epClearSubmitted(); epLog('취소(목록으로) → 제출 증거 철회');
+          if (epSignalCancel(epFrameIdentity())) {
+            e.preventDefault(); e.stopPropagation();
+            epLog('취소 → 이동을 막고 패널을 닫는다');
+          }
         } catch (_) {}
       }, true);
       document.addEventListener('submit', (e) => {
@@ -4924,6 +4951,24 @@
       return true;
     } catch (e) { epLog('완료 신호 실패', e); return false; }
   }
+  //  취소를 부모에게 알린다 — 부모는 이 속성을 보고 **목록 갱신 없이** 패널만 닫는다.
+  //  ★완료(epSignalDone)와 속성을 나눈 이유: 취소는 아무것도 저장하지 않았으니 목록을 다시
+  //   받아 올 이유가 없고, 갱신 실패 시 패널을 열어 두는 fail-closed 도 여기선 해가 된다
+  //   (사용자는 닫으라고 눌렀다). 세대 검사는 완료와 똑같이 fail-closed 로 건다 — 낡은 문서가
+  //   남이 보고 있는 패널을 닫으면 안 되는 것은 취소도 마찬가지다.
+  function epSignalCancel(id) {
+    try {
+      if (!id || !id.el) return false;
+      const mine = String(id.gen == null ? '' : id.gen);
+      const now = String(id.el.dataset.ubEpGen == null ? '' : id.el.dataset.ubEpGen);
+      if (!mine || now !== mine) {
+        epLog('세대가 없거나 낡은 취소 신호 → 무시', mine, '≠', now);
+        return false;
+      }
+      id.el.dataset.ubEpCancel = '1';
+      return true;
+    } catch (e) { epLog('취소 신호 실패', e); return false; }
+  }
   //  콘텐츠 높이를 부모에게 알린다 — 부모가 패널을 여기에 맞춘다(스크롤·수동 리사이즈 제거).
   //  ★완료 신호와 **같은 방식**(same-origin dataset 한 줄)이고 세대 검사도 똑같이 건다 —
   //   낡은 문서가 새 패널을 자기 콘텐츠 높이로 줄여 버리면 안 된다.
@@ -4985,6 +5030,19 @@
         //  ⚠ 로그인 만료 화면에는 띄우지 않는다 — 저장한 적이 없는데 '저장하셨다면' 을
         //   물으면 오해를 부른다.
         if (location.pathname !== EP_FORM_PATH && !epLooksLogin()) epOfferFinish(id);
+        return;
+      }
+      if (action === 'close') {
+        //  저장 없이 목록으로 되돌아왔다 = [취소하기]. 클릭을 못 잡았을 때의 2중 그물이다
+        //  (잡았으면 이동 자체가 없어 여기까지 오지 않는다).
+        //  ⚠ 로그인 화면이면 닫지 않는다 — 세션 만료를 취소로 오인하면 사용자는 왜 창이
+        //   사라졌는지 알 길이 없다('done' 과 같은 이유).
+        if (epLooksLogin()) { epLog('로그인 화면 — 패널을 닫지 않는다(세션 만료)'); return; }
+        epLog('저장 없이 목록으로 되돌아옴(취소) → 목록 갱신 없이 패널만 닫는다');
+        //  ⚠ 신호가 안 서면 **아무것도 하지 않는다.** 여기서 실패하는 유일한 경우는 세대가
+        //   낡은 것(그 사이 패널이 다른 주문으로 다시 열림)이라, 이 문서는 이미 남의 화면이
+        //   아닌 버려질 문서다. 탈출구 버튼을 붙여 봐야 같은 세대 검사에 또 막혀 죽은 버튼이 된다.
+        if (!epSignalCancel(id)) epLog('취소 신호가 서지 않았다(낡은 세대) → 손대지 않는다');
         return;
       }
       //  저장 경로를 지나 떠났다. 로그인 화면이면 세션이 끊긴 것이라 조용히 닫지 않는다.
