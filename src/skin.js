@@ -736,6 +736,7 @@
   async function run(barcode, setStatus) {
     barcode = (barcode || '').trim();
     if (!barcode) { setStatus('바코드를 입력하세요', 'warn'); return; }
+    if (barcode.length !== 6) { setStatus('바코드 6자리를 입력하세요 (' + barcode.length + '자 입력됨)', 'warn'); return; }
     if (stkBusy) return; stkBusy = true;
     try {
       setStatus('전표 조회 중…', 'go');
@@ -939,6 +940,7 @@
   async function dcmRun(barcode, setStatus) {
     barcode = (barcode || '').trim();
     if (!barcode) { setStatus('바코드를 입력하세요', 'warn'); return; }
+    if (barcode.length !== 6) { setStatus('바코드 6자리를 입력하세요 (' + barcode.length + '자 입력됨)', 'warn'); return; }
     if (dcmBusy) return; dcmBusy = true;
     try {
       setStatus('출고 내역 조회 중…', 'go');
@@ -1105,6 +1107,7 @@
   async function msRun(barcode, setStatus) {
     barcode = (barcode || '').trim();
     if (!barcode) { setStatus('바코드를 입력하세요', 'warn'); return; }
+    if (barcode.length !== 6) { setStatus('바코드 6자리를 입력하세요 (' + barcode.length + '자 입력됨)', 'warn'); return; }
     if (msBusy) return; msBusy = true;
     try {
       setStatus('입고 전표 조회 중…', 'go');
@@ -3136,6 +3139,155 @@
     const h = document.getElementById(HANDLE_ID);
     if (h) h.remove();
   }
+  /* --------------------------------------------------------------------------
+   *  바코드 입력칸 — 숫자·영문만 (사장님 지시 2026-08-31)
+   *
+   *  바코드는 `2112BJ` 처럼 숫자+영문뿐이다. 그런데 스캐너는 키보드 입력이라 한글 IME 가
+   *  켜져 있으면 영문 자리가 자모로 들어온다(`24027U` → `24027ㅕ`). 웹 페이지에서 IME 를
+   *  끄는 표준 수단은 크롬에 없으므로, 들어온 값에서 영숫자 외를 털어내는 쪽으로 막는다.
+   *
+   *  ⚠ 조합 중(isComposing)에는 value 를 건드리지 않는다 — 건드리면 IME 조합 상태가 깨져
+   *   글자가 겹치거나 캐럿이 튄다. 조합이 끝난 뒤(compositionend) 한 번에 턴다.
+   *  ⚠ Enter 로 조합이 확정될 때 compositionend 와 keydown 의 순서는 브라우저·IME 마다
+   *   다르다. 그래서 실행 직전에 bcRead() 가 마지막 관문이 된다 — 이벤트 순서에 기대지 않는다.
+   *   (거기서 지워야 할 게 남아 있으면 조회를 멈추고 원인을 알린다. bcRead 주석 참조.)
+   *  ⚠ 대소문자는 그대로 둔다. 대문자 통일은 stkNorm 등 하류가 이미 한다.
+   * ------------------------------------------------------------------------ */
+  function bcAlnum(s) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9]/g, ''); }
+
+  //  ⚠ 유비샵 페이지의 칸은 사이드바와 달리 **같은 노드가 계속 살아 있다.** applyAll 이 여러 번
+  //   불리므로 표식을 남겨 두 번 배선하지 않는다 — 리스너가 쌓이면 캐럿 보정이 서로 싸운다.
+  //  ⚠ gate 는 **페이지 칸 전용**이다. 배선은 한 번뿐인데 스킨은 나중에 꺼질 수 있어서, 배선
+  //   시점만 보면 "껐는데도 계속 페이지를 고치는" 개입이 남는다(검수 지적 2026-08-31).
+  //   그래서 게이트를 리스너 **안에서** 매번 본다. 사이드바 칸은 사이드바 자체가 게이트라 안 넘긴다.
+  function bindBcInput(el, gate, notify) {
+    if (!el) return;
+    if (el.dataset) { if (el.dataset.ubBcBound === '1') return; el.dataset.ubBcBound = '1'; }
+    const scrub = () => {
+      if (gate && !gate()) return;
+      const v = el.value;
+      const c = bcAlnum(v);
+      //  ⚠ 깨끗해도 notify 는 부른다 — 안 부르면 사용자가 값을 바로잡아도 **낡은 경고가 남고**,
+      //   아래 IME 표식도 안 풀린다(검수 지적 2026-08-31). 캐럿·value 는 안 건드리고 알림만.
+      if (c === v) { if (notify) { try { notify(v, c); } catch (_) {} } return; }
+      // 캐럿 앞에서 몇 글자가 사라졌는지 세어 제자리에 돌려놓는다(안 하면 맨 뒤로 튄다).
+      const pos = (el.selectionStart == null) ? v.length : el.selectionStart;
+      const cut = (v.slice(0, pos).match(/[^A-Za-z0-9]/g) || []).length;
+      el.value = c;
+      try { el.setSelectionRange(pos - cut, pos - cut); } catch (_) {}
+      if (notify) { try { notify(v, c); } catch (_) {} }
+    };
+    el.addEventListener('input', (e) => { if (!e.isComposing) scrub(); });
+    el.addEventListener('compositionend', scrub);
+  }
+
+  //  실행 직전의 읽기 — 값을 털고 입력칸에도 되써서 '보이는 값 = 조회한 값' 을 맞춘다.
+  //
+  //  🔴 여기서 실제로 뭔가 지워졌다면 그건 **한/영 키가 한글인 채 스캔한 정황**이다. 조합 중에는
+  //   위 bindBcInput 이 value 를 일부러 안 건드리므로, Enter 가 조합을 확정시키며 들어온 자모만
+  //   이 자리에 남는다. 그걸 그냥 털고 조회하면 `24027ㅕ` → `24027` 로 **짧아진 값이 조회되고
+  //   화면에는 깔끔한 숫자만 남아 사용자가 원인을 못 본다.** 필터를 넣기 전에는 한글이 눈에
+  //   보여서라도 원인을 알 수 있었으니, 말없이 털면 그 진단 신호를 없애는 회귀가 된다.
+  //   → 지워진 게 있으면 **조회하지 않고 원인을 지목한다.** (검수 지적 2026-08-31)
+  //  ⚠ 평상시에는 여기서 지워질 게 없다 — 타이핑·붙여넣기는 input 에서 이미 걸러진다.
+  //   즉 이 경고가 뜬다는 것 자체가 IME 신호다.
+  //  ⚠ 단 **여백만 지워진 것은 경고하지 않는다.** 복사·붙여넣기로 앞뒤 공백이 딸려오는 건
+  //   흔한 일이고 조용히 털어 주는 게 맞다(사장님 지시 2026-08-31). 글자가 사라진 게 아니라
+  //   여백만 없어진 것이라 조회할 바코드는 그대로다.
+  //  지워진 것 중에 **눈에 보이는 글자**가 있었나.
+  //  🔴 "무엇이 여백인가"를 목록으로 세지 마라. 처음엔 `\s` 만 봤다가 제로폭(U+200B)을 놓쳤고,
+  //   고쳐 넣었더니 이번엔 U+200E/F(방향표시)·U+00AD(soft hyphen)·U+061C·U+180E·U+034F 가
+  //   줄줄이 나왔다(검수 실측 2026-08-31). **목록은 계속 샌다.** 그래서 판정을 뒤집는다 —
+  //   지워진 것이 **글자·숫자·문장부호·기호**였나만 본다. 아니면 전부 비가시로 보고 조용히 넘긴다.
+  //  ⚠ 여기서 true = "사람이 의도한 글자가 사라졌다" 이고, 그때만 조회를 멈춘다.
+  function bcLostVisible(raw) {
+    //  ⚠ `\p{L}` 이라고 다 보이는 건 아니다 — U+3164 HANGUL FILLER 처럼 화면엔 빈칸으로
+    //   보이는 글자가 있다(한국어 페이지에서 복사하면 실제로 딸려온다). 목록을 만들지 말고
+    //   유니코드가 이미 분류해 둔 **Default_Ignorable** 속성을 쓴다(검수 지적 2026-08-31).
+    const lost = String(raw == null ? '' : raw)
+      .replace(/[A-Za-z0-9]/g, '')
+      .replace(/\p{Default_Ignorable_Code_Point}/gu, '');
+    return /[\p{L}\p{N}\p{P}\p{S}]/u.test(lost);
+  }
+
+  //  스크럽이 조용하면 안 된다 — 한/영이 한글이면 compositionend 에서 값이 이미 털려서
+  //  bcRead 까지 갈 때는 '깨끗한 5자' 가 되어 있다. 그러면 사용자가 보는 건 '6자리를 입력하세요'
+  //  뿐이고 **원인(한/영)은 어디에도 안 뜬다**(검수 재현 2026-08-31). 털린 그 순간에 알린다.
+  //  ⚠ renderSidebar 밖으로 뺀 이유: 테스트가 이 배선을 **실제로 호출해** 검증할 수 있게 하려는 것.
+  //   소스 문자열만 대조하면 `if (false)` 로 감싸거나 블록주석으로 죽여도 게이트가 통과했다.
+  const BC_IME_MSG = '한글·기호를 지웠습니다 — 한/영 키를 영문으로 두고 다시 스캔하세요';
+  //  🔴 알리기만 해서는 부족했다. 털린 뒤 사용자가 Enter 를 다시 누르면 그때 값은 이미 '깨끗한
+  //   5자' 라 bcRead 가 통과시키고, 6자리 가드가 상태줄을 `바코드 6자리를 입력하세요` 로
+  //   **덮어써서 원인을 오지목**했다(검수 재현 2026-08-31). 그래서 칸에 표식을 남겨,
+  //   사용자가 값을 다시 넣기 전까지는 조회 자체를 막고 한/영을 계속 지목한다.
+  //   표식은 scrub 이 깨끗한 값을 볼 때 스스로 풀린다(위 notify 는 깨끗해도 불린다).
+  function bindSidebarBcInput(el, setStatus) {
+    bindBcInput(el, null, (before) => {
+      const dirty = bcLostVisible(before);
+      if (el.dataset) el.dataset.ubBcIme = dirty ? '1' : '';
+      if (!dirty) return;                   // 여백만 털린 건 알릴 것 없다
+      if (setStatus) setStatus(BC_IME_MSG, 'warn');
+    });
+  }
+
+  function bcRead(el, setStatus) {
+    const raw = String(el && el.value != null ? el.value : '');
+    const v = bcAlnum(raw);
+    if (el && el.value !== v) el.value = v;   // 입력칸은 지시대로 영숫자만 남긴다
+    //  ⚠ 지금 값이 깨끗해도 **직전에 글자가 털렸으면** 조회하지 않는다 — 그 값은 사용자가 의도한
+    //   바코드가 아니다. 표식은 사용자가 값을 다시 넣을 때 scrub 이 푼다.
+    const imeDirty = !!(el && el.dataset && el.dataset.ubBcIme === '1');
+    if (!imeDirty && !bcLostVisible(raw)) return v;   // 여백·비가시만 사라졌다(또는 애초에 깨끗했다)
+    if (setStatus) setStatus(BC_IME_MSG, 'warn');
+    return null;            // 잘린 값으로는 조회하지 않는다
+  }
+
+  /* --------------------------------------------------------------------------
+   *  유비샵 페이지 **자체**의 바코드 입력칸에도 같은 필터를 건다
+   *  (사장님 지시 2026-08-31 — "바코드를 입력하는 모든 유비샵 입력 칸").
+   *  확장이 그린 사이드바 4칸은 renderSidebar 에서 따로 배선한다.
+   *
+   *  🔴 **보이는 텍스트 칸만** 건드린다. hidden·checkbox 는 폼 상태를 나르고, 특히 `idx` 는
+   *   쉼표로 이어진 다중 값이라 거기서 쉼표를 털면 **제출이 통째로 깨진다.**
+   *   readOnly·disabled 도 사용자가 못 고치는 칸이라 제외한다.
+   *  🔴 **라벨('바코드')로 칸을 찾지 않는다.** findLabeledInput 의 폴백은 라벨 텍스트 뒤의
+   *   '문서 순서상 첫 편집 가능한 input' 을 거리·컨테이너 검사 없이 돌려준다. 그래서 바코드 칸이
+   *   readOnly 이거나(그 함수가 readOnly 를 먼저 걸러낸다) `<th>바코드</th>` 같은 표 헤더만 있어도
+   *   **고객명 같은 엉뚱한 한글 칸**이 잡히고, 거기 한글을 치면 이 필터가 전부 지운다.
+   *   (검수 재현 2026-08-31: readOnly 시나리오에서 `custName` 이 잡혀 한글 입력이 빈 값이 됐다.)
+   *   같은 호출을 쓰는 captureSearchBarcode 는 읽기 전용인 데다 BARCODE_RE 로 한 번 더 거른다 —
+   *   여기는 **값을 고치는** 자리라 같은 휴리스틱을 쓸 수 없다. name/id 로만 찾는다.
+   *  ⚠ 여기서는 상태줄이 없으니 title 과 console.warn 으로만 알린다(아래 notify).
+   * ------------------------------------------------------------------------ */
+  function pageBcInputs() {
+    const seen = new Set();
+    const push = (el) => {
+      if (!el || seen.has(el) || el.tagName !== 'INPUT') return;
+      const t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t !== 'text' && t !== 'search') return;
+      if (el.disabled || el.readOnly) return;
+      seen.add(el);
+    };
+    try {
+      document.querySelectorAll('input[name*="barcode" i], input[id*="barcode" i]').forEach(push);
+    } catch (_) {}
+    return [...seen];
+  }
+  function bindPageBcInputs() {
+    if (!state.ubSkin) return;   // 유비샵 도구가 꺼져 있으면 페이지를 건드리지 않는다(다른 페이지 기능과 동일)
+    //  게이트를 리스너에도 넘긴다 — 배선은 한 번뿐인데 스킨은 나중에 꺼질 수 있다.
+    //  ⚠ forEach 에 bindBcInput 을 그대로 넘기면 **인덱스가 gate 자리로 들어간다.** 화살표로 감싼다.
+    //  페이지 칸에는 상태줄이 없다. 그래도 **말없이 글자를 지우면** 사이드바에서 고쳤던 것과 같은
+    //   문제가 여기서 되살아난다(한/영이 한글인 걸 사용자가 못 본다). 그래서 title 과 콘솔에 남긴다.
+    try {
+      pageBcInputs().forEach((el) => bindBcInput(el, () => !!state.ubSkin, (before, after) => {
+        if (!bcLostVisible(before)) { el.title = ''; return; }   // 여백만 털렸다 → 낡은 경고도 치운다
+        el.title = '바코드가 아닌 글자를 지웠습니다: "' + before + '" → "' + after + '" (한/영 키 확인)';
+        console.warn('[UB][skin] 바코드 칸에서 영숫자 외 제거:', before, '→', after, el.name || el.id || '(anon)');
+      }));
+    } catch (_) {}
+  }
+
   function renderSidebar() {
     // 팝업 창(상품수정/공장검색/imageView 등)·수정 패널 iframe 에서는 사이드바·핸들 안 뜨게.
     if (_IS_POPUP || _IS_EP_FRAME) {
@@ -3365,12 +3517,16 @@
       renderSidebar();
     });
 
+    // 바코드 입력칸(재고화·출고취소·회전입고·메인석)은 숫자·영문만 받는다. 재렌더마다 innerHTML 로
+    //  새 노드가 되니 재바인딩이 정상이다(누수 아님). ⚠ 등록 순서는 무관하다 — 아래 개별 배선은
+    //  keydown·click 이라 이벤트 타입이 달라 여기와 경합하지 않는다.
     // 상품 재고화 배선 (inputItemWriteForm.do) — 재렌더마다 재바인딩되니 정상.
     const stkIn = bar.querySelector('#ub-stk-in');
     const stkStEl = bar.querySelector('#ub-stk-st');
     if (stkIn && stkStEl) {
       const setStkStatus = (t, k) => { stkStEl.textContent = t || ''; stkStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
-      const goStk = () => run(stkIn.value, setStkStatus);
+      bindSidebarBcInput(stkIn, setStkStatus);   // 숫자·영문만 + 털리면 한/영 안내
+      const goStk = () => { const bc = bcRead(stkIn, setStkStatus); if (bc !== null) run(bc, setStkStatus); };
       const stkGoBtn = bar.querySelector('#ub-stk-go');
       if (stkGoBtn) stkGoBtn.addEventListener('click', goStk);
       stkIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goStk(); } });
@@ -3386,7 +3542,8 @@
     const dcmStEl = bar.querySelector('#ub-dcm-st');
     if (dcmIn && dcmStEl) {
       const setDcmStatus = (t, k) => { dcmStEl.textContent = t || ''; dcmStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
-      const goDcm = () => dcmRun(dcmIn.value, setDcmStatus);
+      bindSidebarBcInput(dcmIn, setDcmStatus);   // 숫자·영문만 + 털리면 한/영 안내
+      const goDcm = () => { const bc = bcRead(dcmIn, setDcmStatus); if (bc !== null) dcmRun(bc, setDcmStatus); };
       const dcmGoBtn = bar.querySelector('#ub-dcm-go');
       if (dcmGoBtn) dcmGoBtn.addEventListener('click', goDcm);
       dcmIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goDcm(); } });
@@ -3412,7 +3569,8 @@
       rotShopSel.addEventListener('change', () => {
         try { localStorage.setItem('UB_ROTATE_SHOP', rotShopSel.value); } catch (_) {}
       });
-      const goRot = () => rotateRun(rotIn.value, rotShopSel.value, setRotStatus);
+      bindSidebarBcInput(rotIn, setRotStatus);   // 숫자·영문만 + 털리면 한/영 안내
+      const goRot = () => { const bc = bcRead(rotIn, setRotStatus); if (bc !== null) rotateRun(bc, rotShopSel.value, setRotStatus); };
       const rotGoBtn = bar.querySelector('#ub-rot-go');
       if (rotGoBtn) rotGoBtn.addEventListener('click', goRot);
       rotIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goRot(); } });
@@ -3428,7 +3586,8 @@
     const msStEl = bar.querySelector('#ub-ms-st');
     if (msIn && msStEl) {
       const setMsStatus = (t, k) => { msStEl.textContent = t || ''; msStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
-      const goMs = () => msRun(msIn.value, setMsStatus);
+      bindSidebarBcInput(msIn, setMsStatus);   // 숫자·영문만 + 털리면 한/영 안내
+      const goMs = () => { const bc = bcRead(msIn, setMsStatus); if (bc !== null) msRun(bc, setMsStatus); };
       const msGoBtn = bar.querySelector('#ub-ms-go');
       if (msGoBtn) msGoBtn.addEventListener('click', goMs);
       msIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goMs(); } });
@@ -3456,12 +3615,15 @@
     ubHighlightPending();   // 재고화·회전입고·메인석: 로드 후 검색 바코드 행 강조+스크롤
     dcmApplyPending();      // 출고취소 흐름: 수정 폼에 도착했으면 판매가 채우고 확인 후 저장
     applyTabPref();         // v3.7.0: 전표 기본탭(설정 변경·다른 탭에서 바뀐 경우 포함)
+    bindPageBcInputs();     // 유비샵 페이지 자체의 바코드 칸도 숫자·영문만 (2026-08-31)
+    //  페이지가 늦게 그리는 칸(팝업·부분 렌더)도 잡는다. 표식이 있어 재실행은 공짜다.
+    [150, 450, 900].forEach(ms => setTimeout(bindPageBcInputs, ms));
   }
   let mo = null;
   function startObserver() {
     if (mo) return;
     mo = new MutationObserver((records) => {
-      let needThumb = false, needPaging = false, needSidebar = false;
+      let needThumb = false, needPaging = false, needSidebar = false, needBc = false;
       for (const r of records) {
         for (const n of r.addedNodes) {
           if (!(n instanceof Element)) continue;
@@ -3469,10 +3631,14 @@
           if (n.querySelector && (n.querySelector('img') || n.querySelector('input[name=idx]'))) needThumb = true;
           if (n.matches && n.matches('select[name=pageSize]')) needPaging = true;
           if (n.querySelector && n.querySelector('select[name=pageSize]')) needPaging = true;
+          // 재시도(900ms)보다 늦게 그려진 바코드 칸도 필터 밖에 두지 않는다(배선은 dataset 표식으로 멱등).
+          if (n.matches && n.matches('input[name*="barcode" i], input[id*="barcode" i]')) needBc = true;
+          if (n.querySelector && n.querySelector('input[name*="barcode" i], input[id*="barcode" i]')) needBc = true;
         }
       }
       if (needThumb) { bindThumbEdit(document); ubHighlightPending(); bindFactoryNames(); }   // idx 행 동적렌더 시 강조·매입처명 재시도
       if (needPaging) injectPageSizeOptions();
+      if (needBc) bindPageBcInputs();
       if (!document.getElementById(SIDEBAR_ID) && !document.getElementById(HANDLE_ID) && on('ubSidebar')) needSidebar = true;
       if (needSidebar) renderSidebar();
     });
