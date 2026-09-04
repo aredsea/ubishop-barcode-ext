@@ -3618,6 +3618,7 @@
     bindPageBcInputs();     // 유비샵 페이지 자체의 바코드 칸도 숫자·영문만 (2026-08-31)
     //  페이지가 늦게 그리는 칸(팝업·부분 렌더)도 잡는다. 표식이 있어 재실행은 공짜다.
     [150, 450, 900].forEach(ms => setTimeout(bindPageBcInputs, ms));
+    applyFactoryLiveSearch();   // v3.9.x: 매입처 실시간 검색 — 팝업 토글 시 게이트 재평가(멱등 재진입)
   }
   let mo = null;
   function startObserver() {
@@ -3654,10 +3655,50 @@
    *    한/영 상태 아이콘을 붙이고, 실제 타이핑(조합 이벤트)으로 한/영을 감지해
    *    live 로 아이콘을 갱신한다. 사용자가 아이콘 보고 한/영 키로 맞추면 됨.
    * ========================================================================== */
+  /* ==========================================================================
+   *  매입처 목록 실시간 검색(v3.9.x) — 두 화면 공통 순수 헬퍼(DOM 비의존, 테스트 대상).
+   *  ★FACTORY_LIST_PAGES 는 factoryListCfg 보다 위에 두어야 한다(선언 순서).
+   * ========================================================================== */
+  // 대상 화면 + 매입처명/코드 컬럼 인덱스(2026-09-04 라이브 실측값).
+  //  A(factoryList)     — 데이터 행 셀 17개: name=cells[3], code=cells[1]
+  //  B(infoFactoryList) — 데이터 행 셀 14개: name=cells[1] 한 칸에 둘 다(span.f_bold / span.f_gray)
+  const FACTORY_LIST_PAGES = {
+    '/basic/factory/factoryList.do':       { nameCol: 3, codeCol: 1 },
+    '/info/factory/infoFactoryList.do':   { nameCol: 1, codeCol: 1 }
+  };
+  // pathname 이 두 매입처 목록 화면 중 하나면 설정 객체, 아니면 null.
+  //  ⚠ 부분일치 금지 — '/basic/factory/factoryList.do.bak' 같은 변형이 걸리면 안 된다.
+  function factoryListCfg(pathname) {
+    if (!pathname) return null;
+    const cfg = FACTORY_LIST_PAGES[pathname];
+    return cfg ? cfg : null;
+  }
+  // 소문자화 + 모든 공백 제거("MS골드 (금매입)" → "ms골드(금매입)").
+  function flNorm(s) {
+    return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
+  }
+  // 부분일치 판정 — 인자는 둘 다 이미 flNorm 된 값이어야 한다.
+  function flHit(hay, q) {
+    if (!q) return false;
+    return String(hay).indexOf(q) !== -1;
+  }
+  // 마지막 글자가 미완성 한글 자모(U+3131~U+318E)면 true → 조합 중 필터 깜빡임 방지.
+  //  ⚠ isComposing 여부와 무관 — input 이벤트는 조합 중에도 발생하므로 자모로 직접 판정한다.
+  function flPartialJamo(s) {
+    const str = String(s == null ? '' : s);
+    if (!str) return false;
+    const last = str.charCodeAt(str.length - 1);
+    return last >= 0x3131 && last <= 0x318E;
+  }
+
   const AUTO_FOCUS_PAGES = {
     '/jun/orderitem/orderItemList.do':    ['고객명'],
     '/jun/baljuitem/baljuItemJunList.do': ['매입처명', '매입처'],
-    '/jun/inputitem/inputItemJunList.do': ['입고장번호']
+    '/jun/inputitem/inputItemJunList.do': ['입고장번호'],
+    // ★매입처 목록 2화면 — 텍스트 라벨이 없고 select 가 라벨 역할이라 name 우선 → labels 폴백.
+    //  값이 {names,labels} 객체면 name 우선 경로, 배열이면 종전 라벨 경로(기존 3화면 회귀 금지).
+    '/basic/factory/factoryList.do':      { names: ['searchWord'], labels: ['매입처명', '매입처'] },
+    '/info/factory/infoFactoryList.do':   { names: ['searchWord'], labels: ['매입처명', '매입처'] }
   };
   // 특정 페이지에서 자동으로 채워지는 필드를 강제 공란 처리(로드 직후 여러 번 재확인).
   //  · 상품입고장 검색 팝업: 입고담당자(searchRegId=쇼핑몰01 자동주입)를 항상 비움.
@@ -3756,13 +3797,25 @@
   function autoFocusByPage() {
     try {
       if (!state.ubSkin) return;   // 유비샵 도구(스킨) 켜져 있을 때만
-      const labels = AUTO_FOCUS_PAGES[location.pathname];
-      if (!labels) return;         // 대상 페이지(주문/발주/입고 전표) 아님
+      const cfg = AUTO_FOCUS_PAGES[location.pathname];
+      if (!cfg) return;         // 대상 페이지 아님
+      // ★배열이면 종전 라벨 경로(기존 3화면 회귀 금지), 객체({names,labels})면 name 우선 → labels 폴백.
+      const isObj = !Array.isArray(cfg);
+      const labels = isObj ? (cfg.labels || []) : cfg;
+      const findAutoFocusEl = () => {
+        if (isObj && cfg.names && cfg.names.length) {
+          for (const nm of cfg.names) {
+            const el = document.querySelector('input[name="' + nm + '"]');
+            if (el && el.offsetParent !== null && !el.disabled && !el.readOnly) return el;
+          }
+        }
+        return findLabeledInput(labels);   // name 못 찾으면 라벨 폴백
+      };
       let logged = false;
       // 페이지 자체가 다른 검색칸(발주처명 등)에 기본 포커스를 주므로, 그걸 이기려고
       // 여러 시점에 재확인하며 대상칸으로 커서를 되돌린다(단, 값 있는 칸은 안 훔침).
       const pass = () => {
-        const el = findLabeledInput(labels);
+        const el = findAutoFocusEl();
         if (!el) return false;
         attachImeIndicator(el);
         const ae = document.activeElement;
@@ -3785,6 +3838,433 @@
       }, ms));
     } catch (e) { console.warn('[UB][skin] auto-focus 실패', e); }
   }
+  /* ==========================================================================
+   *  매입처 목록 실시간 검색 + 표 가독성 디자인 (v3.9.x) — factoryList / infoFactoryList.
+   *  ★요구 1(자동포커스)는 AUTO_FOCUS_PAGES 확장으로 이미 처리 → 여기는 요구 2·3.
+   *
+   *  요구 2: searchWord 타이핑 즉시 표 필터(엔터/검색버튼 서버검색은 가로채지 않음).
+   *    · 매칭 대상 = 매입처명 + 매입처코드(둘 다). 부분일치, 소문자화+공백제거 후 비교.
+   *    · 데이터: 로드 직후 백그라운드로 전체(324건)를 한 번 POST → 캐시.
+   *      - form1 모든 필드값 그대로 직렬화, searchWord=''·pageSize=FL_PREFETCH_PAGE_SIZE(500)·reqPage='1' 만 덮어쓰기.
+   *      - 총건수 span 값보다 행이 적으면 reqPage 2,3… 최대 10페이지까지 이어붙임.
+   *    · 렌더: 헤더(title_line_tax) 2행은 건드리지 않고 데이터 행만 교체. No 재번호(매치수→1).
+   *      첫 t_paging 의 td.left span.f_bold = 매치 수. 둘째 t_paging(페이지번호)은 필터 중 숨김.
+   *    · 입력 비면 원래 서버 행·총건수·페이징 복원.
+   *    · 디바운스 120ms. 마지막 글자가 미완성 자모면 그 프레임 스킵(조합 중 깜빡임 방지).
+   *  요구 3: 표 디자인 — Pretendard / 세로 패딩 7px / 12px / line-height 1.5 / 짝수행 줄무늬 /
+   *    hover 시안 / 헤더 position:fixed 복제본(쿼크모드라 sticky 불가) /
+   *    매입처명 700(크기 유지) · 코드 11px 회색 / 숫자 tabular-nums / 거래상태 빨강 유지.
+   *  🔴 다크모드: DARK_STYLE_ID 가 html.ub-dark td·tr:hover>td 에 !important 로 색을 박한다.
+   *    라이트 전용 규칙을 그냥 쓰면 다크에서 깨지므로 html.ub-dark 전용 규칙을 별도로 명시.
+   * ========================================================================== */
+  const FL_STYLE_ID = 'ub-fl-style';
+  const FL_SCOPE_CLASS = 'ub-fl';
+
+  function flEnsureStyle() {
+    if (document.getElementById(FL_STYLE_ID)) return;
+    // Pretendard 미로드 시 대체 폰트 관용(기존 skin.js 와 동일).
+    const css = [
+      'html.' + FL_SCOPE_CLASS + ' table.t_list {',
+      '  border-collapse: separate; border-spacing: 0;',
+      '}',
+      // 글꼴은 td 에 걸어야 페이지 자체 CSS(td 직접 지정)를 이긴다.
+      'html.' + FL_SCOPE_CLASS + ' table.t_list td {',
+      '  padding-top: 7px; padding-bottom: 7px;',
+      '  font-family: "Pretendard","Malgun Gothic",돋움,sans-serif;',
+      '  font-size: 12px; line-height: 1.5;',
+      '  border-top: 1px solid #e5e7eb;',
+      '}',
+      'html.' + FL_SCOPE_CLASS + ' table.t_list tbody tr.title_line_tax td {',
+      '  padding-top: 6px; padding-bottom: 6px;',
+      '  background-color: #0f8cb2;',
+      '  border-top: none;',   // 헤더 위쪽은 표 테두리가 담당
+      '}',
+      // 짝수 데이터행 줄무늬 — 헤더(title_line_tax) 행은 제외. tr 배경은 셀에 가리므로 > td 에 건다.
+      'html.' + FL_SCOPE_CLASS + ' table.t_list tbody tr:not(.title_line_tax):nth-child(even) > td {',
+      '  background-color: #f7f9fc;',
+      '}',
+      // hover 시안 — !important 로 다크의 tr:hover>td 배경을 이기지 않도록 다크는 아래 별도 규칙.
+      'html.' + FL_SCOPE_CLASS + ' table.t_list tbody tr:not(.title_line_tax):hover > td {',
+      '  background-color: #e0f4fc;',
+      '}',
+      // 매입처명 강조(A: cells[3] 링크) · 코드 축소(A: cells[1] / B: span.f_gray)
+      //  ⚠ A 의 이름칸만 골라야 한다 — 표의 다른 링크(보기 아이콘·수정/삭제)까지 굵어지면 안 된다.
+      //  크기는 올리지 않는다(13px 면 열이 밀린다).
+      'html.' + FL_SCOPE_CLASS + ' table.t_list td[align="left"] > a { font-weight: 700; }',
+      'html.' + FL_SCOPE_CLASS + ' table.t_list td span.f_bold { font-weight: 700; }',
+      // 코드 — A 화면 cells[1] 은 span 이 없어 JS 로 ub-code 속성을 붙인다. B 는 span.f_gray.
+      'html.' + FL_SCOPE_CLASS + ' table.t_list td[ub-code],',
+      'html.' + FL_SCOPE_CLASS + ' table.t_list td span.f_gray { font-size: 11px; color: #6b7280; }',
+      // 숫자 흔들림 방지 — No·전화번호·팩스·담당자(휴대폰) 칸. 인덱스는 화면별로 다르므로 클래스로는 못 잡아
+      //  td 에 ub-num 속성을 JS 로 붙임 → 여기서 tabular-nums.
+      'html.' + FL_SCOPE_CLASS + ' table.t_list td[ub-num] { font-variant-numeric: tabular-nums; }',
+      // 거래상태 빨강(f_red) 유지 — 덮지 않음.
+      // position:fixed 헤더 복제본 — 클릭 가로채기 방지.
+      'html.' + FL_SCOPE_CLASS + ' #ub-fl-fixhdr { pointer-events: none; }',
+      // ── 다크모드 🔴 — DARK_STYLE_ID 가 html.ub-dark td/tr:hover>td 에 !important 로 색을 박하므로 별도 명시.
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list tbody tr:not(.title_line_tax):nth-child(even) > td {',
+      '  background-color: #1f242c !important;',
+      '}',
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list tbody tr:not(.title_line_tax):hover > td {',
+      '  background-color: #1f242c !important;',
+      '}',
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list thead tr th,',
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list tr.title_line_tax > td {',
+      '  background-color: #161b22 !important;',
+      '  box-shadow: inset 0 -1px 0 #30363d !important;',
+      '}',
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td { color: #c9d1d9 !important; }',
+      //  ⚠ td[ub-code] 도 같이 걸어야 한다 — 바로 위 `td { color: … !important }` 가
+      //    A 화면 코드칸(span 이 없어 td 속성으로 표시)의 회색을 도로 덮어쓴다(실측).
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td[ub-code],',
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td span.f_gray { color: #8b949e !important; }',
+      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td a { color: #58c5f0 !important; }',
+      // 필터 중 숨길 둘째 t_paging(페이지번호 링크)
+      'html.' + FL_SCOPE_CLASS + ' table.t_paging.ub-fl-hidden { display: none; }'
+    ].join('\n');
+    const st = document.createElement('style');
+    st.id = FL_STYLE_ID; st.textContent = css;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  // 데이터 행(헤더 아닌 행)의 매입처명·코드 텍스트 추출.
+  //  A: cells[3](이름, A>text), cells[1](코드, 텍스트). B: cells[1] 한 칸(span.f_bold=이름, span.f_gray=코드).
+  function flRowNameCode(tr, cfg) {
+    const cells = tr.cells;
+    if (!cells || cells.length <= Math.max(cfg.nameCol, cfg.codeCol)) return { name: '', code: '' };
+    if (cfg.nameCol === cfg.codeCol) {
+      // B 화면 — 한 칸에 span.f_bold(이름) + span.f_gray(코드).
+      const td = cells[cfg.nameCol];
+      const nameSp = td.querySelector('span.f_bold, b, strong');
+      const codeSp = td.querySelector('span.f_gray');
+      const name = nameSp ? (nameSp.textContent || '').replace(/\s+/g, ' ').trim() : (td.textContent || '').replace(/\s+/g, ' ').trim();
+      const code = codeSp ? (codeSp.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      return { name, code };
+    }
+    // A 화면 — cells[3] 이름(링크 텍스트), cells[1] 코드(텍스트).
+    const nameTd = cells[cfg.nameCol];
+    const a = nameTd.querySelector('a');
+    const name = a ? (a.textContent || '').replace(/\s+/g, ' ').trim() : (nameTd.textContent || '').replace(/\s+/g, ' ').trim();
+    const codeTd = cells[cfg.codeCol];
+    const code = (codeTd.textContent || '').replace(/\s+/g, ' ').trim();
+    return { name, code };
+  }
+
+  // 숫자 칸(No·전화번호·팩스·담당자)에 ub-num 속성 부여 — tabular-nums 적용용.
+  //  A: cells[0]=No, [4]=전화, [5]=팩스, [6]=담당자. B: [0]=No, [2]=전화, [3]=팩스, [4]=담당자.
+  function flMarkNumCells(tr, isA) {
+    const idxs = isA ? [0, 4, 5, 6] : [0, 2, 3, 4];
+    for (const i of idxs) {
+      const td = tr.cells[i];
+      if (td) td.setAttribute('ub-num', '');
+    }
+    // A 화면 코드칸(cells[1]) — span.f_gray 가 없으므로 ub-code 속성을 붙여 CSS 를 적용한다.
+    if (isA && tr.cells[1]) tr.cells[1].setAttribute('ub-code', '');
+  }
+
+  //  서버가 문서화한 최대 pageSize(20/30/50/100/300/500). 마지막 페이지 판정에도 쓰므로
+  //  요청값과 판정값이 갈리지 않게 한 곳에서 정한다.
+  const FL_PREFETCH_PAGE_SIZE = 500;
+  let flCache = null;        // { rows: [HTMLTableRowElement], total: number }
+  let flPrefetching = false;
+  let flLastQuery = null;   // 마지막 필터 쿼리(재진입 시 중복 렌더 방지)
+
+  // 전체 데이터 백그라운드 프리페치 — form1 직렬화 + searchWord=''·pageSize=FL_PREFETCH_PAGE_SIZE(500)·reqPage='1'.
+  async function flPrefetchAll(action) {
+    if (flPrefetching) return;
+    flPrefetching = true;
+    try {
+      const form1 = document.forms['form1'];
+      if (!form1) { flPrefetching = false; return; }
+      const params = new URLSearchParams();
+      // form1 의 모든 필드값을 그대로 직렬화(다른 필터 — 거래상태·거래유형 등 — 존중).
+      //  ★statisFormParams 와 같은 배제 목록(submit/button/reset/image/file) + el.value == null ? '' : el.value.
+      for (const el of form1.elements) {
+        if (!el.name) continue;
+        const t = (el.type || '').toLowerCase();
+        if (['submit', 'button', 'reset', 'image', 'file'].includes(t)) continue;
+        if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
+        params.append(el.name, el.value == null ? '' : el.value);
+      }
+      params.set('searchWord', '');
+      params.set('pageSize', String(FL_PREFETCH_PAGE_SIZE));   // 서버가 문서화한 최대값. 324건이라 1페이지로 충분.
+      params.set('reqPage', '1');
+      // 총건수 span 값 — 응답의 첫 t_paging td.left span.f_bold.
+      const allRows = [];
+      let total = -1;   // 미상 — span 을 못 찾으면 -1 유지(0 이 아니라).
+      for (let page = 1; page <= 10; page++) {
+        params.set('reqPage', String(page));
+        const doc = await postDoc(action, params);
+        // 총건수 추출(첫 페이지만). span 을 못 찾으면 total 은 -1 그대로(루프가 조기 종료되지 않는다).
+        if (page === 1) {
+          const firstPaging = doc.querySelector('table.t_paging td.left span.f_bold');
+          if (firstPaging) {
+            const parsed = parseInt((firstPaging.textContent || '0').replace(/[^\d]/g, ''), 10);
+            total = isNaN(parsed) ? -1 : parsed;
+          }
+        }
+        const t = doc.querySelector('table.t_list');
+        if (!t) break;
+        const dataRows = [...t.rows].filter(r => !r.classList.contains('title_line_tax'));
+        allRows.push(...dataRows);
+        if (total >= 0 && allRows.length >= total) break;
+        if (dataRows.length === 0) break;
+        // 🔴 마지막 페이지 판정 — 요청한 pageSize 보다 적게 왔으면 더 볼 것이 없다.
+        //   서버가 reqPage 를 무시하거나 클램프하면 같은 페이지를 10번 이어붙여 중복 캐시를
+        //   '전체'로 승격시킬 수 있다(total 미상일 때는 불완전 가드도 안 걸린다).
+        if (dataRows.length < FL_PREFETCH_PAGE_SIZE) break;
+      }
+      // 루프 종료 후 불완전하면 캐시를 만들지 않는다(total 미상이면 캐시 승격).
+      if (total >= 0 && allRows.length < total) {
+        console.warn('[UB][fl] 캐시 불완전 — 사용 안 함', allRows.length, '/', total);
+        flCache = null;
+        return;
+      }
+      flCache = { rows: allRows, total: total >= 0 ? total : allRows.length };
+      console.log('[UB][fl] cache', allRows.length, '/', total);
+    } catch (e) {
+      try { console.warn('[UB][fl] 프리페치 실패', e); } catch (_) {}
+    } finally {
+      flPrefetching = false;
+    }
+  }
+
+  function flGetTable() {
+    return document.querySelector('table.t_list:not(#ub-fl-fixhdr)');
+  }
+  function flGetTbody() {
+    const t = flGetTable();
+    return t ? t.querySelector('tbody') || t : null;
+  }
+  // 첫 t_paging(위, 총건수)와 둘째 t_paging(아래, 페이지번호) 구분.
+  function flGetPagings() {
+    const all = [...document.querySelectorAll('table.t_paging')];
+    return { top: all[0] || null, bottom: all[1] || null };
+  }
+
+  let flDebounceTimer = null;
+  let flRestoreSnapshot = null;   // 원래 서버 행·총건수·페이징 백업(입력 비울 때 복원)
+
+  function flCaptureSnapshot() {
+    const tbody = flGetTbody();
+    if (!tbody || flRestoreSnapshot) return;
+    // ★원본 <tr> 노드 참조를 그대로 보관(복제가 아니다) — flRestore 가 진짜 원본을 되돌린다.
+    //  t.rows(직계)로 통일 — 셀 안 중첩 표가 있으면 querySelectorAll('tr') 은 중첩 행까지 잡는다.
+    const t = flGetTable();
+    const dataRows = t ? [...t.rows].filter(r => !r.classList.contains('title_line_tax')) : [];
+    const pagings = flGetPagings();
+    const topSpan = pagings.top ? pagings.top.querySelector('td.left span.f_bold') : null;
+    flRestoreSnapshot = {
+      rows: dataRows,   // 원본 노드 참조(복제 아님) — flRestore 가 appendChild 로 그대로 돌린다
+      totalText: topSpan ? topSpan.textContent : '',
+      bottomDisplay: pagings.bottom ? pagings.bottom.style.display : ''
+    };
+  }
+
+  function flFilterRows(q) {
+    const tbody = flGetTbody();
+    if (!tbody) return;
+    const cfg = factoryListCfg(location.pathname);
+    if (!cfg) return;
+    const isA = location.pathname === '/basic/factory/factoryList.do';
+    // 소스 행 — 캐시(전체) → 스냅샷(서버가 처음 그려준 행) → 현재 화면 순.
+    //  🔴 현재 화면 행을 소스로 쓰면 안 된다. 앞선 필터가 이미 tbody 를 걸러 놨기 때문에
+    //     '세이' → 백스페이스 '세' 로 되돌려도 좁혀진 집합에서만 다시 걸러 영영 복구되지
+    //     않는다(단조 감소). 프리페치 전이라면 스냅샷이 유일하게 온전한 원본이다.
+    let source;
+    if (flCache && flCache.rows.length) source = flCache.rows;
+    else if (flRestoreSnapshot && flRestoreSnapshot.rows.length) source = flRestoreSnapshot.rows;
+    else { const t = flGetTable(); source = t ? [...t.rows].filter(r => !r.classList.contains('title_line_tax')) : []; }
+    const qn = flNorm(q);
+    const matched = [];
+    for (const r of source) {
+      const { name, code } = flRowNameCode(r, cfg);
+      if (flHit(flNorm(name), qn) || flHit(flNorm(code), qn)) matched.push(r);
+    }
+    // 헤더 행은 그대로 두고 데이터 행만 교체.
+    // 기존 데이터 행 제거.
+    [...tbody.querySelectorAll('tr:not(.title_line_tax)')].forEach(r => r.remove());
+    // 매치된 행 추가 + No 재번호(매치수→1 내림차순).
+    matched.forEach((r, idx) => {
+      const clone = r.cloneNode(true);
+      const no = clone.cells[0];
+      if (no) no.textContent = String(matched.length - idx);
+      flMarkNumCells(clone, isA);
+      tbody.appendChild(clone);
+    });
+    // 총건수 표시 갱신 — 첫 t_paging 의 td.left span.f_bold.
+    const pagings = flGetPagings();
+    if (pagings.top) {
+      const span = pagings.top.querySelector('td.left span.f_bold');
+      if (span) span.textContent = String(matched.length);
+    }
+    // 둘째 t_paging(페이지번호)은 필터 중 숨김.
+    if (pagings.bottom) pagings.bottom.classList.add('ub-fl-hidden');
+    flSyncFix();   // 필터 후 열 폭 재동기화(데이터행 교체로 열 폭 변동 가능)
+  }
+
+  function flRestore() {
+    if (!flRestoreSnapshot) return;
+    const tbody = flGetTbody();
+    if (tbody) {
+      const isA = location.pathname === '/basic/factory/factoryList.do';
+      [...tbody.querySelectorAll('tr:not(.title_line_tax)')].forEach(r => r.remove());
+      flRestoreSnapshot.rows.forEach(r => {
+        flMarkNumCells(r, isA);   // 복원 행도 필터 행과 같은 자릿수 정렬을 받는다
+        tbody.appendChild(r);   // 원본 노드를 그대로 되돌린다(진짜 복원)
+      });
+    }
+    const pagings = flGetPagings();
+    if (pagings.top) {
+      const span = pagings.top.querySelector('td.left span.f_bold');
+      if (span) span.textContent = flRestoreSnapshot.totalText;
+    }
+    if (pagings.bottom) {
+      pagings.bottom.classList.remove('ub-fl-hidden');
+    }
+    flSyncFix();   // 복원 후 열 폭 재동기화
+  }
+
+  function flOnInput(input) {
+    if (!state.ubSkin) return;   // 런타임 킬스위치(팝업 토글 OFF 시 즉시 정지)
+    const v = input.value || '';
+    // 마지막 글자가 미완성 자모면 그 프레임 스킵(조합 중 깜빡임 방지).
+    if (flPartialJamo(v)) return;
+    if (flDebounceTimer) clearTimeout(flDebounceTimer);
+    flDebounceTimer = setTimeout(() => {
+      // 🔴 진입점 게이트만으로는 부족하다 — 이 콜백은 120ms 뒤에 돈다. 그 사이 사장님이
+      //   스킨을 끄면 applyFactoryLiveSearch 가 이미 원래 행을 복원했는데 여기서 다시
+      //   필터를 걸어 '껐는데도 걸러진 표'가 남는다. 발동 시점에 다시 본다.
+      if (!state.ubSkin) return;
+      const cur = input.value || '';
+      if (!cur.trim()) {
+        flRestore();
+        flLastQuery = '';
+        return;
+      }
+      if (flPartialJamo(cur)) return;   // 디바운스 후에도 자모면 스킵
+      flCaptureSnapshot();
+      flFilterRows(cur);
+      flLastQuery = cur;
+    }, 120);
+  }
+
+  // position:fixed 헤더 복제본 — 이 페이지는 쿼크모드(BackCompat)라 position:sticky 가
+  // td/th 에서 동작하지 않는다(통제 실험 확인). 대신 헤더를 복제해 fixed 로 띄운다.
+  // 순수 판정 함수 — 테스트가 규칙을 고정하도록 DOM 비의존으로 뽑는다.
+  function flFixedHdrVisible(tableTop, tableBottom, hdrH, hasData) {
+    return tableTop < 0 && tableBottom > hdrH + 40 && !!hasData;
+  }
+
+  let flFixHdrInited = false;   // 멱등 — 리스너·복제본은 한 번만.
+
+  // 헤더 복제본을 만들고 scroll/resize 리스너를 건다(이미 있으면 스킵).
+  function flInitFixHdr() {
+    if (flFixHdrInited) return;
+    const T = flGetTable();
+    if (!T) return;
+    flFixHdrInited = true;
+    const hdrRows = [...T.querySelectorAll('tr.title_line_tax')];
+    const clone = document.createElement('table');
+    clone.id = 'ub-fl-fixhdr';
+    clone.className = T.className;              // t_list — 우리 CSS 가 그대로 먹는다
+    clone.style.cssText = 'position:fixed;top:0;left:0;z-index:9999;'
+      + 'border-collapse:separate;border-spacing:0;display:none;table-layout:fixed;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,.18);';
+    const cb = document.createElement('tbody');
+    hdrRows.forEach(r => {
+      const rc = r.cloneNode(true);
+      rc.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+      rc.querySelectorAll('[name]').forEach(el => el.removeAttribute('name'));
+      cb.appendChild(rc);
+    });
+    clone.appendChild(cb);
+    document.body.appendChild(clone);
+    window.addEventListener('scroll', flSyncFix, { passive: true });
+    window.addEventListener('resize', flSyncFix);
+    flSyncFix();   // 즉시 한 번 동기화
+  }
+
+  // 복제 헤더의 표시·위치·열 폭을 원표와 동기화.
+  let flLastWidthsHtml = '';   // N3: 직전과 같으면 innerHTML 재작성 건너뛰기(매 프레임 강제 리레이아웃 방지)
+  function flSyncFix() {
+    if (!state.ubSkin) return;   // 런타임 킬스위치(팝업 토글 OFF 시 즉시 정지)
+    const T = flGetTable();
+    const clone = document.getElementById('ub-fl-fixhdr');
+    if (!T || !clone) return;
+    const rect = T.getBoundingClientRect();
+    const firstData = T.querySelector('tbody tr:not(.title_line_tax)');
+    const hdrRows = [...T.querySelectorAll('tr.title_line_tax')];
+    const hdrH = hdrRows.reduce((sum, r) => sum + r.getBoundingClientRect().height, 0);
+    const show = flFixedHdrVisible(rect.top, rect.bottom, hdrH, firstData);
+    clone.style.display = show ? '' : 'none';
+    if (!show) return;
+    clone.style.left = rect.left + 'px';       // 가로 스크롤 추종
+    clone.style.width = rect.width + 'px';
+    // 2단 헤더(colspan/rowspan)라 헤더에서 열 폭을 못 구한다 → 데이터 행에서 복사.
+    const widths = [...firstData.cells].map(c => c.getBoundingClientRect().width);
+    const widthsHtml = widths.map(w => '<col style="width:' + w + 'px">').join('');
+    if (widthsHtml === flLastWidthsHtml) return;   // 폭이 같으면 innerHTML 재작성 건너뛰기
+    flLastWidthsHtml = widthsHtml;
+    let cg = clone.querySelector('colgroup');
+    if (!cg) { cg = document.createElement('colgroup'); clone.insertBefore(cg, clone.firstChild); }
+    cg.innerHTML = widthsHtml;
+  }
+
+  function initFactoryLiveSearch() {
+    if (!state.ubSkin) return;
+    const cfg = factoryListCfg(location.pathname);
+    if (!cfg) return;   // 대상 2화면만
+    flEnsureStyle();
+    document.documentElement.classList.add(FL_SCOPE_CLASS);
+    // 서버가 처음 그려준 행에도 자릿수 정렬을 준다(필터 결과만 정렬되면 들쭉날쭉해 보인다).
+    const tbody0 = flGetTbody();
+    if (tbody0) {
+      const isA0 = location.pathname === '/basic/factory/factoryList.do';
+      [...tbody0.querySelectorAll('tr:not(.title_line_tax)')].forEach(r => flMarkNumCells(r, isA0));
+    }
+    flInitFixHdr();
+    const input = document.querySelector('input[name="searchWord"]');
+    if (!input) return;
+    // ★엔터·[검색하기] 버튼(서버 검색·페이지 이동)은 절대 가로채지 않는다 — input 이벤트만 듣는다.
+    if (input.dataset.ubFlBound) return;   // 중복 배선 방지(ON→OFF→ON 반복 시 리스너 1개 유지)
+    input.dataset.ubFlBound = '1';
+    input.addEventListener('input', () => flOnInput(input));
+    // 백그라운드로 전체 프리페치 — form1 action 을 그대로 쓴다.
+    const form1 = document.forms['form1'];
+    const action = form1 ? form1.getAttribute('action') || form1.action || location.pathname : location.pathname;
+    flPrefetchAll(action).then(() => {
+      // 프리페치 완료 후 입력값이 그대로면 다시 그림.
+      // 🔴 이것도 지연 콜백이다 — 네트워크가 끝나는 사이 스킨이 꺼졌으면 그리지 않는다.
+      if (!state.ubSkin) return;
+      if (input.value && input.value.trim() && input.value === flLastQuery) {
+        flFilterRows(input.value);
+      }
+    });
+    // ⚠ 프리페치 전에 사용자가 타이핑하면 현재 화면 행으로 필터(flCache 없을 때) —
+    //  flFilterRows 가 flCache 없으면 현재 tbody 행을 소스로 쓴다. 전체 도착 후 재그림.
+  }
+
+  // ★applyAll() 의 되돌릴 수 있는 진입점 — 팝업 토글(스킨 ON/OFF) 시 applyAll 이 호출되고
+  //  이 함수가 게이트를 발동 시점마다 다시 평가한다(Critical 1: 양방향 런타임 게이트).
+  //    · 게이트 ON  → initFactoryLiveSearch() (멱등하게 재진입)
+  //    · 게이트 OFF → FL_SCOPE_CLASS 제거 + #ub-fl-fixhdr 숨김 + flRestore()
+  function applyFactoryLiveSearch() {
+    if (state.ubSkin) {
+      initFactoryLiveSearch();   // 멱등 — dataset 표식으로 리스너 중복 방지
+      // 🔴 재-ON 경로는 flInitFixHdr(이미 inited)·ubFlBound 두 조기 return 에 막혀
+      //   flSyncFix 를 한 번도 안 부른다. OFF 때 박아둔 인라인 display:none 이 남아
+      //   스크롤·타이핑 전까지 고정헤더가 안 보인다. 여기서 한 번 되살린다.
+      flSyncFix();
+    } else {
+      // OFF: 남아있는 표식·복제본·리스너 효과를 거둔다.
+      document.documentElement.classList.remove(FL_SCOPE_CLASS);
+      const fixhdr = document.getElementById('ub-fl-fixhdr');
+      if (fixhdr) fixhdr.style.display = 'none';
+      flRestore();   // 필터 중이던 표를 원래 서버 행으로 복원(스냅샷 없으면 no-op)
+    }
+  }
+
 
   /* ==========================================================================
    *  상품집계(sheetStatisList) 수량 정렬 (v3.1.17) — 전체 데이터 기준(월단위 통계)
@@ -5841,6 +6321,7 @@
     bindCopyListener();
     captureSearchBarcode();   // v3.3.3: 바코드 검색칸 입력값 → 클립보드 자동 등록
     autoFocusByPage();   // v3.1.12: 페이지별 커서 자동 포커스
+    initFactoryLiveSearch();   // v3.9.x: 매입처 목록 실시간 검색 + 표 가독성(factoryList/infoFactoryList)
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
     initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
