@@ -5850,9 +5850,11 @@
     const wantSeq = String(orderSeq == null ? '' : orderSeq).trim();
     //  rowHtml = 서버가 방금 렌더한 그 <tr> 통째. C-2b 가 행을 제자리 교체할 때 쓴다
     //   (상태 셀만 갈면 수량·중량·금액·인도예정일이 낡은 채 남는다 — §4.3). 못 찾으면 ''.
+    //  sKey = 이 응답(POST 렌더)의 인라인 del()/standby() 에 박힌 키. 일괄취소(§5.11)가 상태와 키를
+    //   한 응답에서 원자적으로 쓴다 — 네이티브도 POST 렌더된 목록의 키로 [취소] GET 을 보낸다(2026-09-11 실측).
     const base = { found: false, orderSeq: wantSeq, code: null, text: '', assignedBarcode: '',
                    orderDate: String(orderDate == null ? '' : orderDate),
-                   duplicate: false, hasMore: false, loginExpired: false, rowHtml: '' };
+                   duplicate: false, hasMore: false, loginExpired: false, rowHtml: '', sKey: null };
     if (!wantSeq) return base;
     const p = new URLSearchParams();
     p.set('tcode', 'order_item');
@@ -5864,6 +5866,7 @@
     const ctrl = new AbortController();
     const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
     let doc = null;
+    let sKey = null;
     try {
       const r = await fetch('/jun/orderitem/orderItemList.do?tcode=order_item', {
         method: 'POST', credentials: 'include', cache: 'no-cache', signal: ctrl.signal,
@@ -5874,6 +5877,7 @@
       // skin.js 의 기존 ERP 디코드(postDoc, 543행)와 동일: UTF-8 우선, U+FFFD 과다면 EUC-KR.
       let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
       if ((html.match(/�/g) || []).length > 20) html = new TextDecoder('euc-kr').decode(buf);
+      sKey = cExtractSKey(html);
       doc = new DOMParser().parseFromString(html, 'text/html');
     } catch (err) {
       cLog('fetchOrderRow 재조회 실패/타임아웃 → found=false', (err && err.message) || err);
@@ -5886,13 +5890,13 @@
       // 목록 구조 부재 → 빈 결과 또는 로그인/오류. password 입력이 있으면 명시적 loginExpired.
       const login = !!doc.querySelector('input[type=password]');
       if (login) cLog('fetchOrderRow — 로그인 만료 추정(password 입력 존재)');
-      return Object.assign({}, base, { loginExpired: login });
+      return Object.assign({}, base, { loginExpired: login, sKey: sKey });
     }
     const matches = boxes.filter(b => String(b.value == null ? '' : b.value).split(',')[0].trim() === wantSeq);
-    if (matches.length === 0) return Object.assign({}, base, { hasMore: cHasMore(cReadTotalCount(doc), boxes.length) });
+    if (matches.length === 0) return Object.assign({}, base, { hasMore: cHasMore(cReadTotalCount(doc), boxes.length), sKey: sKey });
     if (matches.length > 1) {                                     // 중복 → fail-closed
       cLog('fetchOrderRow — 중복 orderSeq', wantSeq, matches.length, '건');
-      return Object.assign({}, base, { duplicate: true, hasMore: cHasMore(cReadTotalCount(doc), boxes.length) });
+      return Object.assign({}, base, { duplicate: true, hasMore: cHasMore(cReadTotalCount(doc), boxes.length), sKey: sKey });
     }
     const tr = matches[0].closest('tr');
     const idx = cStatusColFor(tr ? tr.closest('table') : null);
@@ -5908,7 +5912,7 @@
     return { found: true, orderSeq: wantSeq, code: code, text: text, assignedBarcode: assignedBarcode,
              orderDate: base.orderDate, duplicate: false,
              hasMore: cHasMore(cReadTotalCount(doc), boxes.length), loginExpired: false,
-             rowHtml: tr ? tr.outerHTML : '' };
+             rowHtml: tr ? tr.outerHTML : '', sKey: sKey };
   }
   // ── 작업C 배치 실행(slice C-2b) — DOM 의존 실행부 ─────────────────────
   //  순차 처리, busy 플래그, 첫 실패 중단 — 회전입고(5.6) 패턴을 그대로 따른다.
@@ -6444,10 +6448,12 @@
     const results = { success: 0, failed: [], uncertain: [], processed: 0, total: targets.length };
     if (cBatchBusy) return results;
     cBatchBusy = true;
+    let curSeq = null;                                   // 예외 경로에서 어느 건이었는지 남기려고
     try {
       for (let i = 0; i < targets.length; i++) {
         const t = targets[i];
         const orderSeq = t.orderSeq;
+        curSeq = orderSeq;
         const tag = (i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · ';
         if (!(state.ubSkin && state.ubHqConfirm)) { ccLog('게이트 해제 → 중단'); break; }
         if (isAborted && isAborted()) { ccLog('사용자 중단 요청 → 중단'); break; }
@@ -6470,22 +6476,16 @@
           cUpdateRow(orderSeq, row);                   // 화면을 서버 진실로
           break;
         }
-        // 3) sKey — 건마다 새로
-        progress(tag + '취소 처리');
-        const sKey = await cFetchSKey();
+        // 3) sKey — 위 재조회 응답에 박힌 키를 그대로 쓴다. 상태와 키가 같은 응답이라 그 사이에 남이
+        //    상태를 바꿀 창이 없고(3R Terra P1), 네이티브(POST 렌더 목록의 키로 [취소] GET)와 같은 계약이다
+        //    (Opus P2-3 — 별도 GET 으로 받은 키와 중간 렌더의 상호작용 자체를 없앤다). 없으면 fail-closed.
+        const sKey = row.sKey;
         if (!sKey) { results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' }); break; }
-        // 3-1) sKey 를 받는 동안(최대 8초) 남이 상태를 바꿀 수 있다 — dispatch 직전에 한 번 더 O-- 를
-        //      확인하고, 아니면 GET 없이 중단한다(3R Terra P1). 재조회 실패도 fail-closed.
-        const row2 = await fetchOrderRow(orderSeq, orderDate);
-        if (!row2.found || !ccTargetStatus(row2.code)) {
-          results.failed.push({ orderSeq: orderSeq, reason: !row2.found
-            ? '재조회 실패(쓰기 직전 확인)' : '상태 부적합(쓰기 직전 변경): ' + (row2.text || row2.code || '불명') });
-          if (row2.found) cUpdateRow(orderSeq, row2);
-          break;
-        }
-        // 3-2) 대기(sKey·재조회) 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1)
-        if (!(state.ubSkin && state.ubHqConfirm)) { ccLog('게이트 해제(쓰기 직전) → 중단'); break; }
-        if (isAborted && isAborted()) { ccLog('사용자 중단 요청(쓰기 직전) → 중단'); break; }
+        // 3-1) 재조회를 기다리는 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1).
+        //      이 건은 손대지 않은 것이므로 processed 에서 되돌린다 — 요약이 '처리 완료' 로 나오면 안 된다(Opus P2-1).
+        if (!(state.ubSkin && state.ubHqConfirm)) { results.processed--; ccLog('게이트 해제(쓰기 직전) → 중단'); break; }
+        if (isAborted && isAborted()) { results.processed--; ccLog('사용자 중단 요청(쓰기 직전) → 중단'); break; }
+        progress(tag + '취소 처리');
         // 4) 취소 GET(⚠ 쓰기) — dispatch
         const d = await ccDoCancel(orderSeq, sKey, cReadSearchFields());
         if (!d.dispatched) { results.failed.push({ orderSeq: orderSeq, reason: d.msg }); break; }
@@ -6507,6 +6507,8 @@
       }
     } catch (e) {
       ccLog('배치 실행 오류', e);
+      // 예외로 끊긴 건은 실패로 남긴다 — 빈 결과가 '처리 완료' 로 보이면 안 된다(Opus P2-1)
+      results.failed.push({ orderSeq: curSeq, reason: '실행 오류: ' + ((e && e.message) || e) });
     } finally {
       cBatchBusy = false;
     }
@@ -6565,7 +6567,7 @@
       let cancelHandler = close;
       const cancel = document.createElement('button');
       cancel.className = 'ub-hq-btn2 ub-hq-cancel'; cancel.type = 'button';
-      cancel.textContent = canProceed ? '취소' : '닫기';
+      cancel.textContent = '닫기';                       // '취소' 는 주문취소와 헷갈린다(Opus P2-4)
       cancel.addEventListener('click', () => cancelHandler());
 
       if (canProceed) {

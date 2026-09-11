@@ -68,9 +68,9 @@ function del(seq) {
 
 작업C(`skin.js` §5.10)의 실행부를 그대로 재사용하고, 취소 고유의 **순수 판정부**와 **루프**만 새로 쓴다.
 
-| 재사용(변경 없음) | 신규 |
+| 재사용 | 신규 |
 |---|---|
-| `fetchOrderRow` 재조회 · `cFetchSKey` · `cExtractSKey` · `cReadSearchFields` · `cReadCheckedRows` · `cUpdateRow` 행 교체 · `cStatusColFor`/`cListStatusCode` · 승인창 CSS(`HQ_CSS`, `ensureHqStyle`) | `ccTargetStatus` · `ccClassifyChecked` · `ccBuildCancelUrl` · `ccRedirectMsg` · `ccClassifyOutcome`(순수) / `ccDoCancel` · `ccRunCancelBatch` · `ccShowApprovalDialog` · `onBulkCancelClick` · `injectBulkCancelButton`(실행부) |
+| `fetchOrderRow` 재조회(**`sKey` 필드 추가** — 응답의 키를 함께 반환, 기존 호출자 무영향) · `cExtractSKey` · `cReadSearchFields` · `cReadCheckedRows` · `cUpdateRow` 행 교체 · `cStatusColFor`/`cListStatusCode` · 승인창 CSS(`HQ_CSS`, `ensureHqStyle`) | `ccTargetStatus` · `ccClassifyChecked` · `ccBuildCancelUrl` · `ccRedirectMsg` · `ccClassifyOutcome`(순수) / `ccDoCancel` · `ccRunCancelBatch` · `ccShowApprovalDialog` · `onBulkCancelClick` · `injectBulkCancelButton`(실행부) |
 
 - 접두 `cc` = "C-cancel". 순수 판정부는 DOM·네트워크·`chrome.*`·타이머 무접촉 → `tests/orderitem-cancel.test.js` 에서 extractFn 방식으로 평가한다.
 - 모든 쓰기는 `fetch(credentials:'include')` 이다. ISOLATED world 라 `form.submit`/`location` 대입·`javascript:` 링크 클릭은 쓰지 않는다(작업C rev2 §3.2 와 같은 이유).
@@ -102,7 +102,7 @@ function del(seq) {
 
 - 같은 주문번호가 둘 이상 체크되면 [진행] 없이 **'중복 주문번호 — 중단'** 안내만(작업C 와 동일).
 - 대상이 있으면 ERP 원문 경고를 그대로 빨간 박스로: **'취소된 주문서는 복구되지 않습니다.'**
-- 버튼: **[취소 진행]**(빨강 `#b42318`, `isTrusted` 클릭만) / [닫기]. 진행 중엔 [닫기]→[중단](다음 건 경계에서 멈춤), 끝나면 다시 [닫기]. 진행 중인 창은 툴바 재클릭으로 교체되지 않는다(검수 1R·2R 채택).
+- 버튼: **[취소 진행]**(빨강 `#b42318`, `isTrusted` 클릭만) / [닫기](라벨 고정 — '취소' 는 주문취소와 헷갈린다). 진행 중엔 [닫기]→[중단](다음 건 경계에서 멈춤), 끝나면 다시 [닫기]. 진행 중인 창은 툴바 재클릭으로 교체되지 않는다(검수 1R·2R 채택).
 - 결과 요약: `성공 N건 / 실패 1건: <번호> — <사유> / 미확정 1건: … / 미처리 M건`.
 
 ### 4.3 건별 루프 (`ccRunCancelBatch`) — 순차, 첫 실패·미확정에서 중단
@@ -114,16 +114,18 @@ function del(seq) {
    found=false → '재조회 실패(행 없음 | 결과 잘림)' / loginExpired → '로그인 만료' / duplicate → '중복 orderSeq(재조회)'  → 중단
 2. code !== 'O--' (EXACT) → 실패 '상태 부적합: <현재 상태 텍스트>' → 중단
    (사전검증 뒤 남이 취소·본사확인한 건도 여기서 걸린다)
-3. sKey = cFetchSKey()  → null 이면 실패 'sKey 추출 실패' → 중단
-3-1. 쓰기 직전 재검증(검수 3R): sKey 를 받는 동안(최대 8초) 남이 상태를 바꿀 수 있다 → fetchOrderRow 를 한 번 더
-   found && code==='O--' 가 아니면 GET 없이 실패 '상태 부적합(쓰기 직전 변경): …' / '재조회 실패(쓰기 직전 확인)' → 중단
-3-2. 게이트 OFF 또는 중단 요청이면 GET 없이 중단(검수 4R)
+3. sKey = **1 의 재조회 응답에 박힌 키**(fetchOrderRow 가 `cExtractSKey(html)` 로 함께 돌려준다) → null 이면 실패 'sKey 추출 실패' → 중단
+   상태와 키가 같은 응답이라 그 사이에 남이 상태를 바꿀 창이 없다(검수 3R 의 취지를 구조로 해소). 네이티브도 POST 로
+   렌더된 목록의 키로 [취소] GET 을 보내므로 같은 계약이다(2026-09-11 실측: POST 응답의 첫 sKey 출현이 del() 의 것).
+   별도 `cFetchSKey()` GET 은 쓰지 않는다 — 키 발급과 사용 사이에 다른 렌더가 끼는 경우를 만들지 않는다(Opus P2-3).
+3-1. 재조회 대기 중 게이트 OFF 또는 중단 요청이면 GET 없이 중단하고 `processed` 를 되돌린다(요약이 '처리 완료' 가 되면 안 된다 — 검수 4R·Opus P2-1)
 4. ccDoCancel: GET ccBuildCancelUrl(orderSeq, sKey, cReadSearchFields())   ← dispatch
    resp.url 의 msg 파라미터를 ccRedirectMsg 로 읽어 보관(서버 거부 문구, 판정 근거 아님)
 5. 재조회 폴링(ASG_VERIFY_MS=12s, 1.5s 간격): found && code==='OC-' → success
    success → results.success++, cUpdateRow(orderSeq, row)  (서버 <tr> 로 제자리 교체)
    그 외 → uncertain '취소 미확정 — 수동 확인 필요' (+ msg 있으면 ' · 서버: <msg>'),
            row.found 면 cUpdateRow 로 현재 서버 상태 반영 → 중단
+예외 → 그 건을 failed '실행 오류: …' 로 남긴다(빈 결과가 '처리 완료' 로 보이면 안 된다 — Opus P2-1)
 ```
 
 - **dispatch 후 non-success 는 자동 재시도 금지**(작업C §3.6 그대로). 서버 반영 지연·남이 덮음·타임아웃이 모두 같은 모습이다.
@@ -153,8 +155,8 @@ function del(seq) {
 ## 5. 안전 불변식 (전부 fail-closed)
 
 1. 상태 판정은 canonical code **EXACT** match. 괄호 절단·prefix 일치는 화면 필터 전용이라 쓰기 권한 판정에 쓰지 않는다.
-2. 쓰기 직전에 반드시 재조회한다 — sKey 를 받은 **뒤** 한 번 더(검수 3R 채택). 사전검증창의 상태는 승인용이지 쓰기 근거가 아니다.
-3. `sKey` 는 건마다 새로 받는다. 승인창을 띄운 시점의 값·페이지의 값을 쓰지 않는다.
+2. 쓰기 직전에 반드시 재조회한다 — 그 응답의 상태와 키를 함께 쓴다(검수 3R·Opus 반영). 사전검증창의 상태는 승인용이지 쓰기 근거가 아니다.
+3. `sKey` 는 건마다 새로 — **그 건의 상태를 확인한 재조회 응답의 키**를 쓴다. 승인창을 띄운 시점의 값·페이지의 값·별도 GET 의 값을 쓰지 않는다.
 4. 한 번에 한 건. 두 배치(본사확인+입고완료 / 일괄취소)는 `cBatchBusy` 로 상호 배타.
 5. dispatch 후 non-success 는 재시도하지 않고 멈춘다. 사용자에게 '미확정'이라 말하고 수동 확인을 요구한다.
 6. 중단하더라도 처리된 건까지는 화면을 갱신한다(서버는 바뀌었는데 화면만 옛 상태로 남는 것이 이 서브시스템의 반복 실패).
