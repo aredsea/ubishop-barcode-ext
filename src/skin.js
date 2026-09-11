@@ -6325,7 +6325,7 @@
    *   네이티브 [취소] = del(seq): confirm → GET orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건>
    *   (⚠ GET 자체가 쓰기 — 조회 목적으로 절대 부르지 않는다. 라이브 실측 2026-09-11: [취소] 링크는
    *   주문완료 행에만 있다 → 취소 가능 상태는 O-- 하나뿐.)
-   *   작업C(§5.10)의 배관을 그대로 쓴다: 재조회 fetchOrderRow · sKey cFetchSKey · 검색조건
+   *   작업C(§5.10)의 배관을 그대로 쓴다: 재조회 fetchOrderRow(응답의 sKey 도 함께 — 별도 cFetchSKey GET 없음) · 검색조건
    *   cReadSearchFields · 체크 행 cReadCheckedRows · 행 교체 cUpdateRow · 승인창 CSS ensureHqStyle ·
    *   busy 플래그 cBatchBusy(본사확인+입고완료와 상호 배타).
    *   게이트: state.ubSkin && state.ubHqConfirm(작업C 와 공유). 순차 처리, 첫 실패·미확정에서 중단,
