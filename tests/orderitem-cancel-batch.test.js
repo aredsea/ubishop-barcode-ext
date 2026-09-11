@@ -238,3 +238,60 @@ test('ccDoCancel: URL 을 못 만들면 dispatched=false 로 확정 실패, fetc
   assert.equal(d.dispatched, false);
   assert.equal(deps.fetch.calls.length, 0);
 });
+
+// ── 재진입 가드 (1R Terra P1) ─────────────────────────────────────────────
+//  배치가 도는 동안 툴바 [일괄취소] 를 다시 누르면 진행 중 승인창이 지워져 [중단] 을 잃는다.
+//  두 겹으로 막는다: ① 진입점 onBulkCancelClick 이 cBatchBusy 면 승인창을 아예 열지 않는다
+//  ② ccShowApprovalDialog 가 dataset.ubRunning='1' 인 기존 창을 교체하지 않는다.
+function buildReentry(deps) {
+  const names = ['ccTargetStatus', 'ccClassifyChecked', 'onBulkCancelClick', 'ccShowApprovalDialog'];
+  // eslint-disable-next-line no-new-func
+  const factory = new Function('deps',
+    'const state = deps.state; let cBatchBusy = !!deps.busy;\n' +
+    'const CC_MODAL_ID = "ub-cc-modal";\n' +
+    'const ccLog = () => {}; const ensureCcStyle = () => {};\n' +
+    'const cReadCheckedRows = deps.cReadCheckedRows; const ccRunCancelBatch = deps.ccRunCancelBatch;\n' +
+    'const document = deps.document;\n' +
+    names.map(n => extractFn(SRC, n)).join('\n') + '\n' +
+    // onBulkCancelClick 이 부르는 ccShowApprovalDialog 를 스파이로 감싼다
+    'const dialogCalls = [];\n' +
+    'const realDialog = ccShowApprovalDialog;\n' +
+    'const wrapped = (cls) => { dialogCalls.push(cls); return deps.useRealDialog ? realDialog(cls) : undefined; };\n' +
+    'const click = (e) => { const f = onBulkCancelClick.toString().replace("ccShowApprovalDialog(cls)", "wrapped(cls)"); return eval("(" + f + ")")(e); };\n' +
+    'return { click, dialogCalls, realDialog };'
+  );
+  return factory(deps);
+}
+
+test('재진입 ①: 배치 진행 중(cBatchBusy) 이면 [일괄취소] 클릭이 승인창을 열지 않는다', () => {
+  const sb = buildReentry({ state: { ubSkin: true, ubHqConfirm: true }, busy: true,
+    cReadCheckedRows: () => [{ orderSeq: '1', code: 'O--', orderDate: '20260911' }], document: {} });
+  sb.click({ isTrusted: true });
+  assert.equal(sb.dialogCalls.length, 0);
+});
+test('재진입 ①: 배치가 돌지 않으면 정상적으로 승인창을 연다(가드가 과하지 않다)', () => {
+  const sb = buildReentry({ state: { ubSkin: true, ubHqConfirm: true }, busy: false,
+    cReadCheckedRows: () => [{ orderSeq: '1', code: 'O--', orderDate: '20260911' }], document: {} });
+  sb.click({ isTrusted: true });
+  assert.equal(sb.dialogCalls.length, 1);
+  assert.equal(sb.dialogCalls[0].targets.length, 1);
+});
+test('재진입 ②: 진행 중(dataset.ubRunning=1) 승인창이 있으면 ccShowApprovalDialog 가 그 창을 지우지 않고 물러난다', () => {
+  let removed = 0, created = 0;
+  const prev = { dataset: { ubRunning: '1' }, remove: () => { removed++; } };
+  const document = { getElementById: (id) => (id === 'ub-cc-modal' ? prev : null),
+                     createElement: () => { created++; throw new Error('새 창을 만들면 안 된다'); }, body: {} };
+  const sb = buildReentry({ state: { ubSkin: true, ubHqConfirm: true }, busy: true, cReadCheckedRows: () => [], document });
+  sb.realDialog({ targets: [{ orderSeq: '1', code: 'O--' }], excluded: [], duplicate: false });
+  assert.equal(removed, 0, '진행 중 창을 지우면 안 된다');
+  assert.equal(created, 0, '새 창을 만들면 안 된다');
+});
+test('재진입 ②: 진행 중이 아닌 옛 창은 교체된다(가드가 과하지 않다)', () => {
+  let removed = 0;
+  const prev = { dataset: {}, remove: () => { removed++; } };
+  const document = { getElementById: (id) => (id === 'ub-cc-modal' ? prev : null),
+                     createElement: () => { throw new Error('stop-after-remove'); }, body: {} };
+  const sb = buildReentry({ state: { ubSkin: true, ubHqConfirm: true }, busy: false, cReadCheckedRows: () => [], document });
+  sb.realDialog({ targets: [], excluded: [], duplicate: false });   // createElement 에서 멈춘다(try/catch 로 삼킴)
+  assert.equal(removed, 1, '옛 창은 지우고 새로 그린다');
+});

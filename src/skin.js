@@ -6506,7 +6506,11 @@
     try {
       ensureCcStyle();
       const prev = document.getElementById(CC_MODAL_ID);
-      if (prev) prev.remove();
+      if (prev) {
+        // 배치가 도는 창은 교체하지 않는다 — [중단] 플래그가 그 창의 클로저에만 있어서 지우면 멈출 길이 없다(1R Terra P1)
+        if (prev.dataset && prev.dataset.ubRunning === '1') { ccLog('진행 중인 승인창 유지 — 재진입 무시'); return; }
+        prev.remove();
+      }
       const targets = (cls && Array.isArray(cls.targets)) ? cls.targets : [];
       const excluded = (cls && Array.isArray(cls.excluded)) ? cls.excluded : [];
       const dup = !!(cls && cls.duplicate);
@@ -6558,6 +6562,7 @@
         go.addEventListener('click', async () => {
           if (running || cBatchBusy) return;
           running = true;
+          ov.dataset.ubRunning = '1';                  // 재진입 가드가 본다(위 prev 검사)
           go.disabled = true;
           let abortReq = false;
           cancel.textContent = '중단';
@@ -6581,6 +6586,7 @@
           if (remaining > 0) lines.push('미처리 ' + remaining + '건');
           note.textContent = lines.join(' / ') || '처리 완료';
           running = false;
+          delete ov.dataset.ubRunning;
           cancel.textContent = '닫기';
           cancelHandler = close;
         });
@@ -6599,6 +6605,7 @@
     try {
       if (e && e.isTrusted === false) return;             // 페이지 스크립트의 .click() 차단
       if (!(state.ubSkin && state.ubHqConfirm)) return;   // 게이트 OFF → 아무 것도 안 함
+      if (cBatchBusy) { ccLog('배치 진행 중 — 재진입 무시'); return; }   // 진행 창의 [중단] 을 살려둔다(1R Terra P1)
       const rows = cReadCheckedRows();
       const cls = ccClassifyChecked(rows);
       ccLog('사전검증 — 체크', rows.length, '대상', cls.targets.length, '제외', cls.excluded.length, 'dup', cls.duplicate);
