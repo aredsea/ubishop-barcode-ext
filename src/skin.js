@@ -6413,6 +6413,221 @@
     return 'uncertain';
   }
 
+  // ── 일괄취소 실행부 (DOM·네트워크) ──────────────────────────────────────
+  function ensureCcStyle() {
+    ensureHqStyle();                                   // 승인창 공용 CSS(.ub-hq-*)
+    if (document.getElementById(CC_STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = CC_STYLE_ID; s.textContent = CC_CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+  //  취소 GET(쓰기). 반환 {dispatched, msg}. URL 을 못 만들면 dispatched=false(쓰기 없었음 = 확정 실패).
+  //  요청을 보낸 뒤의 네트워크 오류·타임아웃은 서버에 닿았는지 알 수 없으므로 dispatched=true 로 두고
+  //  호출부가 재조회로만 판정한다(자동 재시도 금지). msg 는 리다이렉트 URL 의 서버 문구(표시용).
+  //  ⚠⚠ 이 GET 자체가 쓰기다 — 조회 목적으로 부르지 마라.
+  async function ccDoCancel(orderSeq, sKey, searchFields) {
+    const url = ccBuildCancelUrl(orderSeq, sKey, searchFields);
+    if (!url) return { dispatched: false, msg: 'URL 조립 실패(seq/sKey 없음)' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const r = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal });
+      return { dispatched: true, msg: ccRedirectMsg(r.url) };
+    } catch (e) {
+      ccLog('취소 GET 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    } finally { clearTimeout(timer); }
+  }
+  //  배치 오케스트레이터. 순차, 첫 실패·미확정에서 중단. progress(msg)=승인창 진행 표시,
+  //  isAborted()=사용자 중단 요청(다음 건 경계에서 멈춤). cBatchBusy 는 작업C 와 공유한다.
+  async function ccRunCancelBatch(targets, progress, isAborted) {
+    const results = { success: 0, failed: [], uncertain: [], processed: 0, total: targets.length };
+    if (cBatchBusy) return results;
+    cBatchBusy = true;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const t = targets[i];
+        const orderSeq = t.orderSeq;
+        const tag = (i + 1) + '/' + targets.length + ' · ' + orderSeq + ' · ';
+        if (!(state.ubSkin && state.ubHqConfirm)) { ccLog('게이트 해제 → 중단'); break; }
+        if (isAborted && isAborted()) { ccLog('사용자 중단 요청 → 중단'); break; }
+        results.processed++;
+        const orderDate = t.orderDate || '';
+        if (!orderDate) { results.failed.push({ orderSeq: orderSeq, reason: '주문일 파싱 실패' }); break; }
+        // 1) 쓰기 직전 재조회 — 승인창의 상태는 승인용이지 쓰기 근거가 아니다
+        progress(tag + '상태 확인');
+        const row = await fetchOrderRow(orderSeq, orderDate);
+        if (!row.found) {
+          results.failed.push({ orderSeq: orderSeq, reason:
+            row.loginExpired ? '로그인 만료' :
+            row.duplicate ? '중복 orderSeq(재조회)' :
+            row.hasMore ? '재조회 실패(결과 잘림 — 조건을 좁혀라)' : '재조회 실패(행 없음)' });
+          break;
+        }
+        // 2) 정확히 주문완료(O--) 만 — 그 사이 남이 취소·본사확인한 건도 여기서 걸린다
+        if (!ccTargetStatus(row.code)) {
+          results.failed.push({ orderSeq: orderSeq, reason: '상태 부적합: ' + (row.text || row.code || '불명') });
+          cUpdateRow(orderSeq, row);                   // 화면을 서버 진실로
+          break;
+        }
+        // 3) sKey — 건마다 새로
+        progress(tag + '취소 처리');
+        const sKey = await cFetchSKey();
+        if (!sKey) { results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' }); break; }
+        // 4) 취소 GET(⚠ 쓰기) — dispatch
+        const d = await ccDoCancel(orderSeq, sKey, cReadSearchFields());
+        if (!d.dispatched) { results.failed.push({ orderSeq: orderSeq, reason: d.msg }); break; }
+        // 5) 재조회로만 판정 — OC- 가 보일 때까지 최대 ASG_VERIFY_MS
+        progress(tag + '확인');
+        let vRow = null;
+        const dl = Date.now() + ASG_VERIFY_MS;
+        while (Date.now() < dl) {
+          vRow = await fetchOrderRow(orderSeq, orderDate);
+          if (vRow && vRow.found && vRow.code === 'OC-') break;
+          await new Promise(function (r) { setTimeout(r, 1500); });
+        }
+        const outcome = ccClassifyOutcome({ dispatched: true, requery: vRow });
+        if (outcome === 'success') { results.success++; cUpdateRow(orderSeq, vRow); continue; }
+        results.uncertain.push({ orderSeq: orderSeq,
+          reason: '취소 미확정 — 수동 확인 필요' + (d.msg ? ' · 서버: ' + d.msg : '') });
+        if (vRow && vRow.found) cUpdateRow(orderSeq, vRow);
+        break;
+      }
+    } catch (e) {
+      ccLog('배치 실행 오류', e);
+    } finally {
+      cBatchBusy = false;
+    }
+    return results;
+  }
+  //  사전검증 승인창. 총 N / 대상 K / 제외 M + 사유, ERP 원문 경고, [취소 진행]/[닫기].
+  //  진행 중에는 [닫기]→[중단] 으로 바뀌고 배경 클릭으로 닫히지 않는다(진행 표시를 잃지 않게).
+  function ccShowApprovalDialog(cls) {
+    try {
+      ensureCcStyle();
+      const prev = document.getElementById(CC_MODAL_ID);
+      if (prev) prev.remove();
+      const targets = (cls && Array.isArray(cls.targets)) ? cls.targets : [];
+      const excluded = (cls && Array.isArray(cls.excluded)) ? cls.excluded : [];
+      const dup = !!(cls && cls.duplicate);
+      const total = targets.length + excluded.length;
+      const esc = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      const ov = document.createElement('div');
+      ov.id = CC_MODAL_ID; ov.className = 'ub-hq-ov';
+      const card = document.createElement('div'); card.className = 'ub-hq-card';
+      let running = false;
+      const close = () => { try { ov.remove(); } catch (_) {} };
+
+      let bodyHtml = '';
+      if (total === 0) {
+        bodyHtml = '<div class="ub-hq-warn">선택된 항목이 없습니다.</div>';
+      } else if (dup) {
+        bodyHtml = '<div class="ub-hq-warn">중복 주문번호 — 중단</div>' +
+                   '<div class="ub-hq-note">같은 주문번호가 두 번 이상 선택되었습니다. 중복을 풀고 다시 시도하세요.</div>';
+      } else {
+        bodyHtml = '<div class="ub-hq-sum">총 ' + total + '건 중 대상 <b>' + targets.length +
+                   '건</b> / 제외 ' + excluded.length + '건</div>';
+        if (excluded.length) {
+          const items = excluded.map(x => '<li>' + esc(x.orderSeq) + ' — ' + esc(x.reason) +
+                        (x.code ? ' (' + esc(x.code) + ')' : '') + '</li>').join('');
+          bodyHtml += '<div class="ub-hq-ex"><ul>' + items + '</ul></div>';
+        }
+        if (targets.length) {
+          bodyHtml += '<div class="ub-hq-warn" style="margin-top:10px">취소된 주문서는 복구되지 않습니다.</div>';
+        }
+      }
+      card.innerHTML =
+        '<div class="ub-hq-h">일괄취소 — 사전검증</div>' +
+        '<div class="ub-hq-b">' + bodyHtml + '</div>' +
+        '<div class="ub-hq-f"></div>';
+      const foot = card.querySelector('.ub-hq-f');
+      const canProceed = total > 0 && !dup && targets.length > 0;
+
+      // [닫기]/[중단] 은 핸들러 하나를 갈아끼운다 — 리스너 두 개가 같이 불리면 진행 중에 창이 닫힌다
+      let cancelHandler = close;
+      const cancel = document.createElement('button');
+      cancel.className = 'ub-hq-btn2 ub-hq-cancel'; cancel.type = 'button';
+      cancel.textContent = canProceed ? '취소' : '닫기';
+      cancel.addEventListener('click', () => cancelHandler());
+
+      if (canProceed) {
+        const go = document.createElement('button');
+        go.className = 'ub-hq-btn2 ub-cc-go'; go.type = 'button'; go.textContent = '취소 진행';
+        go.addEventListener('click', async () => {
+          if (running || cBatchBusy) return;
+          running = true;
+          go.disabled = true;
+          let abortReq = false;
+          cancel.textContent = '중단';
+          cancelHandler = () => { abortReq = true; cancel.textContent = '중단 요청됨'; };
+          const note = document.createElement('div');
+          note.className = 'ub-hq-note';
+          note.textContent = '준비 중...';
+          const b = card.querySelector('.ub-hq-b'); if (b) b.appendChild(note);
+          const results = await ccRunCancelBatch(targets, (msg) => { note.textContent = msg; }, () => abortReq);
+          const lines = [];
+          if (results.success > 0) lines.push('성공 ' + results.success + '건');
+          if (results.failed.length > 0) {
+            const f = results.failed[0];
+            lines.push('실패 1건: ' + f.orderSeq + ' — ' + f.reason);
+          }
+          if (results.uncertain.length > 0) {
+            const u = results.uncertain[0];
+            lines.push('미확정 1건: ' + u.orderSeq + ' — ' + u.reason);
+          }
+          const remaining = results.total - results.processed;
+          if (remaining > 0) lines.push('미처리 ' + remaining + '건');
+          note.textContent = lines.join(' / ') || '처리 완료';
+          running = false;
+          cancel.textContent = '닫기';
+          cancelHandler = close;
+        });
+        foot.appendChild(go);
+      }
+      foot.appendChild(cancel);
+
+      ov.addEventListener('click', (e) => { if (e.target === ov && !running) close(); });
+      card.addEventListener('click', (e) => e.stopPropagation());
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+    } catch (e) { ccLog('승인창 표시 실패', e); }
+  }
+  //  클릭 핸들러(게이트 ON 시): 체크된 행을 분류해 승인창을 띄운다. 어떤 쓰기도 하지 않는다.
+  function onBulkCancelClick(e) {
+    try {
+      if (e && e.isTrusted === false) return;             // 페이지 스크립트의 .click() 차단
+      if (!(state.ubSkin && state.ubHqConfirm)) return;   // 게이트 OFF → 아무 것도 안 함
+      const rows = cReadCheckedRows();
+      const cls = ccClassifyChecked(rows);
+      ccLog('사전검증 — 체크', rows.length, '대상', cls.targets.length, '제외', cls.excluded.length, 'dup', cls.duplicate);
+      ccShowApprovalDialog(cls);
+    } catch (err) { ccLog('클릭 처리 실패', err); }
+  }
+  //  standby 툴바(TD.left)의 마지막 standby 앵커([본사확인취소]) 뒤에 [일괄취소] 를 idempotent 하게
+  //  주입한다. 게이트 OFF 면 숨김. 목록 페이지에서만. 툴바가 없으면 주입 안 함(fail-safe).
+  function injectBulkCancelButton() {
+    try {
+      if (!isOrderJunList()) return;
+      let btn = document.getElementById(CC_BTN_ID);
+      const gated = !!(state.ubSkin && state.ubHqConfirm);
+      if (!btn) {
+        const anchors = document.querySelectorAll('a[href*="standby"]');
+        const last = anchors.length ? anchors[anchors.length - 1] : null;
+        if (!last || !last.parentNode) return;
+        ensureCcStyle();
+        btn = document.createElement('button');
+        btn.id = CC_BTN_ID; btn.type = 'button';
+        btn.textContent = '일괄취소';
+        btn.addEventListener('click', onBulkCancelClick);
+        last.insertAdjacentElement('afterend', btn);
+        ccLog('버튼 주입');
+      }
+      btn.style.display = gated ? '' : 'none';
+    } catch (e) { ccLog('버튼 주입 실패', e); }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
@@ -6426,6 +6641,7 @@
     bindEditPopupIntercept(document);   // v3.9.9 작업B: [수정] → 플로팅 패널. 게이트 OFF 여도 항상 idempotent bind(§5)
     initEditPopupWindow();              // v3.9.9 작업B: 이 문서가 패널 안 프레임이면 크롬 정리·저장 감지
     injectHqConfirmButton();   // v3.8.x 작업C(C-2a): 본사확인+입고완료 버튼 — 게이트 OFF 면 숨김(항상 idempotent 주입)
+    injectBulkCancelButton();  // v4.1.9 일괄취소: 체크한 주문완료 건 순차 취소 — 게이트 OFF 면 숨김(항상 idempotent 주입)
     initAutoSpike();     // Phase 0: 자동화 배관 검증(기본 OFF, 읽기 전용, 임시)
     addQtySort();        // v3.1.16: 상품집계 수량 정렬
     restoreAccountsFromMirror(); // 계정 빠른전환: 재설치 대비 로컬백업 복원/미러
@@ -6488,6 +6704,7 @@
         if (on('ubThumbEdit')) bindThumbEdit(document);
         bindEditPopupIntercept(document);   // v3.9.0 작업B: 팝업에서 켜면 reload 없이 즉시 가로채기(idempotent)
         injectHqConfirmButton();   // v3.8.x 작업C(C-2a): 팝업 토글 시 reload 없이 버튼 표시/숨김 반영(idempotent)
+        injectBulkCancelButton();  // v4.1.9 일괄취소: 팝업 토글 시 reload 없이 버튼 표시/숨김 반영(idempotent)
       }
     });
   } catch (e) {}
