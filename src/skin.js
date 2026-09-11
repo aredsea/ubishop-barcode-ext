@@ -6315,6 +6315,104 @@
     } catch (e) { cLog('버튼 주입 실패', e); }
   }
 
+  /* ==========================================================================
+   *  5.11) 일괄취소 — 체크한 주문완료(O--) 건을 순서대로 주문취소(OC-)
+   *   스펙: docs/superpowers/specs/2026-09-11-orderitem-bulk-cancel-design.md
+   *   네이티브 [취소] = del(seq): confirm → GET orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건>
+   *   (⚠ GET 자체가 쓰기 — 조회 목적으로 절대 부르지 않는다. 라이브 실측 2026-09-11: [취소] 링크는
+   *   주문완료 행에만 있다 → 취소 가능 상태는 O-- 하나뿐.)
+   *   작업C(§5.10)의 배관을 그대로 쓴다: 재조회 fetchOrderRow · sKey cFetchSKey · 검색조건
+   *   cReadSearchFields · 체크 행 cReadCheckedRows · 행 교체 cUpdateRow · 승인창 CSS ensureHqStyle ·
+   *   busy 플래그 cBatchBusy(본사확인+입고완료와 상호 배타).
+   *   게이트: state.ubSkin && state.ubHqConfirm(작업C 와 공유). 순차 처리, 첫 실패·미확정에서 중단,
+   *   dispatch 후 non-success 는 자동 재시도 금지(작업C §3.6 과 동일 — 반영 지연·남이 덮음·타임아웃이
+   *   모두 같은 모습이다).
+   * ========================================================================== */
+  const CC_TAG = '[UB][bulkcancel]';
+  const ccLog = (...a) => { try { console.log(CC_TAG, ...a); } catch (_) {} };
+  const CC_BTN_ID = 'ub-cancel-btn';
+  const CC_STYLE_ID = 'ub-cc-style';
+  const CC_MODAL_ID = 'ub-cc-modal';
+  const CC_CSS = `
+    /* 일괄취소 — 되돌릴 수 없는 동작이라 primary(파랑)가 아니라 빨간 outline 으로 구분 */
+    #${CC_BTN_ID} { display: inline-block; margin-left: 6px; padding: 4px 12px; border-radius: 8px;
+      font-family: 'Pretendard','Malgun Gothic',sans-serif; font-size: 12.5px; font-weight: 700;
+      line-height: 1.5; text-align: center; vertical-align: middle; white-space: nowrap;
+      box-sizing: border-box; cursor: pointer;
+      border: 1px solid #f0b4b4; background: #fff; color: #b42318; }
+    #${CC_BTN_ID}:hover { background: #fff3f3; border-color: #b42318; }
+    .ub-cc-go { background: #b42318; color: #fff; }
+    .ub-cc-go:disabled { background: #e7a4a4; cursor: default; }
+  `;
+  // ── 일괄취소 순수 판정부 — DOM·네트워크·chrome.*·타이머 미접촉. tests/orderitem-cancel.test.js ──
+  //  취소 가능 상태 = 정확히 주문완료(O--) 하나뿐. EXACT, prefix 아님(cTargetStatus 와 같은 규율).
+  function ccTargetStatus(code) {
+    return code === 'O--';
+  }
+  //  체크된 행 → 대상/제외. excluded 는 {orderSeq, code, reason}. 같은 orderSeq 둘 이상이면
+  //  duplicate=true — 조용히 합치지 않고 호출부가 중단한다(cClassifyChecked 와 같은 규약).
+  function ccClassifyChecked(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const REASON = new Map([
+      ['OS-', '본사확인 상태 — [본사확인취소] 후 다시'], ['OC-', '이미 취소됨'],
+      ['B--', '취소 불가 상태(발주완료)'], ['I--', '취소 불가 상태(입고완료)'],
+      ['T--', '취소 불가 상태(출고완료)'], ['TS-', '취소 불가 상태(출고확인)'],
+      ['TE-', '취소 불가 상태(출고오확인)'], ['S--', '취소 불가 상태(판매완료)']
+    ]);
+    const seen = new Set();
+    let duplicate = false;
+    for (const r of list) {
+      const key = String(r && r.orderSeq != null ? r.orderSeq : '');
+      if (seen.has(key)) duplicate = true; else seen.add(key);
+    }
+    const targets = [];
+    const excluded = [];
+    for (const r of list) {
+      const code = r ? r.code : undefined;
+      if (ccTargetStatus(code)) { targets.push(r); continue; }
+      excluded.push({ orderSeq: r ? r.orderSeq : undefined, code: code,
+                      reason: REASON.get(code) || '상태 불명' });
+    }
+    return { targets: targets, excluded: excluded, duplicate: duplicate };
+  }
+  //  취소 URL — 네이티브 del(seq) 가 만드는 것과 같은 모양(tcode·seq·sKey + CONST_URL 검색조건).
+  //  seq·sKey 가 비면 null(빈 값이 쓰기로 흘러가지 않게). 고정 키는 searchFields 가 덮지 못한다.
+  //  ⚠⚠ 이 URL 의 GET 이 쓰기다 — 조회 목적으로 부르지 마라.
+  function ccBuildCancelUrl(orderSeq, sKey, searchFields) {
+    const seq = String(orderSeq == null ? '' : orderSeq).trim();
+    const key = String(sKey == null ? '' : sKey).trim();
+    if (!seq || !key) return null;
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('seq', seq);
+    p.set('sKey', key);
+    if (searchFields) {
+      const keys = Object.keys(searchFields);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (!p.has(k)) p.set(k, String(searchFields[k] == null ? '' : searchFields[k]));
+      }
+    }
+    return '/jun/orderitem/orderItemCancel.do?' + p.toString();
+  }
+  //  리다이렉트 도착 URL 의 msg(서버 거부 문구 — 이 ERP 는 실패일 때만 실는다). 없거나 깨지면 ''.
+  //  표시용이다 — 판정 근거가 아니다(이 ERP 의 응답 문구 스캔은 오탐 전례가 있다).
+  function ccRedirectMsg(url) {
+    try {
+      const m = new URL(String(url == null ? '' : url), 'http://localhost').searchParams.get('msg');
+      return m ? String(m).trim() : '';
+    } catch (_) { return ''; }
+  }
+  //  dispatch 후 판정 3분기(cClassifyOutcome 과 같은 규약). dispatch 전 = 'fail'(쓰기 없었음, 안전).
+  //  dispatch 후 재조회가 found && OC- 면 'success', 그 외(이전 상태·다른 상태·재조회 실패·null)는 전부
+  //  'uncertain' — 절대 'fail' 아니고 자동 재시도 금지 신호다.
+  function ccClassifyOutcome(input) {
+    if (!input || input.dispatched !== true) return 'fail';
+    const q = input.requery;
+    if (q && q.found === true && q.code === 'OC-') return 'success';
+    return 'uncertain';
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
