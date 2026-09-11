@@ -6399,6 +6399,14 @@
     }
     return '/jun/orderitem/orderItemCancel.do?' + p.toString();
   }
+  //  행 HTML 에 서버가 렌더한 [취소] 링크 javascript:del('<seq>') 의 인자. 없으면 null.
+  //  서버가 "이 행은 이 seq 로 취소할 수 있다" 고 직접 증언한 값이다 — 쓰기 직전 orderSeq 와 EXACT 대조해
+  //  다르거나 없으면 GET 을 보내지 않는다(Fable P1: 라벨 프록시가 틀려도 fail-closed). 라이브 실측 2026-09-11:
+  //  주문완료 332행 전부 idx 값 == del 인자, 취소된 행에는 링크 없음.
+  function ccRowCancelSeq(rowHtml) {
+    const m = String(rowHtml == null ? '' : rowHtml).match(/javascript:\s*del\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)/);
+    return m ? m[1] : null;
+  }
   //  리다이렉트 도착 URL 의 msg(서버 거부 문구 — 이 ERP 는 실패일 때만 실는다). 없거나 깨지면 ''.
   //  표시용이다 — 판정 근거가 아니다(이 ERP 의 응답 문구 스캔은 오탐 전례가 있다).
   function ccRedirectMsg(url) {
@@ -6481,6 +6489,14 @@
         //    (Opus P2-3 — 별도 GET 으로 받은 키와 중간 렌더의 상호작용 자체를 없앤다). 없으면 fail-closed.
         const sKey = row.sKey;
         if (!sKey) { results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' }); break; }
+        // 3-0) 같은 응답의 행에 서버가 렌더한 [취소] 링크가 있고 그 인자가 이 orderSeq 와 정확히 같아야 한다.
+        //      상태 라벨 판정이 틀려도(열 밀림·권한상 취소 불가 행·키 불일치) 여기서 fail-closed(Fable P1).
+        const linkSeq = ccRowCancelSeq(row.rowHtml);
+        if (linkSeq !== orderSeq) {
+          results.failed.push({ orderSeq: orderSeq, reason: linkSeq == null
+            ? '취소 링크 없음(서버 렌더 기준 취소 불가)' : '취소 링크 불일치(' + linkSeq + ')' });
+          break;
+        }
         // 3-1) 재조회를 기다리는 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1).
         //      이 건은 손대지 않은 것이므로 processed 에서 되돌린다 — 요약이 '처리 완료' 로 나오면 안 된다(Opus P2-1).
         if (!(state.ubSkin && state.ubHqConfirm)) { results.processed--; ccLog('게이트 해제(쓰기 직전) → 중단'); break; }

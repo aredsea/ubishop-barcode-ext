@@ -30,11 +30,11 @@ function extractFn(src, name) {
   throw new Error(name + ' 본문의 중괄호 균형을 찾지 못했습니다');
 }
 
-const NAMES = ['ccTargetStatus', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome',
+const NAMES = ['ccTargetStatus', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome', 'ccRowCancelSeq',
                'ccDoCancel', 'ccRunCancelBatch'];
 
 //  샌드박스: deps 로 의존을 주입하고, 추출한 함수들을 같은 스코프에 둔다.
-//  setTimeout 은 판정 폴링의 1.5s 대기만 0 으로 줄인다(그 외 타이머는 실제).
+//  setTimeout 은 판정 폴링의 1.5s 대기(정확히 1500ms)만 0 으로 줄인다 — ccDoCancel 의 8000ms abort 타이머는 실제.
 function build(deps) {
   // eslint-disable-next-line no-new-func
   const factory = new Function('deps',
@@ -44,7 +44,7 @@ function build(deps) {
     'const fetch = deps.fetch; const fetchOrderRow = deps.fetchOrderRow; const cFetchSKey = deps.cFetchSKey;\n' +
     'const cReadSearchFields = deps.cReadSearchFields; const cUpdateRow = deps.cUpdateRow;\n' +
     'const ccLog = () => {};\n' +
-    'const setTimeout = (fn, ms) => globalThis.setTimeout(fn, ms >= 1500 ? 0 : ms);\n' +
+    'const setTimeout = (fn, ms) => globalThis.setTimeout(fn, ms === 1500 ? 0 : ms);\n' +
     'const clearTimeout = (id) => globalThis.clearTimeout(id);\n' +
     NAMES.map(n => extractFn(SRC, n)).join('\n') + '\n' +
     'return { ccRunCancelBatch, ccDoCancel, busy: () => cBatchBusy };'
@@ -64,9 +64,13 @@ function makeRequery(script) {
     cursor[orderSeq] = (cursor[orderSeq] || 0) + 1;
     const r = seq[i];
     const sKey = '2609111512' + String(++requerySeq).padStart(5, '0');
+    // 서버처럼 주문완료(O--) 행에만 [취소] 링크 del('<seq>') 를 싣는다(2026-09-11 실측: 332/332, 취소된 행엔 없음)
+    const rowHtml = (r && r.code === 'O--')
+      ? '<tr><td>' + r.code + '</td><td><a href="javascript:del(\'' + orderSeq + '\');">취소</a></td></tr>'
+      : '<tr><td>' + (r ? r.code : '') + '</td></tr>';
     const ret = !r
       ? { found: false, orderSeq, code: null, text: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml: '', sKey }
-      : Object.assign({ found: true, orderSeq, text: r.code, duplicate: false, hasMore: false, loginExpired: false, rowHtml: '<tr><td>' + r.code + '</td></tr>', sKey }, r);
+      : Object.assign({ found: true, orderSeq, text: r.code, duplicate: false, hasMore: false, loginExpired: false, rowHtml, sKey }, r);
     calls.push({ orderSeq, orderDate, ret });
     return ret;
   };
@@ -412,4 +416,144 @@ test('배치가 도는 동안 cBatchBusy 가 세워져 있다(작업C 와 상호
   assert.equal(r.success, 1);
   assert.deepEqual(seen, [true, true], '재조회 시점마다 busy 였어야 한다');
   assert.equal(sb.busy(), false);
+});
+
+// ── 취소 링크 가드 (Fable P1) ─────────────────────────────────────────────────
+//  쓰기 직전, 같은 응답의 행 HTML 에 서버가 렌더한 del('<seq>') 가 있고 orderSeq 와 정확히 같아야 GET 이 나간다.
+test('취소 링크 가드: 행에 del() 링크가 없으면(라벨은 주문완료여도) GET 없이 실패', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--', rowHtml: '<tr><td>주문완료</td></tr>' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
+  assert.equal(deps.fetch.calls.length, 0);
+  assert.equal(r.failed[0].reason, '취소 링크 없음(서버 렌더 기준 취소 불가)');
+});
+test('취소 링크 가드: 링크 인자가 다른 주문번호면 GET 없이 실패(다른 행이 취소되는 경로 차단)', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--', rowHtml: '<tr><td>주문완료</td><td><a href="javascript:del(\'999\');">취소</a></td></tr>' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
+  assert.equal(deps.fetch.calls.length, 0);
+  assert.equal(r.failed[0].reason, '취소 링크 불일치(999)');
+});
+test('취소 링크 가드: 인자가 일치하면 GET 이 나간다(가드가 과하지 않다)', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--', rowHtml: '<tr><td>주문완료</td><td><a href="javascript:del(\'101\');">취소</a></td></tr>' }, { code: 'OC-' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
+  assert.equal(deps.fetch.calls.length, 1);
+  assert.equal(r.success, 1);
+});
+test('ccRowCancelSeq: del 링크 인자 추출 — 따옴표 유무·공백·없음', () => {
+  const sb = build(baseDeps());
+  // 순수 함수라 샌드박스에서 바로 꺼내 쓴다
+  const f = new Function(extractFn(SRC, 'ccRowCancelSeq') + '; return ccRowCancelSeq;')();
+  assert.equal(f('<a href="javascript:del(\'389315\');">취소</a>'), '389315');
+  assert.equal(f("<a href='javascript:del(389315)'>취소</a>"), '389315');
+  assert.equal(f('<a href="javascript: del( "7" )">x</a>'), '7');
+  assert.equal(f('<tr><td>주문취소</td></tr>'), null);
+  assert.equal(f(null), null);
+  assert.equal(f('<a href="javascript:modify(\'1\',\'2\')">수정</a>'), null);
+  void sb;
+});
+
+// ── 툴바 버튼 주입·배선 (Fable P2-1) ────────────────────────────────────────────
+function fakeToolbarDoc(anchorCount) {
+  const mk = (tag) => ({ tag, children: [], handlers: {}, style: {}, dataset: {},
+    addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); },
+    dispatch(type, ev) { return Promise.all((this.handlers[type] || []).map(fn => fn(Object.assign({ target: this }, ev)))); },
+    appendChild(c) { this.children.push(c); return c; } });
+  const cell = mk('td');
+  const anchors = [];
+  for (let i = 0; i < anchorCount; i++) {
+    const a = mk('a'); a.parentNode = cell; a.href = 'javascript:standby(form1,form3,\'OS-\',\'O--\');';
+    a.insertAdjacentElement = (where, el) => { const k = cell.children.indexOf(a); cell.children.splice(k + 1, 0, el); el.parentNode = cell; };
+    cell.children.push(a); anchors.push(a);
+  }
+  const byId = {};
+  const document = {
+    anchors, cell,
+    querySelectorAll: (sel) => (sel === 'a[href*="standby"]' ? anchors.slice() : []),
+    getElementById: (id) => byId[id] || null,
+    createElement: (tag) => mk(tag),
+    head: { appendChild() {} }, documentElement: { appendChild() {} }, body: mk('body')
+  };
+  document.register = (el) => { byId[el.id] = el; };
+  return document;
+}
+function buildInject(deps) {
+  const names = ['injectBulkCancelButton', 'onBulkCancelClick', 'ccClassifyChecked', 'ccTargetStatus'];
+  // eslint-disable-next-line no-new-func
+  const factory = new Function('deps',
+    'const state = deps.state; let cBatchBusy = false; const CC_BTN_ID = "ub-cancel-btn";\n' +
+    'const ccLog = () => {}; const ensureCcStyle = () => {}; const isOrderJunList = () => deps.onListPage;\n' +
+    'const document = deps.document; const cReadCheckedRows = () => [];\n' +
+    'const dialogCalls = []; const ccShowApprovalDialog = (cls) => { dialogCalls.push(cls); };\n' +
+    names.map(n => extractFn(SRC, n)).join('\n') + '\n' +
+    'return { injectBulkCancelButton, onBulkCancelClick, dialogCalls };');
+  return factory(deps);
+}
+test('injectBulkCancelButton: 마지막 standby 앵커 뒤에 [일괄취소] 1개, 게이트 ON 이면 보이고 idempotent', () => {
+  const document = fakeToolbarDoc(2);
+  const sb = buildInject({ state: { ubSkin: true, ubHqConfirm: true }, document, onListPage: true });
+  sb.injectBulkCancelButton();
+  const btns = document.cell.children.filter(c => c.tag === 'button');
+  assert.equal(btns.length, 1);
+  assert.equal(btns[0].textContent, '일괄취소');
+  assert.equal(btns[0].id, 'ub-cancel-btn');
+  assert.equal(document.cell.children.indexOf(btns[0]), 2, '두 앵커([본사확인]·[본사확인취소]) 뒤');
+  assert.equal(btns[0].style.display, '');
+  document.register(btns[0]);
+  sb.injectBulkCancelButton();   // 두 번 불러도 하나
+  assert.equal(document.cell.children.filter(c => c.tag === 'button').length, 1);
+});
+test('injectBulkCancelButton: 게이트 OFF 면 주입은 하되 display:none, 목록 페이지가 아니면 주입 안 함', () => {
+  const d1 = fakeToolbarDoc(2);
+  buildInject({ state: { ubSkin: true, ubHqConfirm: false }, document: d1, onListPage: true }).injectBulkCancelButton();
+  const b = d1.cell.children.find(c => c.tag === 'button');
+  assert.ok(b); assert.equal(b.style.display, 'none');
+  const d2 = fakeToolbarDoc(2);
+  buildInject({ state: { ubSkin: true, ubHqConfirm: true }, document: d2, onListPage: false }).injectBulkCancelButton();
+  assert.equal(d2.cell.children.filter(c => c.tag === 'button').length, 0);
+  const d3 = fakeToolbarDoc(0);   // 툴바 앵커 없음 → 주입 안 함(fail-safe)
+  buildInject({ state: { ubSkin: true, ubHqConfirm: true }, document: d3, onListPage: true }).injectBulkCancelButton();
+  assert.equal(d3.cell.children.length, 0);
+});
+test('툴바 [일괄취소]: 페이지 스크립트의 .click()(isTrusted=false) 은 승인창을 열지 않는다', async () => {
+  const document = fakeToolbarDoc(2);
+  const sb = buildInject({ state: { ubSkin: true, ubHqConfirm: true }, document, onListPage: true });
+  sb.injectBulkCancelButton();
+  const btn = document.cell.children.find(c => c.tag === 'button');
+  await btn.dispatch('click', { isTrusted: false });
+  assert.equal(sb.dialogCalls.length, 0);
+  await btn.dispatch('click', { isTrusted: true });
+  assert.equal(sb.dialogCalls.length, 1, '사용자 클릭은 연다');
+});
+test('배선: init() 과 chrome.storage.onChanged 의 changed 블록이 injectBulkCancelButton() 을 부른다', () => {
+  const init = extractFn(SRC, 'init');
+  assert.match(init, /^\s*injectBulkCancelButton\(\);/m, 'init() 안 호출');
+  // 같은 시그니처의 리스너가 여럿이라(2136·6734·6753행 계열) 'forceAlwaysOn' 을 부르는 상태 갱신 리스너로 특정한다
+  const anchorIdx = SRC.indexOf('forceAlwaysOn();   // 외부에서 false 로 바뀌어도 매번 상시 ON 유지');
+  assert.ok(anchorIdx > 0, '상태 갱신 onChanged 리스너의 forceAlwaysOn 줄');
+  const i = SRC.lastIndexOf('chrome.storage.onChanged.addListener((ch, area) => {', anchorIdx);
+  assert.ok(i > 0);
+  // 리스너 본문은 forEach 의 '});' 가 먼저 나와 문자열 경계로 못 자른다 → 그 리스너 안의 changed 블록 끝(injectHqConfirmButton 호출 뒤)까지 본다
+  const j = SRC.indexOf('injectHqConfirmButton();', i);
+  assert.ok(j > i && j - i < 1500, 'onChanged 리스너 안에 injectHqConfirmButton 호출이 있어야 한다');
+  const block = SRC.slice(i, SRC.indexOf('\n', SRC.indexOf('\n', j) + 1) + 1);   // 그 다음 줄까지
+  assert.match(block, /injectBulkCancelButton\(\);/, 'onChanged 안 호출(injectHqConfirmButton 바로 다음 줄)');
+});
+
+// ── 진행 중 배경 클릭 가드 (Fable P2-2) ──────────────────────────────────────
+test('승인창: 배치가 도는 동안 배경 클릭으로 닫히지 않고, 끝난 뒤에는 닫힌다', async () => {
+  const document = fakeDom();
+  let resolveBatch;
+  const pending = new Promise((res) => { resolveBatch = res; });
+  const sb = buildDialog({ document, ccRunCancelBatch: () => pending });
+  sb.ccShowApprovalDialog({ targets: [{ orderSeq: '1', code: 'O--', orderDate: '20260911' }], excluded: [], duplicate: false });
+  const ov = document.body.children[0];
+  const foot = ov.children[0].children.find(c => c.sel === '.ub-hq-f');
+  const go = foot.children.find(b => b.tag === 'button' && b.textContent === '취소 진행');
+  const running = go.dispatch('click', { isTrusted: true });       // 배치 시작(미해결)
+  await Promise.resolve();
+  await ov.dispatch('click', {});                                    // 배경 클릭
+  assert.notEqual(ov.removed, true, '진행 중에는 닫히지 않는다');
+  resolveBatch({ success: 1, failed: [], uncertain: [], processed: 1, total: 1 });
+  await running;
+  await ov.dispatch('click', {});
+  assert.equal(ov.removed, true, '끝난 뒤 배경 클릭은 닫는다');
 });

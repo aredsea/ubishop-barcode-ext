@@ -43,6 +43,8 @@ function del(seq) {
 | 입고완료 `I--` | 100 | 0 |
 
 → **취소 가능 상태는 주문완료(O--) 하나뿐이다.** 본사확인 행은 네이티브에서도 [본사확인취소]를 먼저 눌러야 한다.
+→ **`input[name=idx]` 값 == 그 행 `del()` 인자: 주문완료 332행 중 332행 일치(불일치 0, 링크 없음 0).** 취소 GET 의 `seq` 는 이 값이다.
+→ **취소된 주문은 무필터(`searchItemStatus=''`)·그 하루 조회에서도 돌아온다**(seq 389315, 2026-09-09: 1행, 상태 텍스트 정확히 `주문취소`, [취소] 링크 없음). 성공 판정(`fetchOrderRow` → OC-)이 기대는 계약이다. (검수 Fable 요구로 실측)
 → 45일에 주문취소 72건 — 일괄화할 만한 빈도다.
 
 ### 툴바
@@ -118,6 +120,9 @@ function del(seq) {
    상태와 키가 같은 응답이라 그 사이에 남이 상태를 바꿀 창이 없다(검수 3R 의 취지를 구조로 해소). 네이티브도 POST 로
    렌더된 목록의 키로 [취소] GET 을 보내므로 같은 계약이다(2026-09-11 실측: POST 응답의 첫 sKey 출현이 del() 의 것).
    별도 `cFetchSKey()` GET 은 쓰지 않는다 — 키 발급과 사용 사이에 다른 렌더가 끼는 경우를 만들지 않는다(Opus P2-3).
+3-0. 같은 응답의 `row.rowHtml` 에 서버가 렌더한 [취소] 링크 `javascript:del('<seq>')` 가 있고 그 인자가 orderSeq 와 EXACT 일치해야 한다
+   (`ccRowCancelSeq`). 없으면 '취소 링크 없음(서버 렌더 기준 취소 불가)', 다르면 '취소 링크 불일치(<인자>)' 로 GET 없이 중단 —
+   상태 라벨 판정이 틀려도(열 밀림·권한상 취소 불가 행·키 불일치) 서버의 증언으로 fail-closed(검수 Fable P1).
 3-1. 재조회 대기 중 게이트 OFF 또는 중단 요청이면 GET 없이 중단하고 `processed` 를 되돌린다(요약이 '처리 완료' 가 되면 안 된다 — 검수 4R·Opus P2-1)
 4. ccDoCancel: GET ccBuildCancelUrl(orderSeq, sKey, cReadSearchFields())   ← dispatch
    resp.url 의 msg 파라미터를 ccRedirectMsg 로 읽어 보관(서버 거부 문구, 판정 근거 아님)
@@ -149,6 +154,7 @@ function del(seq) {
 | `ccBuildCancelUrl(seq, sKey, searchFields)` | 4.4 URL 또는 `null` |
 | `ccRedirectMsg(url)` | `new URL(url).searchParams.get('msg')` trim, 실패·없음이면 `''` |
 | `ccClassifyOutcome({dispatched, requery})` | `dispatched!==true`→`'fail'` / `requery.found && code==='OC-'`→`'success'` / 그 외 `'uncertain'` |
+| `ccRowCancelSeq(rowHtml)` | 행 HTML 의 `javascript:del('<seq>')` 인자 또는 `null` |
 
 ---
 
@@ -162,6 +168,7 @@ function del(seq) {
 6. 중단하더라도 처리된 건까지는 화면을 갱신한다(서버는 바뀌었는데 화면만 옛 상태로 남는 것이 이 서브시스템의 반복 실패).
 7. 게이트 OFF 면 버튼이 없고, 루프 중에 게이트가 꺼지거나 [중단] 을 누르면 **다음 건 경계와 쓰기 직전(sKey·재조회 대기 뒤)** 에서 멈춘다 — 이미 dispatch 한 건의 판정은 끝까지 한다(검수 4R 채택).
 8. 취소 GET 은 조회 목적으로 절대 부르지 않는다. 테스트는 URL 문자열만 검증한다.
+9. 쓰기 권한의 최종 근거는 라벨이 아니라 **서버가 그 행에 렌더한 [취소] 링크**다 — 링크 인자가 orderSeq 와 다르거나 없으면 쓰지 않는다.
 
 ---
 
