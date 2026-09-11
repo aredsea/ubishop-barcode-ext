@@ -229,7 +229,8 @@ test('게이트 OFF: 아무 건도 처리하지 않는다', async () => {
 test('중단 요청: 첫 건이 끝난 뒤 다음 건 경계에서 멈춘다', async () => {
   let aborted = false;
   const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
-  const r = await build(deps).ccRunCancelBatch([T1, T2], (msg) => { if (/^1\/2 .*확인$/.test(msg)) aborted = true; }, () => aborted);
+  // dispatch 뒤 판정 단계('… · 확인', '상태 확인' 아님)에서 [중단] — 이미 쓴 건은 판정까지 마치고 다음 건은 시작하지 않는다
+  const r = await build(deps).ccRunCancelBatch([T1, T2], (msg) => { if (msg === '1/2 · 101 · 확인') aborted = true; }, () => aborted);
   assert.equal(r.success, 1);
   assert.equal(r.processed, 1);
   assert.equal(deps.fetch.calls.length, 1);
@@ -379,4 +380,25 @@ test('쓰기 직전 재검증: 두 번째 재조회가 실패(found=false)해도
   const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
   assert.equal(deps.fetch.calls.length, 0);
   assert.equal(r.failed[0].reason, '재조회 실패(쓰기 직전 확인)');
+});
+
+// ── 쓰기 직전 게이트·중단 재확인 (4R Terra P1) ───────────────────────────────
+test('sKey 대기 중 팝업에서 게이트를 끄면 취소 GET 이 나가지 않는다', async () => {
+  const state = { ubSkin: true, ubHqConfirm: true };
+  const deps = baseDeps({ state,
+    cFetchSKey: async () => { state.ubHqConfirm = false; return '260911135039701'; },   // 대기 중 OFF
+    fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
+  assert.equal(deps.fetch.calls.length, 0);
+  assert.equal(r.success, 0);
+  assert.deepEqual(r.failed, []);
+});
+test('sKey 대기 중 [중단] 을 누르면 취소 GET 이 나가지 않는다', async () => {
+  let abort = false;
+  const deps = baseDeps({
+    cFetchSKey: async () => { abort = true; return '260911135039701'; },
+    fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => abort);
+  assert.equal(deps.fetch.calls.length, 0);
+  assert.equal(r.success, 0);
 });

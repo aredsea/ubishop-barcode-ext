@@ -6483,6 +6483,9 @@
           if (row2.found) cUpdateRow(orderSeq, row2);
           break;
         }
+        // 3-2) 대기(sKey·재조회) 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1)
+        if (!(state.ubSkin && state.ubHqConfirm)) { ccLog('게이트 해제(쓰기 직전) → 중단'); break; }
+        if (isAborted && isAborted()) { ccLog('사용자 중단 요청(쓰기 직전) → 중단'); break; }
         // 4) 취소 GET(⚠ 쓰기) — dispatch
         const d = await ccDoCancel(orderSeq, sKey, cReadSearchFields());
         if (!d.dispatched) { results.failed.push({ orderSeq: orderSeq, reason: d.msg }); break; }

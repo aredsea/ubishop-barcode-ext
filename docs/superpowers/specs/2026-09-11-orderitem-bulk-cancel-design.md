@@ -108,7 +108,7 @@ function del(seq) {
 ### 4.3 건별 루프 (`ccRunCancelBatch`) — 순차, 첫 실패·미확정에서 중단
 
 ```
-0. 게이트 재확인 · 중단 요청 확인 (건 경계마다)
+0. 게이트 재확인 · 중단 요청 확인 (건 경계마다 + 3-2 쓰기 직전)
    주문일 없음 → 실패 '주문일 파싱 실패' → 중단
 1. 재조회 fetchOrderRow(orderSeq, orderDate)
    found=false → '재조회 실패(행 없음 | 결과 잘림)' / loginExpired → '로그인 만료' / duplicate → '중복 orderSeq(재조회)'  → 중단
@@ -117,6 +117,7 @@ function del(seq) {
 3. sKey = cFetchSKey()  → null 이면 실패 'sKey 추출 실패' → 중단
 3-1. 쓰기 직전 재검증(검수 3R): sKey 를 받는 동안(최대 8초) 남이 상태를 바꿀 수 있다 → fetchOrderRow 를 한 번 더
    found && code==='O--' 가 아니면 GET 없이 실패 '상태 부적합(쓰기 직전 변경): …' / '재조회 실패(쓰기 직전 확인)' → 중단
+3-2. 게이트 OFF 또는 중단 요청이면 GET 없이 중단(검수 4R)
 4. ccDoCancel: GET ccBuildCancelUrl(orderSeq, sKey, cReadSearchFields())   ← dispatch
    resp.url 의 msg 파라미터를 ccRedirectMsg 로 읽어 보관(서버 거부 문구, 판정 근거 아님)
 5. 재조회 폴링(ASG_VERIFY_MS=12s, 1.5s 간격): found && code==='OC-' → success
@@ -157,7 +158,7 @@ function del(seq) {
 4. 한 번에 한 건. 두 배치(본사확인+입고완료 / 일괄취소)는 `cBatchBusy` 로 상호 배타.
 5. dispatch 후 non-success 는 재시도하지 않고 멈춘다. 사용자에게 '미확정'이라 말하고 수동 확인을 요구한다.
 6. 중단하더라도 처리된 건까지는 화면을 갱신한다(서버는 바뀌었는데 화면만 옛 상태로 남는 것이 이 서브시스템의 반복 실패).
-7. 게이트 OFF 면 버튼이 없고, 클릭·루프 중에도 게이트가 꺼지면 현재 건을 마치고 멈춘다.
+7. 게이트 OFF 면 버튼이 없고, 루프 중에 게이트가 꺼지거나 [중단] 을 누르면 **다음 건 경계와 쓰기 직전(sKey·재조회 대기 뒤)** 에서 멈춘다 — 이미 dispatch 한 건의 판정은 끝까지 한다(검수 4R 채택).
 8. 취소 GET 은 조회 목적으로 절대 부르지 않는다. 테스트는 URL 문자열만 검증한다.
 
 ---
