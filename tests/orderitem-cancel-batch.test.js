@@ -124,6 +124,19 @@ test('두 건 순차: 둘 다 성공하면 success=2, 취소 GET 2회, 두 번�
   assert.deepEqual(deps.fetchOrderRow.calls.map(c => c.orderSeq), ['101', '101', '102', '102']);
 });
 
+test('건마다 fresh sKey: 취소 GET 마다 그 직전에 새로 받은 키를 쓴다(첫 키 캐시 금지 — 2R Terra P2)', async () => {
+  let n = 0;
+  const keys = [];
+  const cFetchSKey = async () => { const k = '26091113503970' + (n++); keys.push(k); return k; };
+  const deps = baseDeps({ cFetchSKey, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1, T2], () => {}, () => false);
+  assert.equal(r.success, 2);
+  assert.equal(keys.length, 2, '대상 건마다 정확히 1회');
+  assert.notEqual(keys[0], keys[1]);
+  const used = deps.fetch.calls.map(c => new URL('http://x' + c.url).searchParams.get('sKey'));
+  assert.deepEqual(used, keys, '각 취소 URL 이 그 건 직전에 받은 키를 쓴다');
+});
+
 test('상태 부적합(재조회 OS-): 취소 GET 없이 실패 중단, 화면은 서버 상태로 갱신, 다음 건 미처리', async () => {
   const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'OS-', text: '본사확인' }] }) });
   const sb = build(deps);
@@ -294,4 +307,60 @@ test('재진입 ②: 진행 중이 아닌 옛 창은 교체된다(가드가 과�
   const sb = buildReentry({ state: { ubSkin: true, ubHqConfirm: true }, busy: false, cReadCheckedRows: () => [], document });
   sb.realDialog({ targets: [], excluded: [], duplicate: false });   // createElement 에서 멈춘다(try/catch 로 삼킴)
   assert.equal(removed, 1, '옛 창은 지우고 새로 그린다');
+});
+
+// ── 승인창 [취소 진행] 은 신뢰된 클릭만 (2R Terra P1) ────────────────────────
+//  ccShowApprovalDialog 를 최소 가짜 DOM 위에서 실제로 실행해, 페이지 스크립트의 .click()(isTrusted=false)
+//  으로는 ccRunCancelBatch 가 시작되지 않고 사용자 클릭(isTrusted=true)으로는 시작되는지 본다.
+function fakeDom() {
+  const mk = (tag) => {
+    const el = { tag, children: [], handlers: {}, dataset: {}, style: {}, classList: { contains: () => false, add() {} },
+      addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); },
+      dispatch(type, ev) { return Promise.all((this.handlers[type] || []).map(fn => fn(Object.assign({ target: this }, ev)))); },
+      appendChild(c) { this.children.push(c); c.parent = this; return c; },
+      // innerHTML 은 파싱하지 않는다 — 셀렉터마다 빈 요소 하나를 만들어 자식으로 붙여 두고(멱등) 돌려준다
+      querySelector(sel) { this.q = this.q || {}; if (!this.q[sel]) { this.q[sel] = mk('div'); this.q[sel].sel = sel; this.appendChild(this.q[sel]); } return this.q[sel]; },
+      remove() { this.removed = true; } };
+    return el;
+  };
+  const body = mk('body');
+  return { getElementById: () => null, createElement: mk, body, mk };
+}
+function buildDialog(deps) {
+  const names = ['ccShowApprovalDialog'];
+  // eslint-disable-next-line no-new-func
+  const factory = new Function('deps',
+    'let cBatchBusy = false; const CC_MODAL_ID = "ub-cc-modal";\n' +
+    'const ccLog = () => {}; const ensureCcStyle = () => {};\n' +
+    'const ccRunCancelBatch = deps.ccRunCancelBatch; const document = deps.document;\n' +
+    names.map(n => extractFn(SRC, n)).join('\n') + '\n' +
+    'return { ccShowApprovalDialog };');
+  return factory(deps);
+}
+function openDialogAndFindGo(runs) {
+  const document = fakeDom();
+  const sb = buildDialog({ document, ccRunCancelBatch: async (targets) => { runs.push(targets); return { success: 0, failed: [], uncertain: [], processed: 0, total: targets.length }; } });
+  sb.ccShowApprovalDialog({ targets: [{ orderSeq: '1', code: 'O--', orderDate: '20260911' }], excluded: [], duplicate: false });
+  const ov = document.body.children[0];
+  assert.ok(ov, '승인창이 body 에 붙어야 한다');
+  const card = ov.children[0];
+  const foot = card.children.find(c => c.sel === '.ub-hq-f');
+  const go = foot.children.find(b => b.tag === 'button' && b.textContent === '취소 진행');
+  assert.ok(go, '[취소 진행] 버튼이 있어야 한다');
+  return { go, ov };
+}
+test('[취소 진행]: isTrusted=false(페이지 스크립트의 .click()) 는 배치를 시작하지 않는다', async () => {
+  const runs = [];
+  const { go } = openDialogAndFindGo(runs);
+  await go.dispatch('click', { isTrusted: false });
+  assert.equal(runs.length, 0);
+  assert.equal(go.disabled, undefined, '비신뢰 클릭은 상태도 바꾸지 않는다');
+});
+test('[취소 진행]: 사용자 클릭(isTrusted=true) 은 배치를 시작하고 진행 표식을 세운다', async () => {
+  const runs = [];
+  const { go, ov } = openDialogAndFindGo(runs);
+  await go.dispatch('click', { isTrusted: true });
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0][0].orderSeq, '1');
+  assert.equal(ov.dataset.ubRunning, undefined, '끝나면 진행 표식이 지워진다');
 });

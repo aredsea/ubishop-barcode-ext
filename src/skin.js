@@ -6559,7 +6559,8 @@
       if (canProceed) {
         const go = document.createElement('button');
         go.className = 'ub-hq-btn2 ub-cc-go'; go.type = 'button'; go.textContent = '취소 진행';
-        go.addEventListener('click', async () => {
+        go.addEventListener('click', async (e) => {
+          if (e && e.isTrusted === false) return;       // 페이지 스크립트의 .click() 으로 쓰기를 시작시키지 못하게(2R Terra P1)
           if (running || cBatchBusy) return;
           running = true;
           ov.dataset.ubRunning = '1';                  // 재진입 가드가 본다(위 prev 검사)
