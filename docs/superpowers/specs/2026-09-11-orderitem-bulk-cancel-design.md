@@ -4,7 +4,7 @@
 체크한 건을 순서대로 네이티브 [취소](`del(seq)`) + 확인창 [확인] 과 같은 동작으로 **주문취소(OC-)** 로 만든다.
 기존 [본사확인+입고완료](작업C, `2026-07-20-orderitem-batch-design.md`)와 같은 자리·같은 형식·같은 배관이다.
 
-배포 채널은 **SHELL**(`skin.js`, `popup/*`)이라 crx 재빌드 + 크롬 재시작이 필요하다.
+배포 채널은 **SHELL**(`skin.js`, `popup/*`)이다 — manifest 버전 올림 → `shell-files.json` 재생성 → push 하면 D102 인쇄 프로그램(ExtSync)이 받아 **다음 브라우저 재시작 시** 반영된다(README '배포 절차'). crx/update.xml 은 폐기된 레거시다.
 
 ---
 
@@ -166,11 +166,14 @@ function del(seq) {
 - 기존 스위트(188 + livefilter 85)가 그대로 통과해야 한다.
 - 라이브 검증: 게이트 ON 상태에서 **취소해도 되는 주문완료 건 1건**을 사장님이 골라 실행 → 승인창 → 성공 → 행이 '주문취소'로 교체되는 것을 눈으로 확인. 실 데이터 쓰기이므로 사장님 지정 건에만 한다.
 
-## 7. 배포
+## 7. 배포 (README '배포 절차' — 껍데기 수정)
 
-1. `manifest.json` 4.1.8 → **4.1.9**, `update.xml` 동일 버전.
-2. crx 재빌드(`chrome.exe --pack-extension` + `d102-label-printer/ubishop-barcode-ext.pem`) → `ubishop-barcode-ext.crx` 교체 → 프로그램 번들 `extension/` 동기화 → push.
-3. 매장/사무실 크롬 재시작(또는 확장 업데이트) 후 팝업 스위치 '주문전표 일괄 처리' ON.
+1. `manifest.json` 4.1.8 → **4.1.9**.
+2. `pwsh build-shell-index.ps1` → `shell-files.json` 재생성(LF 정규화 SHA256).
+3. `node tests/loader-integrity.test.js` — 재생성 뒤 소스를 또 고치면 여기서 빨간불(3번 밟은 함정).
+4. `git push` → 프로그램 ExtSync 가 바뀐 껍데기 파일만 `%LocalAppData%\D102LabelExtension` 에 교체 → **브라우저 재시작** 후 팝업 스위치 '주문전표 일괄 처리' ON.
+
+⚠ 작업 트리에 미커밋 작업(주문전표 실시간 필터 v3.10.x, 미검수)이 같은 `skin.js` 에 있었다. main 에 실리면 매장에 그대로 배포되므로, 그 작업은 `orderitem-livefilter-pending-review` 브랜치에 체크포인트 커밋으로 격리하고(push·승인 아님) 이 기능은 깨끗한 main 위에 얹는다.
 
 ## 8. 범위 외
 
