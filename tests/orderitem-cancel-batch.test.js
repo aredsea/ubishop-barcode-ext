@@ -93,7 +93,7 @@ const T1 = { orderSeq: '101', code: 'O--', orderDate: '20260911' };
 const T2 = { orderSeq: '102', code: 'O--', orderDate: '20260911' };
 
 test('성공 경로: 재조회 O-- → 취소 GET 1회(정확한 URL) → 재조회 OC- → success, 행 갱신', async () => {
-  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const sb = build(deps);
   const r = await sb.ccRunCancelBatch([T1], () => {}, () => false);
   assert.equal(r.success, 1);
@@ -114,21 +114,21 @@ test('성공 경로: 재조회 O-- → 취소 GET 1회(정확한 URL) → 재조
 });
 
 test('두 건 순차: 둘 다 성공하면 success=2, 취소 GET 2회, 두 번째는 첫 번째가 끝난 뒤', async () => {
-  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const sb = build(deps);
   const r = await sb.ccRunCancelBatch([T1, T2], () => {}, () => false);
   assert.equal(r.success, 2);
   assert.equal(deps.fetch.calls.length, 2);
   assert.equal(new URL('http://x' + deps.fetch.calls[1].url).searchParams.get('seq'), '102');
-  // 재조회 순서: 101 확인 → 101 판정 → 102 확인 → 102 판정 (교차 없음)
-  assert.deepEqual(deps.fetchOrderRow.calls.map(c => c.orderSeq), ['101', '101', '102', '102']);
+  // 재조회 순서: 101 확인 → 101 쓰기직전 확인 → 101 판정 → 102 … (교차 없음)
+  assert.deepEqual(deps.fetchOrderRow.calls.map(c => c.orderSeq), ['101', '101', '101', '102', '102', '102']);
 });
 
 test('건마다 fresh sKey: 취소 GET 마다 그 직전에 새로 받은 키를 쓴다(첫 키 캐시 금지 — 2R Terra P2)', async () => {
   let n = 0;
   const keys = [];
   const cFetchSKey = async () => { const k = '26091113503970' + (n++); keys.push(k); return k; };
-  const deps = baseDeps({ cFetchSKey, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ cFetchSKey, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const r = await build(deps).ccRunCancelBatch([T1, T2], () => {}, () => false);
   assert.equal(r.success, 2);
   assert.equal(keys.length, 2, '대상 건마다 정확히 1회');
@@ -160,7 +160,7 @@ test('이미 취소됨(재조회 OC-)도 대상이 아니다 — 쓰기 없이 �
 
 test('미확정: dispatch 후 재조회가 계속 O-- 이면 uncertain(실패 아님) + 서버 msg 첨부, 중단', async () => {
   const deps = baseDeps({
-    fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }] }),
+    fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'O--' }] }),
     fetch: makeFetch('http://h/jun/orderitem/orderItemList.do?tcode=order_item&msg=%EC%B7%A8%EC%86%8C%20%EB%B6%88%EA%B0%80')
   });
   const r = await build(deps).ccRunCancelBatch([T1, T2], () => {}, () => false);
@@ -175,7 +175,7 @@ test('미확정: dispatch 후 재조회가 계속 O-- 이면 uncertain(실패 �
 });
 
 test('미확정: dispatch 후 재조회 자체가 실패(found=false)해도 uncertain, 재시도 없음', async () => {
-  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, null] }) });
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, null] }) });
   const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
   assert.equal(deps.fetch.calls.length, 1);
   assert.equal(r.uncertain.length, 1);
@@ -184,7 +184,7 @@ test('미확정: dispatch 후 재조회 자체가 실패(found=false)해도 unce
 
 test('fetch 예외(네트워크/타임아웃): 서버 도달 여부 불명 → dispatched 로 취급해 재조회 판정(성공이면 success)', async () => {
   const f = async () => { throw new Error('Failed to fetch'); }; f.calls = [];
-  const deps = baseDeps({ fetch: f, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ fetch: f, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
   assert.equal(r.success, 1);
 });
@@ -220,7 +220,7 @@ test('주문일 없음: 재조회도 쓰기도 없이 실패', async () => {
 });
 
 test('게이트 OFF: 아무 건도 처리하지 않는다', async () => {
-  const deps = baseDeps({ state: { ubSkin: true, ubHqConfirm: false }, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ state: { ubSkin: true, ubHqConfirm: false }, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
   assert.equal(r.processed, 0);
   assert.equal(deps.fetch.calls.length, 0);
@@ -228,7 +228,7 @@ test('게이트 OFF: 아무 건도 처리하지 않는다', async () => {
 
 test('중단 요청: 첫 건이 끝난 뒤 다음 건 경계에서 멈춘다', async () => {
   let aborted = false;
-  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const r = await build(deps).ccRunCancelBatch([T1, T2], (msg) => { if (/^1\/2 .*확인$/.test(msg)) aborted = true; }, () => aborted);
   assert.equal(r.success, 1);
   assert.equal(r.processed, 1);
@@ -236,7 +236,7 @@ test('중단 요청: 첫 건이 끝난 뒤 다음 건 경계에서 멈춘다', a
 });
 
 test('busy(다른 배치 진행 중): 즉시 빈 결과, 아무 것도 하지 않는다', async () => {
-  const deps = baseDeps({ busy: true, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const deps = baseDeps({ busy: true, fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const sb = build(deps);
   const r = await sb.ccRunCancelBatch([T1], () => {}, () => false);
   assert.deepEqual(r, { success: 0, failed: [], uncertain: [], processed: 0, total: 1 });
@@ -363,4 +363,20 @@ test('[취소 진행]: 사용자 클릭(isTrusted=true) 은 배치를 시작하�
   assert.equal(runs.length, 1);
   assert.equal(runs[0][0].orderSeq, '1');
   assert.equal(ov.dataset.ubRunning, undefined, '끝나면 진행 표식이 지워진다');
+});
+
+test('쓰기 직전 재검증(3R Terra P1): 첫 재조회 O-- 였는데 sKey 를 받는 사이 OS- 로 바뀌면 취소 GET 없이 중단', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OS-', text: '본사확인' }] }) });
+  const r = await build(deps).ccRunCancelBatch([T1, T2], () => {}, () => false);
+  assert.equal(deps.fetch.calls.length, 0, '취소 GET 이 나가면 안 된다');
+  assert.equal(r.failed.length, 1);
+  assert.match(r.failed[0].reason, /^상태 부적합\(쓰기 직전 변경\): 본사확인/);
+  assert.equal(r.processed, 1);
+  assert.deepEqual(deps.updates, [{ seq: '101', code: 'OS-' }]);
+});
+test('쓰기 직전 재검증: 두 번째 재조회가 실패(found=false)해도 GET 없이 fail-closed', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, null] }) });
+  const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
+  assert.equal(deps.fetch.calls.length, 0);
+  assert.equal(r.failed[0].reason, '재조회 실패(쓰기 직전 확인)');
 });

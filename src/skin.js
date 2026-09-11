@@ -6474,6 +6474,15 @@
         progress(tag + '취소 처리');
         const sKey = await cFetchSKey();
         if (!sKey) { results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' }); break; }
+        // 3-1) sKey 를 받는 동안(최대 8초) 남이 상태를 바꿀 수 있다 — dispatch 직전에 한 번 더 O-- 를
+        //      확인하고, 아니면 GET 없이 중단한다(3R Terra P1). 재조회 실패도 fail-closed.
+        const row2 = await fetchOrderRow(orderSeq, orderDate);
+        if (!row2.found || !ccTargetStatus(row2.code)) {
+          results.failed.push({ orderSeq: orderSeq, reason: !row2.found
+            ? '재조회 실패(쓰기 직전 확인)' : '상태 부적합(쓰기 직전 변경): ' + (row2.text || row2.code || '불명') });
+          if (row2.found) cUpdateRow(orderSeq, row2);
+          break;
+        }
         // 4) 취소 GET(⚠ 쓰기) — dispatch
         const d = await ccDoCancel(orderSeq, sKey, cReadSearchFields());
         if (!d.dispatched) { results.failed.push({ orderSeq: orderSeq, reason: d.msg }); break; }
