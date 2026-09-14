@@ -91,7 +91,9 @@
     ubEpX: null, ubEpY: null, ubEpW: 900,
     // v3.8.x 작업C 본사확인+입고완료(slice C-2a) — 기본 OFF(§8: C 는 기본 OFF).
     //  이 슬라이스는 읽기 전용(버튼+사전검증 승인창+fetchOrderRow). 쓰기 배선 없음.
-    ubHqConfirm: false
+    ubHqConfirm: false,
+    // v4.2.0 판매처 주문 가져오기(orderimport.js) — 주문 화면 사이드바 버튼. 기본 ON.
+    ubOrderImport: true
   };
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
@@ -551,6 +553,7 @@
    * ========================================================================== */
   const STK_TAG = '[UB][stock]';
   const stkLog = (...a) => { try { console.log(STK_TAG, ...a); } catch (_) {} };
+  function isOrderWrite() { return /\/order\/item\/orderItemWriteForm\.do/.test(location.pathname); }
   function isInboundWrite() { return /\/input\/item\/inputItemWriteForm\.do/.test(location.pathname); }
   function isInboundModify() { return /\/input\/item\/inputItemModifyForm\.do/.test(location.pathname); }
   function dateParams() {
@@ -3428,6 +3431,14 @@
             <button class="ub-sb-btn ub-stk-go" id="ub-ms-go">입고장 로드</button>
           </div>
           <div class="ub-stk-st" id="ub-ms-st"></div>
+        </div>
+      ` : ''}
+
+      ${isOrderWrite() && on('ubOrderImport') ? `
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.database}<span>주문 가져오기</span></div>
+          <button class="ub-sb-btn ub-sb-wide" id="ub-oi-open">이지어드민 xls 불러오기</button>
+          <div class="ub-sb-empty" style="margin-top:6px">파일 → 검토 → 등록 시작.<br>실행 중엔 주문 화면을 건드리지 마세요.</div>
         </div>
       ` : ''}
 
