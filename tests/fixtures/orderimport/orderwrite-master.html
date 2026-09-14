@@ -1,0 +1,130 @@
+<html><head><title>Struts Board</title></head><body>
+<script language="javascript">
+<!--
+//중량 배열 정보
+var arr_weight = new Array(0,0);
+//판매가 배열 정보
+var arr_salePrice = new Array(19000,0);
+//입고공급가 배열 정보
+var arr_inputSupply = new Array(4500,0);
+var CONST_URL = "&reqPage=1" + "&pageSize=20" + "&searchSortType=seq" + "&tradeJun=141240" + "&payJun=" + "&shop=LT" + "&shopName=" + encodeURIComponent('FASHION') + "&client=123790" + "&clientName=" + encodeURIComponent('홍길동7748/아');
+function checkForm(form) {
+  if (form.itemNum.value == "") { alert("상품번호를 입력하세요! "); return false; }
+  if (eval(qty) == 0) { alert("수량을 입력하세요! "); return false; }
+  return movePageForm(form);
+}
+//-->
+</script>
+<form name="form1" action="/order/item/orderItemWrite.do?tcode=order_item" method="post" onsubmit="return checkForm(this);">
+<input type="hidden" name="sKey" value="260914143005123">
+<input type="hidden" name="pageSize" value="20">
+<input type="hidden" name="searchSortType" value="seq">
+<input type="hidden" name="tradeJun" value="141240">
+<input type="hidden" name="payJun" value="">
+<input type="hidden" name="shop" value="LT">
+<input type="hidden" name="client" value="123790">
+<input type="hidden" name="master" value="7083">
+<input type="hidden" name="itemType" value="1">
+<input type="hidden" name="inputPrice" value="4500">
+<input type="hidden" name="orgOrderPrice" value="19000">
+<table width="100%" border="0" cellspacing="0" cellpadding="0" class="tb_write">
+<tr><th>매장</th><td><input type="text" name="shopName" value="FASHION" class="input_gray" readonly REQUIRED title="매장"></td>
+<th>고객</th><td><input type="text" name="clientName" value="홍길동7748/아" class="input_gray" readonly><a href="javascript:checkClient('form1');"><img src="/images/com/btn_search.gif"></a></td>
+<th>상품번호</th><td><input type="text" name="itemNum" value="FRFIWGPA00F6" class="input_gray" readonly><a href="javascript:checkMasterItem('form1');"><img src="/images/com/btn_search.gif"></a></td></tr>
+<tr><th>중량</th><td><input type="text" name="weight" value="0" class="input_gray" readonly> g</td></tr>
+</table>
+<input type="hidden" name="doc" value="">
+<input type="hidden" name="diaColor" value="">
+<input type="hidden" name="clarity" value="">
+<input type="hidden" name="surface" value="">
+<table>
+<tr><th>품위</th><td><select name="k" onChange="javascript:kchange();"><option value="5" selected>925</option></select></td></tr>
+<tr><th>색상</th><td><select name="color" REQUIRED title="색상">
+<option value="">- 색상 -</option>
+<option value="3C">3C (화이트+옐로+핑크)</option>
+<option value="BK">BK (블랙)</option>
+<option value="PB">PB (핑크+블랙)</option>
+<option value="PG">PG (핑크)</option>
+<option value="PR">PR (핑크+리얼화이트)</option>
+<option value="PT">PT (플래티넘)</option>
+<option value="PW">PW (핑크+화이트)</option>
+<option value="PY">PY (핑크+옐로우)</option>
+<option value="RP">RP (리얼화이트+핑크)</option>
+<option value="RW">RW (리얼화이트)</option>
+<option value="WB">WB (화이트+블랙)</option>
+<option value="WG" selected>WG (화이트)</option>
+<option value="WP">WP (화이트+핑크)</option>
+<option value="WR">WR (화이트+리얼화이트)</option>
+<option value="WY">WY (화이트+옐로우)</option>
+<option value="XY">XY (기타등)</option>
+<option value="YB">YB (옐로우+블랙)</option>
+<option value="YG">YG (옐로우)</option>
+<option value="YP">YP (옐로우+핑크)</option>
+<option value="YW">YW (옐로우+화이트)</option>
+</select></td></tr>
+<tr><th>사이즈</th><td><input type="text" name="itemSize" value="11" class="input" size="10"></td></tr>
+<tr><th>수량</th><td><input type="text" name="orderQty" value="1" class="input" size="5" onClick="this.select();" onKeyDown="numberOnly(this);" REQUIRED title="수량"> 개</td></tr>
+<tr><th>주문가</th><td><input type="text" name="orderPrice" value="19,000" class="input" size="12" onClick="this.select();" onKeyUp="changeComma(this,form1);" REQUIRED title="주문가"> 원</td></tr>
+<tr><th>비고</th><td><textarea name="shopRemark" cols="60" rows="3" onFocus="this.style.borderWidth='1px'"></textarea></td></tr>
+</table>
+<input type="image" name="imageField22" src="/images/com/btn_save.gif" alt="등록하기">
+</form>
+<form name="form10" action="/jun/orderitem/orderItemJunWrite.do?tcode=order_item" method="post" onsubmit="return checkForm2(this);">
+<input type="hidden" name="sKey" value="260914143005123">
+<input type="hidden" name="pageSize" value="20">
+<input type="hidden" name="searchSortType" value="seq">
+<input type="hidden" name="tradeJun" value="141240">
+<input type="hidden" name="payJun" value="">
+<input type="hidden" name="shop" value="LT">
+<input type="hidden" name="client" value="123790">
+<input type="hidden" name="payBank" value="0">
+<input type="hidden" name="payDia" value="0">
+<table class="tb_write">
+<tr><th>주문일</th><td><input type="text" name="txtOrderDate" value="26-09-14" class="input_gray" readonly></td></tr>
+<tr><th>인도예정일</th><td>
+<select name="exdelivedyear" gname="exdelived" class="input_gray" tabindex="10"><option value="2026">2026</option><option value="2027">2027</option><option value="2028">2028</option></select> /
+<select name="exdelivedmonth" gname="exdelived" class="input_gray" tabindex="11"><option value="01">01</option><option value="02">02</option><option value="03">03</option><option value="04">04</option><option value="05">05</option><option value="06">06</option><option value="07">07</option><option value="08">08</option><option value="09">09</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select> /
+<select name="exdelivedday" gname="exdelived" class="input_gray" tabindex="12"><option value="01">01</option><option value="02">02</option><option value="03">03</option><option value="14">14</option><option value="30">30</option></select></td></tr>
+<tr><th>주문담당자</th><td><input type="text" name="regId" value="담당자" class="input_gray" readonly></td></tr>
+<tr><th>거래전 미수금</th><td><input type="text" name="beforePrice" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>총 결제금액</th><td><input type="text" name="payPrice" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>거래후 미수금</th><td><input type="text" name="afterPrice" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>카드</th><td><input type="text" name="payCard" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>고금</th><td><input type="text" name="paySaleOldGold" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>현금</th><td><input type="text" name="payCash" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>홈플러스</th><td><input type="text" name="payCashPaper" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>기타</th><td><input type="text" name="payEtc" value="0" class="input_gray" readonly REQUIRED></td></tr>
+<tr><th>결제비고</th><td><textarea name="payRemark" cols="30" rows="2"></textarea></td></tr>
+</table>
+<input type="image" name="imageField23" src="/images/com/btn_junwrite.gif" alt="주문장 완료">
+</form>
+<form name="form2" action="/order/item/orderItemWriteForm.do?tcode=order_item" method="post">
+<input type="hidden" name="tradeJun" value="141240">
+<input type="hidden" name="payJun" value="">
+<input type="hidden" name="shop" value="LT">
+<input type="hidden" name="client" value="123790">
+<select name="pageSize" onChange="form2.submit();"><option value="20" selected>20</option><option value="100">100</option></select>
+<select name="searchSortType" onChange="form2.submit();"><option value="seq" selected>최근순</option></select>
+</form>
+<form name="form3" method="post">
+<input type="hidden" name="sKey" value="260914143005123">
+<table width="100%" border="0" cellspacing="0" cellpadding="0" class="t_list">
+<tr class="bg_1"><td colspan="10" align="right" class="f_bold">합 계</td><td>1</td><td>17,000</td><td></td></tr>
+<tr align="center" onMouseOver="this.style.backgroundColor='#EFEFEF'" onMouseOut="this.style.backgroundColor=''">
+ <td>1</td>
+ <td><input type="checkbox" name="idx" value="389463,141240"></td>
+ <td><table width="65" border="0" cellpadding="0" cellspacing="0" style="table-layout:fixed;"> <tr> <td height="60" align="center" bgcolor="#FFFFFF" style="border-bottom-style:none;"> <img src="/upload/catalog/00032/8000/thumnail/s_7083.JPG" width="60" height="60" border="0" style="cursor:hand;" onClick="imageView(this.src);" onError="this.src='/images/com/no_image2.gif';this.width='50';this.height='50';" alt="클릭하시면 큰 이미지를 볼 수 있습니다."> </td> </tr> </table></td>
+ <td> F-RF-I-WG-PA-00F6 <span style="display:none;"><div id="note_0" class="tooltip2"> <span class="f_bold">비고 : </span>정산 12,133 원<br> </div></span> </td>
+ <td>상품</td>
+ <td>F-퓨어컷팅(실버)R</td>
+ <td>925</td>
+ <td>0 g</td>
+ <td>화이트</td>
+ <td>11</td>
+ <td>1</td>
+ <td>17,000</td>
+ <td><a href="javascript:modify('389463');"><img src="/images/com/icon_modi.gif" width="22" height="20" border="0"></a></td>
+</tr>
+</table>
+</form>
+</body></html>

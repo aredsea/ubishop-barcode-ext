@@ -1,0 +1,46 @@
+<html><head><title>Struts Board</title></head><body>
+<form name="form1" action="/etc/clientWrite.do?tcode=order_item" method="post" onsubmit="return movePageForm(this);">
+<input type="hidden" name="sKey" value="260914121512260">
+<input type="hidden" name="formname" value="form1">
+<input type="hidden" name="url" value="/order/item/orderItemWriteForm.do">
+<input type="hidden" name="actFlag" value="1">
+<input type="hidden" name="shop" value="LT">
+<input type="hidden" name="shopName" value="FASHION">
+<input type="hidden" name="reqPage" value="1">
+<input type="hidden" name="pageSize" value="20">
+<input type="hidden" name="searchSortType" value="seq">
+<input type="hidden" name="searchRegId" value="">
+<input type="hidden" name="searchJunNum" value="">
+<input type="hidden" name="searchTradeType" value="">
+<input type="hidden" name="searchShop" value="">
+<input type="hidden" name="searchWordType3" value="">
+<input type="hidden" name="searchWord3" value="">
+<input type="hidden" name="syear" value="">
+<input type="hidden" name="smonth" value="">
+<input type="hidden" name="sday" value="">
+<input type="hidden" name="eyear" value="">
+<input type="hidden" name="emonth" value="">
+<input type="hidden" name="eday" value="">
+<input type="hidden" name="searchWordType" value="">
+<input type="hidden" name="searchWord" value="">
+<input type="hidden" name="sido" value="">
+<input type="hidden" name="gugun" value="">
+<input type="hidden" name="dong" value="">
+<input type="hidden" name="clientVisit2" value="">
+<input type="hidden" name="jumin" value="">
+<table class="tb_write">
+<tr><th>매장</th><td><select name="regShop"><option value="LT">FASHION</option></select></td>
+<th>등록일</th><td><input type="text" name="inDate" value="20260914" class="input" REQUIRED title="등록일"></td></tr>
+<tr><th>고객명</th><td><input type="text" name="clientName" value="" class="input" REQUIRED title="고객명"></td>
+<th>등록유형/전담직원</th><td><select name="clientType" REQUIRED title="등록유형"><option value="1" selected>계약고객</option><option value="2">상담고객</option><option value="5">취소고객</option><option value="6">환매고객</option><option value="7">딕스AS</option><option value="8">천안AS</option></select> <input type="text" name="clientManager" value=""></td></tr>
+<tr><th>휴대폰(신규)</th><td><input type="text" name="phone" value="" class="input" MATCH="phone"></td>
+<th>성별/결혼여부</th><td><select name="sexType" REQUIRED title="성별"><option value="2">여자분</option><option value="1">남자분</option></select> <select name="wedType" REQUIRED title="결혼여부"><option value="0">미혼</option><option value="1">기혼</option><option value="2">파혼</option></select></td></tr>
+<tr><th>전화번호(신랑)</th><td><input type="text" name="tel" value="" class="input"></td></tr>
+<tr><th>수신여부</th><td><select name="smsType" REQUIRED title="SMS수신여부"><option value="1">SMS 수신</option><option value="2">SMS 거부</option></select> <select name="emailType" REQUIRED title="메일수신여부"><option value="1">메일 수신</option><option value="2">메일 거부</option></select></td></tr>
+<tr><th>고객분류</th><td><select name="grade" REQUIRED title="고객분류"><option value="">- 선택 -</option><option value="01">S(1000이상)</option><option value="02">A(500-999)</option><option value="03">B(300-499)</option><option value="04">C(100-299)</option><option value="05" selected>D(100이하)</option></select></td></tr>
+<tr><th>마켓</th><td><select name="clientJob" title="마켓"><option value="">- 선택 -</option><option value="2">SSG</option><option value="3">CJ몰</option><option value="4">H몰</option><option value="5">스마트스토어</option><option value="6">카페24</option><option value="7">GS샵</option><option value="8">쿠팡</option><option value="9">위메프</option><option value="10">롯데ON</option><option value="11">카카오</option><option value="12">11번가</option><option value="13">G마켓</option><option value="14">옥션</option><option value="15">더리본샵</option><option value="16">AK몰</option><option value="17">지그재그</option><option value="18">아몬즈</option><option value="19">지인소개</option><option value="20">퀸잇</option><option value="21">에이블리</option><option value="22">오늘룩</option></select></td></tr>
+<tr><th>기타기념일 1</th><td><select name="clientRelation3" REQUIRED><option value="1">본인</option><option value="8">가족</option></select> <input type="text" name="targetName3" value=""> / <select name="clientMemorial3" REQUIRED><option value="1">생일</option><option value="2">결혼기념일</option></select> <input type="text" name="memorialDate3" value=""> <select name="memorialType3"><option value="1">양력</option><option value="0">음력</option></select> <select name="memorialLeapType3"><option value="0">평달</option><option value="1">윤달</option></select></td></tr>
+</table>
+<input type="image" name="imageField22" src="/images/com/btn_save.gif" alt="등록하기">
+</form>
+</body></html>

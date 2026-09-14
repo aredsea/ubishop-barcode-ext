@@ -240,11 +240,292 @@
     return issues;
   }
 
+  /* ------------------------------------------------------- §4 폼 추출 */
+  function oiAttr(tag, attr) {
+    const re = new RegExp('\\b' + attr + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>"\']+))', 'i');
+    const m = tag.match(re);
+    return m ? (m[1] != null ? m[1] : (m[2] != null ? m[2] : m[3])) : null;
+  }
+  function oiEsc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function oiDecodeEntities(s) {
+    return String(s).replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  }
+
+  //  <select name=X> 의 옵션 [{value,text,selected}] | null
+  function oiSelectOptions(html, name) {
+    const re = new RegExp('<select\\b[^>]*\\bname\\s*=\\s*["\']?' + oiEsc(name) + '["\']?(?=[\\s>"\'])[^>]*>([\\s\\S]*?)<\\/select>', 'i');
+    const m = String(html).match(re);
+    if (!m) return null;
+    const opts = [];
+    const ore = /<option\b([^>]*)>([^<]*)/gi; let o;
+    while ((o = ore.exec(m[1]))) {
+      const attrs = o[1];
+      const value = oiAttr('<option' + attrs + '>', 'value');
+      const text = oiDecodeEntities(o[2]).trim();
+      opts.push({ value: value == null ? text : value, text, selected: /\bselected\b/i.test(attrs) });
+    }
+    return opts;
+  }
+
+  //  이름으로 값 하나: input(value) → select(selected, 없으면 첫 옵션) → textarea. 없으면 null.
+  function oiFieldValue(html, name) {
+    const h = String(html);
+    const ire = new RegExp('<input\\b[^>]*\\bname\\s*=\\s*["\']?' + oiEsc(name) + '["\']?(?=[\\s>"\'])[^>]*>', 'i');
+    const im = h.match(ire);
+    if (im) { const v = oiAttr(im[0], 'value'); return v == null ? '' : oiDecodeEntities(v); }
+    const opts = oiSelectOptions(h, name);
+    if (opts) { const sel = opts.find((o) => o.selected) || opts[0]; return sel ? sel.value : ''; }
+    const tre = new RegExp('<textarea\\b[^>]*\\bname\\s*=\\s*["\']?' + oiEsc(name) + '["\']?(?=[\\s>"\'])[^>]*>([\\s\\S]*?)<\\/textarea>', 'i');
+    const tm = h.match(tre);
+    if (tm) return oiDecodeEntities(tm[1]);
+    return null;
+  }
+
+  function oiExtractFields(html, names) {
+    const values = {}; const missing = [];
+    (names || []).forEach((n) => { const v = oiFieldValue(html, n); if (v === null) missing.push(n); else values[n] = v; });
+    return { values, missing };
+  }
+
+  //  hidden input 전부 → [[name, value], …] (문서 순서, 중복 이름 유지). DOMParser form.elements 함정 회피.
+  function oiExtractHidden(html) {
+    const out = [];
+    const re = /<input\b[^>]*>/gi; let m;
+    while ((m = re.exec(String(html)))) {
+      const tag = m[0];
+      if (!/\btype\s*=\s*["']?hidden["']?/i.test(tag)) continue;
+      const name = oiAttr(tag, 'name'); if (!name) continue;
+      const v = oiAttr(tag, 'value');
+      out.push([name, v == null ? '' : oiDecodeEntities(v)]);
+    }
+    return out;
+  }
+
+  //  var arr_weight = new Array(1.2,0); 류 → { arr_weight:[1.2,0], … }
+  function oiExtractArrays(html) {
+    const out = {};
+    ['arr_weight', 'arr_salePrice', 'arr_inputSupply'].forEach((n) => {
+      const m = String(html).match(new RegExp('var\\s+' + n + '\\s*=\\s*new\\s+Array\\(([^)]*)\\)'));
+      out[n] = m ? m[1].split(',').map((x) => Number(String(x).trim())).map((x) => Number.isFinite(x) ? x : 0) : null;
+    });
+    return out;
+  }
+
+  /* --------------------------------------------- §4 목록(table.t_list) 파싱 */
+  //  중첩 테이블(이미지 셀)이 있어 단순 <tr> 정규식은 안 된다 → 태그 스캐너로 깊이를 센다.
+  function oiTListRows(html) {
+    const h = String(html);
+    const tre = /<table\b[^>]*\bclass\s*=\s*["']?t_list["']?[^>]*>/gi; let tm;
+    while ((tm = tre.exec(h))) {
+      const rows = oiScanTable(h, tm.index);
+      if (rows.some((r) => r.idx !== null)) return rows.filter((r) => r.idx !== null);
+    }
+    return [];
+  }
+  function oiScanTable(h, start) {
+    const tagRe = /<\/?(table|tr|td|th)\b[^>]*>/gi;
+    tagRe.lastIndex = start;
+    let depth = 0, row = null, cell = null; const rows = [];
+    let t;
+    while ((t = tagRe.exec(h))) {
+      const tag = t[0]; const name = t[1].toLowerCase(); const close = tag[1] === '/';
+      if (name === 'table') {
+        if (!close) depth++; else { depth--; if (depth === 0) break; }
+        continue;
+      }
+      if (depth !== 1) continue;                            // 중첩 테이블 안은 통째로 셀 내용
+      if (name === 'tr') {
+        if (!close) { row = { cells: [], idx: null, html: '' , _start: t.index }; }
+        else if (row) { row.html = h.slice(row._start, t.index + tag.length); delete row._start; const im = row.html.match(/<input\b[^>]*\bname\s*=\s*["']?idx["']?[^>]*>/i); row.idx = im ? oiAttr(im[0], 'value') : null; rows.push(row); row = null; }
+        continue;
+      }
+      if (!row) continue;
+      if (!close) { cell = { _start: t.index + tag.length }; }
+      else if (cell) { const raw = h.slice(cell._start, t.index); row.cells.push(oiDecodeEntities(raw.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim()); cell = null; }
+    }
+    return rows;
+  }
+
+  //  주문폼 하단 목록 행: 셀 인덱스 고정(실측) 0 No·1 체크·2 이미지·3 상품코드+비고·4 구분·5 상품명·6 품위·7 중량·8 색상·9 사이즈·10 수량·11 주문가.
+  function oiWriteListRow(row) {
+    const c = row.cells || [];
+    const idx = String(row.idx || '');
+    const parts = idx.split(',');
+    const codeCell = c[3] || '';
+    const cm = codeCell.match(/^([A-Z0-9]+(?:-[A-Z0-9]+)+)/i);
+    const rm = codeCell.match(/비고\s*:\s*(.*)$/);
+    return {
+      orderSeq: parts[0] || '', tradeJun: parts[1] || '',
+      code: cm ? cm[1] : '', remark: rm ? rm[1].trim() : '',
+      name: c[5] || '', k: c[6] || '', weight: c[7] || '', color: c[8] || '', size: c[9] || '',
+      qty: c[10] || '', price: c[11] || ''
+    };
+  }
+  function oiWriteListRows(html) { return oiTListRows(html).map(oiWriteListRow); }
+
+  //  MD 주문전표 목록 행: 1 idx=orderSeq · 2 '26-09-14'+'0000002YF3' · 4 상품명 코드 / 고객명 · 11 상태.
+  function oiJunListRows(html) {
+    return oiTListRows(html).map((row) => {
+      const c = row.cells || [];
+      const jm = String(c[2] || '').match(/(\d{7}[0-9A-Z]{3})\s*$/);
+      return { orderSeq: String(row.idx || '').split(',')[0], junNum: jm ? jm[1] : '', title: c[4] || '', status: c[11] || '' };
+    });
+  }
+
+  //  고객 검색 결과 행: 1 고객명·2 매장·3 휴대폰·4 전화, 선택 링크 setSeting(form1,'i','<seq>'). (idx 가 없는 표라 링크로 고른다)
+  function oiClientSearchRows(html) {
+    const h = String(html); const out = [];
+    const tre = /<table\b[^>]*\bclass\s*=\s*["']?t_list["']?[^>]*>/gi; let tm;
+    while ((tm = tre.exec(h))) {
+      const rows = oiScanTable(h, tm.index);
+      rows.forEach((r) => {
+        const sm = r.html.match(/setSeting\s*\(\s*form1\s*,\s*['"](\d+)['"]\s*,\s*['"](\d+)['"]\s*\)/);
+        if (!sm) return;
+        out.push({ name: r.cells[1] || '', shop: r.cells[2] || '', phone: r.cells[3] || '', tel: r.cells[4] || '', seq: sm[2] });
+      });
+      if (out.length) return out;
+    }
+    return out;
+  }
+
+  //  상품 검색 결과 행: 2 상품코드·4 상품명, 링크 setSeting('<masterSeq>').
+  function oiMasterSearchRows(html) {
+    const h = String(html); const out = [];
+    const tre = /<table\b[^>]*\bclass\s*=\s*["']?t_list["']?[^>]*>/gi; let tm;
+    while ((tm = tre.exec(h))) {
+      oiScanTable(h, tm.index).forEach((r) => {
+        const sm = r.html.match(/setSeting\s*\(\s*['"](\d+)['"]\s*\)/);
+        if (!sm) return;
+        out.push({ code: r.cells[2] || '', name: r.cells[4] || '', seq: sm[1] });
+      });
+      if (out.length) return out;
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------- §4.2 페이로드 */
+  const FORM1_NAMES = Object.freeze(['sKey', 'pageSize', 'searchSortType', 'tradeJun', 'payJun', 'shop', 'client', 'master', 'itemType',
+    'inputPrice', 'orgOrderPrice', 'shopName', 'clientName', 'itemNum', 'weight', 'doc', 'diaColor', 'clarity', 'surface',
+    'k', 'color', 'itemSize', 'orderQty', 'orderPrice', 'shopRemark']);
+  const FORM10_NAMES = Object.freeze(['sKey', 'pageSize', 'searchSortType', 'tradeJun', 'payJun', 'shop', 'client', 'payBank', 'payDia',
+    'txtOrderDate', 'exdelivedyear', 'exdelivedmonth', 'exdelivedday', 'regId', 'beforePrice', 'payPrice', 'afterPrice',
+    'payCard', 'paySaleOldGold', 'payCash', 'payCashPaper', 'payEtc', 'payRemark']);
+
+  //  주문폼 GET 응답 → { values, missing, kOpts, colorOpts, arrays, rows, defaults }
+  function oiReadWriteForm(html) {
+    const ex = oiExtractFields(html, FORM1_NAMES);
+    const kOpts = oiSelectOptions(html, 'k');
+    const colorOpts = oiSelectOptions(html, 'color');
+    return {
+      values: ex.values, missing: ex.missing,
+      kOpts: kOpts || [], colorOpts: colorOpts || [],
+      arrays: oiExtractArrays(html),
+      rows: oiWriteListRows(html),
+      defaults: { k: ex.values.k || '', color: ex.values.color || '', itemSize: ex.values.itemSize || '' }
+    };
+  }
+  //  form10 은 form1 과 이름이 겹치므로(sKey·client…) form10 구간만 잘라 읽는다. 구간이 없으면 전체.
+  function oiReadForm10(html) {
+    const h = String(html);
+    const i0 = h.search(/<form\b[^>]*\bname\s*=\s*["']?form10["']?/i);
+    let seg = h;
+    if (i0 >= 0) { const rest = h.slice(i0); const i1 = rest.search(/<form\b[^>]*\bname\s*=\s*["']?form2["']?/i); seg = i1 > 0 ? rest.slice(0, i1) : rest; }
+    const ex = oiExtractFields(seg, FORM10_NAMES);
+    return { values: ex.values, missing: ex.missing, rows: oiWriteListRows(h) };
+  }
+
+  //  줄 페이로드: 추출값(25) + 스펙(k/color/itemSize/qty/price/remark) → { fields:[[n,v]…], issues:[] }
+  //  k 를 바꾸면 페이지의 kchange() 처럼 arr_weight/arr_salePrice/arr_inputSupply[옵션 인덱스] 로 weight/orgOrderPrice/inputPrice 를 다시 뽑는다.
+  function oiLinePayload(form, master, spec) {
+    const issues = [];
+    const v = Object.assign({}, form.values);
+    if (form.missing && form.missing.length) issues.push('필드 누락: ' + form.missing.join(','));
+    if (spec.k) {
+      const opt = oiResolveK(spec.k, form.kOpts);
+      if (!opt) issues.push('품위 옵션 없음: ' + spec.k);
+      else if (opt.value !== v.k) {
+        v.k = opt.value;
+        const pos = form.kOpts.indexOf(opt);
+        const a = form.arrays || {};
+        if (a.arr_weight && pos < a.arr_weight.length) v.weight = String(a.arr_weight[pos]);
+        if (a.arr_salePrice && pos < a.arr_salePrice.length) v.orgOrderPrice = String(a.arr_salePrice[pos]);
+        if (a.arr_inputSupply && pos < a.arr_inputSupply.length) v.inputPrice = String(a.arr_inputSupply[pos]);
+      }
+    }
+    let color = spec.color || v.color || '';
+    if (!color) color = oiColorFromCode((master && (master.colorFallback || master.code)) || '', form.colorOpts) || '';
+    if (!color) issues.push('색상 없음');
+    else if (form.colorOpts && form.colorOpts.length && !form.colorOpts.some((o) => o.value === color)) issues.push('색상 없음: ' + color);
+    v.color = color;
+    if (spec.itemSize != null && spec.itemSize !== '') v.itemSize = String(spec.itemSize);
+    if (!(spec.qty > 0)) issues.push('수량');
+    v.orderQty = String(spec.qty);
+    if (!(spec.price > 0)) issues.push('판매가');
+    v.orderPrice = oiComma(spec.price);
+    v.shopRemark = spec.remark || '';
+    if (master && master.seq && String(v.master) !== String(master.seq)) issues.push('master 불일치: ' + v.master + '≠' + master.seq);
+    return { fields: FORM1_NAMES.map((n) => [n, v[n] == null ? '' : String(v[n])]), issues, values: v };
+  }
+
+  //  주문장 완료 페이로드: 인도예정일은 오늘로 명시(HTML 에 selected 가 없어 추출값이 01/01). 결제 필드는 빈값이면 '0'.
+  function oiForm10Payload(values, today) {
+    const v = Object.assign({}, values);
+    const d = today instanceof Date ? today : new Date();
+    const p = (x) => String(x).padStart(2, '0');
+    v.exdelivedyear = String(d.getFullYear()); v.exdelivedmonth = p(d.getMonth() + 1); v.exdelivedday = p(d.getDate());
+    ['payBank', 'payDia', 'beforePrice', 'payPrice', 'afterPrice', 'payCard', 'paySaleOldGold', 'payCash', 'payCashPaper', 'payEtc']
+      .forEach((n) => { if (v[n] == null || v[n] === '') v[n] = '0'; });
+    if (v.payRemark == null) v.payRemark = '';
+    return FORM10_NAMES.map((n) => [n, v[n] == null ? '' : String(v[n])]);
+  }
+
+  //  성공·실패 모두 폼페이지로 리다이렉트, 실패만 msg 에 문구(기존 메모리). url = fetch 응답 resp.url.
+  function oiSubmitResult(url) {
+    try { const msg = new URL(url).searchParams.get('msg') || ''; return { ok: !msg, msg }; }
+    catch (_) { return { ok: false, msg: 'bad_url' }; }
+  }
+
+  /* ------------------------------------------------ §5 기대치 대조 */
+  //  줄 등록 전: client 일치 · 행 수 = 내가 넣은 수 · 행의 orderSeq 집합 일치 · tradeJun 일치(첫 줄은 빈값 허용).
+  function oiCheckForm(form, expect) {
+    const v = form.values || {};
+    if (String(v.client) !== String(expect.client)) return { ok: false, reason: 'client ' + v.client + '≠' + expect.client };
+    if (expect.master != null && String(v.master) !== String(expect.master)) return { ok: false, reason: 'master ' + v.master + '≠' + expect.master };
+    const rows = form.rows || [];
+    const mine = expect.orderSeqs || [];
+    if (rows.length !== mine.length) return { ok: false, reason: 'rows ' + rows.length + '≠' + mine.length };
+    for (const r of rows) if (!mine.includes(r.orderSeq)) return { ok: false, reason: 'foreign row ' + r.orderSeq };
+    if (mine.length && expect.tradeJun && String(v.tradeJun) !== String(expect.tradeJun)) return { ok: false, reason: 'tradeJun ' + v.tradeJun + '≠' + expect.tradeJun };
+    return { ok: true, reason: '' };
+  }
+  //  완료 직전: 행 수·orderSeq·상품코드·사이즈·수량·주문가를 검토 표(lines)와 대조.
+  function oiCheckFinal(form, expect) {
+    const base = oiCheckForm(form, expect);
+    if (!base.ok) return base;
+    const rows = form.rows || [];
+    const lines = expect.lines || [];
+    if (rows.length !== lines.length) return { ok: false, reason: 'rows ' + rows.length + '≠' + lines.length };
+    for (let i = 0; i < lines.length; i++) {
+      const r = rows.find((x) => x.orderSeq === expect.orderSeqs[i]);
+      const ln = lines[i];
+      if (!r) return { ok: false, reason: 'missing row ' + expect.orderSeqs[i] };
+      if (r.code !== ln.master.code) return { ok: false, reason: 'code ' + r.code + '≠' + ln.master.code };
+      if (ln.spec.itemSize != null && ln.spec.itemSize !== '' && String(r.size) !== String(ln.spec.itemSize)) return { ok: false, reason: 'size ' + r.size + '≠' + ln.spec.itemSize };
+      if (String(r.qty) !== String(ln.spec.qty)) return { ok: false, reason: 'qty ' + r.qty + '≠' + ln.spec.qty };
+      if (r.price.replace(/,/g, '') !== String(ln.spec.price)) return { ok: false, reason: 'price ' + r.price + '≠' + ln.spec.price };
+    }
+    return { ok: true, reason: '' };
+  }
+
   const api = {
-    MARKETS, COLS, REQUIRED,
+    MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiSuggestQueries,
-    oiGroupOrders, oiResolveK, oiLineIssues
+    oiGroupOrders, oiResolveK, oiLineIssues,
+    oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
+    oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
+    oiReadWriteForm, oiReadForm10, oiLinePayload, oiForm10Payload, oiSubmitResult,
+    oiCheckForm, oiCheckFinal
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubOi = api; }
