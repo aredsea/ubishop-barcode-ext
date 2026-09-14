@@ -517,15 +517,111 @@
     return { ok: true, reason: '' };
   }
 
+  /* ------------------------------------------------- §3.4 실행기 (erp 주입) */
+  //  erp 인터페이스(orderimport-erp.js 가 구현):
+  //   state() → {tradeJun, client, rows:number}
+  //   searchClient(type,word) → [{name,shop,phone,tel,seq}]
+  //   registerClient(name, phone, clientJob) → {ok, msg, client:{seq,name,phone}|null}
+  //   getWriteForm({tradeJun,master,client,clientName}) → oiReadWriteForm 결과
+  //   postLine(fields) → {ok, msg, tradeJun, rows}
+  //   getForm10({tradeJun,client,clientName}) → oiReadForm10 결과
+  //   postComplete(fields) → {ok, msg}
+  //   deleteLines(tradeJun, client, clientName, idxValues) → {ok, msg}
+  //   findJunNums(orderSeqs) → [{orderSeq, junNum, status}]
+  //  hooks: { today():Date, log(key, step, info) }
+  async function oiRunOrder(order, erp, hooks) {
+    const log = (step, info) => { try { hooks && hooks.log && hooks.log(order.key, step, info); } catch (_) {} };
+    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0 };
+    const fail = async (status, reason) => {
+      res.reason = reason; log('fail', reason);
+      if (res.idxValues.length) {
+        const del = await erp.deleteLines(res.tradeJun, res.client ? res.client.seq : '', res.client ? res.client.name : '', res.idxValues.slice());
+        log('rollback', del);
+        //  되돌린 뒤 서버 목록에서 **내 orderSeq** 가 사라졌는지 확인. 남의 줄이 남아 있으면 세션이 남의 주문장에
+        //  묶인 것이라 다음 주문장도 시작할 수 없다 → fatal(사람이 정리해야 한다).
+        const after = await erp.getWriteForm({ tradeJun: res.tradeJun, master: '', client: res.client ? res.client.seq : '', clientName: res.client ? res.client.name : '' });
+        const remain = (after.rows || []).map((r) => r.orderSeq);
+        if (!del.ok || remain.some((s) => res.orderSeqs.includes(s))) { res.status = 'fatal'; res.reason = 'rollback_failed:' + reason; return res; }
+        res.rolledBack = res.idxValues.length;
+        if (remain.length) { res.status = 'fatal'; res.reason = 'foreign_rows_remain:' + reason; return res; }
+      }
+      res.status = status; return res;
+    };
+    try {
+      const st = await erp.state();
+      log('guard', st);
+      if (st.tradeJun || st.rows > 0) { res.status = 'skipped'; res.reason = 'open_trade'; return res; }
+
+      const byName = await erp.searchClient('clientName', order.clientName);
+      const exact = byName.find((c) => c.name === order.clientName);
+      if (exact) res.client = { seq: exact.seq, name: exact.name, mode: 'reuse' };
+      else {
+        let phone = order.phone && order.phone.phone ? order.phone.phone : '';
+        if (phone) { const byPhone = await erp.searchClient('phone', phone); if (byPhone.some((c) => c.phone === phone)) phone = ''; }
+        const reg = await erp.registerClient(order.clientName, phone, order.market.clientJob);
+        log('register', reg);
+        if (!reg.ok || !reg.client) { res.status = 'skipped'; res.reason = 'register_failed:' + (reg.msg || ''); return res; }
+        res.client = { seq: reg.client.seq, name: order.clientName, mode: phone ? 'new' : 'new_nophone' };
+      }
+
+      for (let i = 0; i < order.lines.length; i++) {
+        const ln = order.lines[i];
+        const form = await erp.getWriteForm({ tradeJun: res.tradeJun, master: ln.master.seq, client: res.client.seq, clientName: res.client.name });
+        const chk = oiCheckForm(form, { client: res.client.seq, master: ln.master.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs });
+        if (!chk.ok) return await fail('skipped', 'mismatch:' + chk.reason);
+        const built = oiLinePayload(form, ln.master, ln.spec);
+        if (built.issues.length) return await fail('skipped', 'payload:' + built.issues.join(','));
+        const post = await erp.postLine(built.fields);
+        log('line', { i, ok: post.ok, msg: post.msg, tradeJun: post.tradeJun, rows: (post.rows || []).length });
+        if (!post.ok) return await fail('skipped', 'line_failed:' + post.msg);
+        const rows = post.rows || [];
+        if (rows.length !== res.orderSeqs.length + 1) return await fail('skipped', 'rowcount:' + rows.length);
+        const fresh = rows.filter((r) => !res.orderSeqs.includes(r.orderSeq));
+        if (fresh.length !== 1 || fresh[0].code !== ln.master.code) return await fail('skipped', 'newrow:' + (fresh[0] ? fresh[0].code : 'none'));
+        res.orderSeqs.push(fresh[0].orderSeq);
+        res.idxValues.push(fresh[0].orderSeq + ',' + (fresh[0].tradeJun || post.tradeJun));
+        res.tradeJun = post.tradeJun || fresh[0].tradeJun;
+      }
+
+      const f10 = await erp.getForm10({ tradeJun: res.tradeJun, client: res.client.seq, clientName: res.client.name });
+      const fin = oiCheckFinal(f10, { client: res.client.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs, lines: order.lines });
+      if (!fin.ok) return await fail('skipped', 'final:' + fin.reason);
+      if (f10.missing && f10.missing.length) return await fail('skipped', 'form10 필드 누락: ' + f10.missing.join(','));
+      const done = await erp.postComplete(oiForm10Payload(f10.values, hooks && hooks.today ? hooks.today() : new Date()));
+      log('complete', done);
+      if (!done.ok) return await fail('skipped', 'complete_failed:' + done.msg);
+      const st2 = await erp.state();
+      if (st2.tradeJun || st2.rows > 0) { res.status = 'fatal'; res.reason = 'session_not_clear'; return res; }
+      try { res.junNums = await erp.findJunNums(res.orderSeqs.slice()); } catch (e) { res.junNums = []; log('junnum_error', String(e && e.message || e)); }
+      res.status = 'done'; return res;
+    } catch (e) {
+      return await fail('skipped', 'exception:' + String(e && e.message || e));
+    }
+  }
+
+  //  주문장 순차 실행. fatal 이면 즉시 중단(이후 주문장은 'blocked').
+  async function oiRunAll(orders, erp, hooks) {
+    const results = [];
+    let halted = false;
+    for (const o of orders) {
+      if (halted) { results.push({ key: o.key, status: 'blocked', reason: 'halted' }); continue; }
+      const r = await oiRunOrder(o, erp, hooks);
+      results.push(r);
+      try { hooks && hooks.onOrder && hooks.onOrder(r); } catch (_) {}
+      if (r.status === 'fatal') halted = true;
+    }
+    return results;
+  }
+
   const api = {
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiSuggestQueries,
-    oiGroupOrders, oiResolveK, oiLineIssues,
+    oiGroupOrders, oiLineIssues,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
-    oiReadWriteForm, oiReadForm10, oiLinePayload, oiForm10Payload, oiSubmitResult,
-    oiCheckForm, oiCheckFinal
+    oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,
+    oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubOi = api; }
