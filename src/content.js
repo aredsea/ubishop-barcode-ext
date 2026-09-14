@@ -196,14 +196,17 @@
   document.addEventListener('mousedown', () => { cancelled = true; }, { capture: true, once: true });
   document.addEventListener('keydown', () => { cancelled = true; }, { capture: true, once: true });
 
+  //  이 파일은 loader 가 원격 번들을 받은 뒤에야 붙는다(비동기). 그 사이 사용자가 빈 칸·셀렉트를 클릭했으면
+  //  위 리스너는 그걸 못 봤으므로, activeElement 가 어떤 컨트롤이든 이미 잡혀 있으면 사용자 것으로 보고 뺏지 않는다.
+  //  (페이지 자체는 로드 후 아무 칸에도 포커스를 주지 않는다 — 2026-09-14 실측 activeElement=body)
+  const isControl = (n) => !!n && n !== document.body && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(n.tagName || '');
   const apply = () => {
     if (cancelled) return;
     const el = document.getElementsByName('searchWord2')[0];
     if (!el || el.tagName !== 'INPUT' || el.disabled || el.readOnly) return;
     const ae = document.activeElement;
     if (ae === el) return;
-    // 사용자가 이미 다른 텍스트 칸에 값을 넣고 있으면 건드리지 않음
-    if (ae && ae !== document.body && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && ae.value) { cancelled = true; return; }
+    if (isControl(ae)) { cancelled = true; return; }
     try {
       el.focus({ preventScroll: true });
       const len = (el.value || '').length;

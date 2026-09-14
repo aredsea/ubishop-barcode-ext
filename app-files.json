@@ -16,7 +16,7 @@
     "src/config.js": "aa895bfca7afba935304d02a27e4a84ba83ac2cc041f3a12b56c14255cd37c36",
     "src/overlay.js": "69a1e8e899480ff4b3c8e2542642cd89efddecb36cd2d8e840e62a08129e8e9c",
     "src/collector.js": "ac350b86d1474e1772fc72a59ffad1af71e7574e87ac34b477bb568733930b4a",
-    "src/content.js": "1442ea4a20d8817d00591cbf804d9344fd2249b80c7b02bf6e9ca46bc4d908d1",
+    "src/content.js": "797c73841fb698b754b2b1a08ac2a9d9cd9653909c2ca118cb4c4d8a7c1b0000",
     "src/cache-intercept.js": "2ec17612cd9134f8c38a1395fc3ce4f736e24988531c111853eecba5f1b34a76",
     "src/statis.js": "0ff0a00e062280be40564516c12726d25d6502dc25bd827a3d743d8433458684",
     "src/masterprice.js": "1dd69ffa2c482ccf2014768c9db497d97ac53fb8ff31fb99ca337649cf88cbef"
