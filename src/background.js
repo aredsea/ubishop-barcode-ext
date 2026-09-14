@@ -52,6 +52,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'ubAutoCreateJob')  { sendResponse(ubAutoCreateJob(msg, sender)); return false; }
   if (msg.type === 'ubAutoFrameReady') { ubAutoOnFrameReady(msg, sender).then(sendResponse).catch(e => sendResponse({ ok:false, error:String(e&&e.message||e) })); return true; }
   if (msg.type === 'ubAutoEndJob')     { sendResponse(ubAutoEndJob(msg.jobId, 'controller_end', sender)); return false; }
+
+  //  주문 가져오기: SheetJS(952KB) 를 패널 첫 오픈 때만 MAIN 에 파일 주입(ISOLATED 는 eval 이 막혀 있어 MAIN 이어야 한다).
+  if (msg.type === 'ubOiInjectXls') {
+    const tabId = sender && sender.tab && sender.tab.id;
+    if (tabId == null) { sendResponse({ ok: false, error: 'no tab' }); return false; }
+    chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['vendor/xlsx.full.min.js', 'src/orderimport-xls.js'] })
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
+  }
 });
 
 /* ---- transparent caching용 — ubdstore에서 단일 URL fetch ----

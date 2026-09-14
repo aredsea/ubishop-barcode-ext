@@ -22,7 +22,13 @@ $patterns = @(
   'src/skin.js',
   'popup/popup.html',
   'popup/popup.js',
-  'rules/cache.json'
+  'rules/cache.json',
+  'src/erp.js',
+  'src/orderimport-core.js',
+  'src/orderimport-erp.js',
+  'src/orderimport.js',
+  'src/orderimport-xls.js',
+  'vendor/xlsx.full.min.js'
 )
 $textExt = @('.js', '.json', '.html', '.htm', '.css', '.xml', '.md', '.txt', '.svg')
 
