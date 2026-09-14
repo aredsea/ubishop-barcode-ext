@@ -1583,9 +1583,7 @@ test('새 파일이 존재하고 문법 오류 없이 파싱된다', () => {
 
 test('vendor/xlsx.full.min.js 는 SheetJS 0.20.3 full 빌드 그대로(해시 고정)', () => {
   //  git autocrlf 가 체크아웃 때 LF→CRLF 로 바꾸므로(작업 사본 CR 24개 실측) build-shell-index.ps1 처럼 CRLF→LF 정규화 후 해시.
-  const buf = Buffer.from(fs.readFileSync(path.join(ROOT, 'vendor/xlsx.full.min.js'), 'latin1').replace(/
-/g, '
-'), 'latin1');
+  const buf = Buffer.from(fs.readFileSync(path.join(ROOT, 'vendor/xlsx.full.min.js'), 'latin1').replace(/\r\n/g, '\n'), 'latin1');
   assert.ok(buf.length > 900000, 'full 빌드가 아니다(mini 는 xls 를 못 읽는다)');
   assert.ok(buf.slice(0, 200).toString('utf8').includes('SheetJS'));
   assert.equal(crypto.createHash('sha256').update(buf).digest('hex'), SHEETJS_SHA256);
