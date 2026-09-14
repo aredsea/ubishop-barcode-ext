@@ -117,7 +117,7 @@ test('oiParseRows: 개선 양식 9줄, 합계·빈 행 제외, 판매가·정산
 
 test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검토 대상)', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰', '수량'],
-    ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-1234-5678', '2']];
+    ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-0000-5678', '2']];
   const r = C.oiParseRows(rows);
   assert.equal(r.lines[0].price, null);
   assert.equal(r.lines[0].qty, 2);
@@ -125,17 +125,17 @@ test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검�
 
 /* ------------------------------------------------------------- §2.2 정규화 */
 test('oiNormPhone: 010/0504/1xx 하이픈 재구성, 그 외 ok:false', () => {
-  assert.equal(C.oiNormPhone('01065783269').phone, '010-6578-3269');
-  assert.equal(C.oiNormPhone('0504-2138-0399').phone, '0504-2138-0399');
-  assert.equal(C.oiNormPhone('106-249-2567').phone, '106-249-2567');
+  assert.equal(C.oiNormPhone('01000003269').phone, '010-0000-3269');
+  assert.equal(C.oiNormPhone('0504-0000-0399').phone, '0504-0000-0399');
+  assert.equal(C.oiNormPhone('106-0000-2567').phone, '106-0000-2567');
   assert.equal(C.oiNormPhone('106 249 2567').last4, '2567');
   assert.equal(C.oiNormPhone('').ok, false);
   assert.equal(C.oiNormPhone('123').ok, false);
 });
 
 test('oiClientName / oiMarket / oiRemark', () => {
-  assert.equal(C.oiClientName('장영주', '4492', '쿠'), '장영주4492/쿠');
-  assert.equal(C.oiClientName(' 손*아 ', '0399', 'G'), '손*아0399/G');
+  assert.equal(C.oiClientName('아자차', '4492', '쿠'), '아자차4492/쿠');
+  assert.equal(C.oiClientName(' 가*나 ', '0399', 'G'), '가*나0399/G');
   assert.deepEqual(C.oiMarket('스마트스토어'), { name: '스마트스토어', suffix: '스', clientJob: '5' });
   assert.deepEqual(C.oiMarket('ssg'), { name: 'SSG', suffix: 's', clientJob: '2' });
   assert.equal(C.oiMarket('11번가'), null, '표에 없는 판매처는 null(검토)');
@@ -145,7 +145,7 @@ test('oiClientName / oiMarket / oiRemark', () => {
   assert.equal(C.oiRemark(null), '');
 });
 
-test('oiGroupOrders: 판매처+주문번호로 묶고 고객명을 만든다(박*정 3줄, 이지은 2줄)', () => {
+test('oiGroupOrders: 판매처+주문번호로 묶고 고객명을 만든다(카*타 3줄, 차카타 2줄)', () => {
   const g = C.oiGroupOrders(C.oiParseRows(ROWS_B).lines);
   assert.equal(g.length, 6);
   assert.equal(g[0].lines.length, 3); assert.equal(g[0].clientName, '카*타4166/G');

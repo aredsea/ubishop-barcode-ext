@@ -178,3 +178,44 @@
   }
   console.log('[UB][focus-keep] 상품검색 커서 유지 활성화');
 })();
+
+/* =============================================================================
+ *  autofocus — 기초상품관리(masterItemList.do) 로드 후 커서를 [매입처상품코드] 칸으로
+ *
+ *  사장님 지시 2026-09-14: 페이지가 뜨면 바로 매입처상품코드를 칠 수 있게. 그 칸은
+ *  searchWordType2(상품코드/상품명/매입처상품코드) 옆의 text `searchWord2` 다 — 셀렉트 값은
+ *  건드리지 않는다(검색 유형은 사용자가 고른 대로). 검색도 전체 페이지 이동이라 매 로드마다 건다.
+ *  focus-keep 과 같은 원칙: 사용자가 먼저 클릭하거나 다른 칸에 입력 중이면 커서를 뺏지 않는다.
+ *  loader 관리 파일이라 push 만으로 매장 PC 다음 새로고침에 자동 반영.
+ * ========================================================================== */
+(function () {
+  'use strict';
+  if (!/\/master\/item\/masterItemList\.do/.test(location.pathname)) return;
+
+  let cancelled = false;
+  document.addEventListener('mousedown', () => { cancelled = true; }, { capture: true, once: true });
+  document.addEventListener('keydown', () => { cancelled = true; }, { capture: true, once: true });
+
+  //  이 파일은 loader 가 원격 번들을 받은 뒤에야 붙는다(비동기). 그 사이 사용자가 빈 칸·셀렉트를 클릭했으면
+  //  위 리스너는 그걸 못 봤으므로, activeElement 가 어떤 컨트롤이든 이미 잡혀 있으면 사용자 것으로 보고 뺏지 않는다.
+  //  (페이지 자체는 로드 후 아무 칸에도 포커스를 주지 않는다 — 2026-09-14 실측 activeElement=body)
+  const isControl = (n) => !!n && n !== document.body && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(n.tagName || '');
+  const apply = () => {
+    if (cancelled) return;
+    const el = document.getElementsByName('searchWord2')[0];
+    if (!el || el.tagName !== 'INPUT' || el.disabled || el.readOnly) return;
+    const ae = document.activeElement;
+    if (ae === el) return;
+    if (isControl(ae)) { cancelled = true; return; }
+    try {
+      el.focus({ preventScroll: true });
+      const len = (el.value || '').length;
+      if (typeof el.setSelectionRange === 'function') el.setSelectionRange(len, len);   // 캐럿은 끝에(기존 검색어 뒤에 이어 칠 수 있게)
+    } catch (_) {}
+  };
+  // 페이지 자체 스크립트가 로드 후 다른 칸에 포커스를 줄 수 있어 여러 번 재확인(focus-keep 과 동일).
+  const start = () => [0, 80, 200, 450, 900].forEach(t => setTimeout(apply, t));
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+  console.log('[UB][autofocus] 기초상품관리 매입처상품코드 칸 자동 포커스');
+})();
