@@ -588,6 +588,9 @@
       if (res.idxValues.length) {
         //  되돌리기 통신 자체가 죽어도 결과에 fatal 로 남긴다 — 여기서 던지면 oiRunAll 까지 reject 돼 상태가 사라진다(Terra 1R P1).
         try {
+          //  삭제 직전에 세션의 열린 주문장이 **아직 내 tradeJun** 인지 본다 — 그 사이 남이 완료했으면 완료된 전표를 지우게 된다(Terra 7R P1).
+          const now = await erp.state();
+          if (String(now.tradeJun || '') !== String(res.tradeJun || '')) { res.status = 'fatal'; res.reason = 'rollback_aborted:trade_changed ' + (now.tradeJun || '(none)') + '≠' + res.tradeJun + ' (' + reason + ')'; return res; }
           const del = await erp.deleteLines(res.tradeJun, res.client ? res.client.seq : '', res.client ? res.client.name : '', res.idxValues.slice());
           log('rollback', del);
           //  되돌린 뒤 서버 목록에서 **내 orderSeq** 가 사라졌는지 확인. 남의 줄이 남아 있으면 세션이 남의 주문장에

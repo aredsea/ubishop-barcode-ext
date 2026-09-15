@@ -277,6 +277,16 @@ test('완료 직전 비고만 바뀌어도 완료하지 않는다', async () => 
   assert.ok(!names(erp).includes('postComplete'));
 });
 
+//  Terra 7R P1 (2026-09-15): 대조 실패 ~ 되돌리기 사이에 남이 그 주문장을 완료하면 완료된 전표의 줄을 지우러 갔다.
+test('되돌리기 직전 세션의 열린 주문장이 내 tradeJun 이 아니면(남이 완료함) 삭제하지 않고 fatal', async () => {
+  const erp = makeErp({ foreignRowAt: 1 });
+  const origState = erp.state.bind(erp); let n = 0;
+  erp.state = async () => { n++; const st = await origState(); return n >= 2 ? { tradeJun: '', client: '', rows: 0 } : st; };   // 2번째 조회부터 '완료돼 비었음'
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /^rollback_aborted:/);
+  assert.ok(!names(erp).includes('deleteLines'));
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음
