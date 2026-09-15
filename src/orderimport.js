@@ -47,7 +47,7 @@
         const d = e.data;
         if (!d || e.source !== window || d.source !== 'ub-oi-xls' || d.id !== id) return;
         clearTimeout(timer); window.removeEventListener('message', on);
-        if (d.ok) resolve(d.rows); else reject(new Error(d.error || '엑셀 읽기 실패'));
+        if (d.ok) resolve({ rows: d.rows, numericPhoneRows: d.numericPhoneRows || [] }); else reject(new Error(d.error || '엑셀 읽기 실패'));
       }
       window.addEventListener('message', on);
       window.postMessage({ source: 'ub-oi', type: 'parse', id, buf }, '*');
@@ -77,8 +77,8 @@
     if (o.checked == null || !o.ready) o.checked = o.ready;
     o.prev = S.ledger[o.key] || null;
   }
-  function buildOrders(rows) {
-    const pr = C.oiParseRows(rows);
+  function buildOrders(parsed) {
+    const pr = C.oiParseRows(parsed.rows, { numericPhoneRows: parsed.numericPhoneRows });
     if (pr.error) throw new Error(pr.error);
     S.orders = C.oiGroupOrders(pr.lines);
     S.orders.forEach(refreshOrder);
@@ -345,9 +345,9 @@
     const gen = ++S.fileGen;
     try {
       S.fileName = file.name; S.results = []; S.orders = [];
-      const rows = await readXls(file);
+      const parsed = await readXls(file);
       if (gen !== S.fileGen) return;
-      buildOrders(rows);
+      buildOrders(parsed);
       render();
       await enrich();
       if (gen !== S.fileGen) return;

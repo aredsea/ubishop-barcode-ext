@@ -171,6 +171,18 @@ test('oiLearn: 같은 seq 의 기존 항목이 있으면 remarkSuffix·colorFall
   assert.equal(explicit.d.remarkSuffix, '/새접미', '명시한 값이 우선');
 });
 
+//  Terra 14R P1 (2026-09-15): 엑셀이 휴대폰을 숫자형 셀로 저장하면 앞 0 이 사라진 값(1065783269)이 '106-578-3269' 로 통과했다.
+test('oiParseRows: 숫자형 휴대폰 셀(meta.numericPhoneRows)은 검토 대상', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['쿠팡', '1', 'A', '', 1000, 100, '홍길동', 1065783269],
+    ['쿠팡', '2', 'B', '', 1000, 100, '김철수', '010-2222-3333']];
+  const r = C.oiParseRows(rows, { numericPhoneRows: [1] });
+  assert.equal(r.lines[0].phoneNumericCell, true); assert.equal(r.lines[1].phoneNumericCell, false);
+  const iss = C.oiLineIssues(r.lines[0], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
+  assert.ok(iss.some((s) => s.startsWith('휴대폰 숫자 셀')));
+  assert.deepEqual(C.oiLineIssues(r.lines[1], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }), []);
+});
+
 test('oiClientName / oiMarket / oiRemark', () => {
   assert.equal(C.oiClientName('아자차', '4492', '쿠'), '아자차4492/쿠');
   assert.equal(C.oiClientName(' 가*나 ', '0399', 'G'), '가*나0399/G');

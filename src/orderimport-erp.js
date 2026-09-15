@@ -13,36 +13,46 @@
     ? (u8) => globalThis.ubErp.decodeErpHtml(u8)                 // 헤더를 안 보고 score-both(collector·statis 와 같은 정책)
     : (u8) => new TextDecoder('utf-8').decode(u8);
 
-  async function req(url, init) {
+  //  세션이 끊기면 유비샵은 msg 없이 honsu114 로그인/메인으로 리다이렉트한다 → 'msg 없음 = 성공' 판정이 뚫린다(Terra 14R P2).
+  //  응답이 ubdstore 의 기대 경로가 아니면 여기서 던져 실행기가 fatal(…_unverified) 로 멈추게 한다.
+  function assertUbdstore(r, pathRe) {
+    let u; try { u = new URL(r.url); } catch (_) { throw new Error('session_lost: bad url'); }
+    if (!/(^|\.)ubshop\.biz$/i.test(u.hostname)) throw new Error('session_lost: redirected to ' + u.hostname + u.pathname);
+    if (pathRe && !pathRe.test(u.pathname)) throw new Error('unexpected_page: ' + u.pathname);
+    return r;
+  }
+  async function req(url, init, pathRe) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
     try {
       const r = await fetch(url, Object.assign({ credentials: 'include', signal: ctl.signal }, init || {}));
       const u8 = new Uint8Array(await r.arrayBuffer());
-      return { url: r.url, status: r.status, html: dec(u8) };
+      return assertUbdstore({ url: r.url, status: r.status, html: dec(u8) }, pathRe);
     } finally { clearTimeout(timer); }
   }
-  const post = (url, pairs) => {
+  const post = (url, pairs, pathRe) => {
     const fd = new URLSearchParams();
     (Array.isArray(pairs) ? pairs : Object.entries(pairs)).forEach(([k, v]) => fd.append(k, v == null ? '' : String(v)));
-    return req(url, { method: 'POST', body: fd });
+    return req(url, { method: 'POST', body: fd }, pathRe);
   };
+  const WRITE_RE = /\/order\/item\/orderItemWriteForm\.do$/;
   const enc = encodeURIComponent;
   const WRITE_URL = '/order/item/orderItemWriteForm.do?tcode=order_item';
   const POPUP_BASE = { formname: 'form1', url: '/order/item/orderItemWriteForm.do', actFlag: '1', shop: 'LT', shopName: 'FASHION' };
 
   //  '열린 주문장' 판정은 **파라미터 없는 GET** 으로만(완료된 tradeJun 을 명시하면 그 줄이 여전히 보인다 — 실측).
   async function state() {
-    const r = await req(WRITE_URL + '&pageSize=20&searchSortType=seq');
+    const r = await req(WRITE_URL + '&pageSize=20&searchSortType=seq', null, WRITE_RE);
     const f = C.oiReadWriteForm(r.html);
+    if (f.missing.includes('sKey') || f.missing.includes('tradeJun')) throw new Error('unexpected_page: 주문폼 필드 없음');
     return { tradeJun: f.values.tradeJun || '', client: f.values.client || '', rows: f.rows.length };
   }
   async function searchClient(type, word) {
-    const r = await post('/etc/client.do?tcode=order_item', Object.assign({}, POPUP_BASE, { searchWordType: type, searchWord: word, pageSize: '100' }));
+    const r = await post('/etc/client.do?tcode=order_item', Object.assign({}, POPUP_BASE, { searchWordType: type, searchWord: word, pageSize: '100' }), /\/etc\/client\.do$/);
     return C.oiClientSearchRows(r.html);
   }
   async function searchMaster(word) {
-    const r = await post('/etc/orderMasterItem.do?tcode=order_item', { formname: 'form1', url: '/order/item/orderItemWriteForm.do', actFlag: '1', jun: '', searchItemType: '', client: '', clientName: '', searchWord2: word, pageSize: '100', searchSortType: 'seq' });
+    const r = await post('/etc/orderMasterItem.do?tcode=order_item', { formname: 'form1', url: '/order/item/orderItemWriteForm.do', actFlag: '1', jun: '', searchItemType: '', client: '', clientName: '', searchWord2: word, pageSize: '100', searchSortType: 'seq' }, /\/etc\/orderMasterItem\.do$/);
     return C.oiMasterSearchRows(r.html);
   }
   //  등록 응답은 그 이름으로 검색된 고객검색 페이지로 리다이렉트된다(실측) → 그 행에서 seq 를 읽는다. 없으면 재검색.
@@ -61,27 +71,27 @@
       clientRelation4: '1', targetName4: '', clientMemorial4: '1', memorialDate4: '', memorialType4: '1', memorialLeapType4: '0',
       clientRelation5: '1', targetName5: '', clientMemorial5: '1', memorialDate5: '', memorialType5: '1', memorialLeapType5: '0'
     };
-    const r = await post('/etc/clientWrite.do?tcode=order_item', hidden.concat(Object.entries(fixed)));
+    const r = await post('/etc/clientWrite.do?tcode=order_item', hidden.concat(Object.entries(fixed)), /\/etc\/client(?:Write)?(?:Form)?\.do$/);
     const res = C.oiSubmitResult(r.url);
     let client = C.oiClientSearchRows(r.html).find((c) => c.name === name) || null;
     if (res.ok && !client) client = (await searchClient('clientName', name)).find((c) => c.name === name) || null;
     return { ok: res.ok && !!client, msg: res.msg || (client ? '' : '등록 후 고객을 찾지 못함'), client };
   }
   async function getWriteForm(p) {
-    const r = await req(WRITE_URL + '&tradeJun=' + enc(p.tradeJun || '') + '&master=' + enc(p.master || '') + '&client=' + enc(p.client || '') + '&clientName=' + enc(p.clientName || ''));
+    const r = await req(WRITE_URL + '&tradeJun=' + enc(p.tradeJun || '') + '&master=' + enc(p.master || '') + '&client=' + enc(p.client || '') + '&clientName=' + enc(p.clientName || ''), null, WRITE_RE);
     return C.oiReadWriteForm(r.html);
   }
   async function postLine(fields) {
-    const r = await post('/order/item/orderItemWrite.do?tcode=order_item', fields);
+    const r = await post('/order/item/orderItemWrite.do?tcode=order_item', fields, WRITE_RE);
     const res = C.oiSubmitResult(r.url);
     return { ok: res.ok, msg: res.msg, tradeJun: C.oiFieldValue(r.html, 'tradeJun') || '', rows: C.oiWriteListRows(r.html) };
   }
   async function getForm10(p) {
-    const r = await req(WRITE_URL + '&tradeJun=' + enc(p.tradeJun || '') + '&client=' + enc(p.client || '') + '&clientName=' + enc(p.clientName || ''));
+    const r = await req(WRITE_URL + '&tradeJun=' + enc(p.tradeJun || '') + '&client=' + enc(p.client || '') + '&clientName=' + enc(p.clientName || ''), null, WRITE_RE);
     return C.oiReadForm10(r.html);
   }
   async function postComplete(fields) {
-    const r = await post('/jun/orderitem/orderItemJunWrite.do?tcode=order_item', fields);
+    const r = await post('/jun/orderitem/orderItemJunWrite.do?tcode=order_item', fields, WRITE_RE);
     return C.oiSubmitResult(r.url);
   }
   //  되돌리기: 페이지 del(form2,form3) 그대로 — form3(sKey + idx…) 를 orderItemDelete.do + CONST_URL 로 POST. ⚠ 라이브 미실측(§4.2).
@@ -92,12 +102,12 @@
     const url = '/order/item/orderItemDelete.do?tcode=order_item&reqPage=1&pageSize=20&searchSortType=seq&tradeJun=' + enc(tradeJun || '')
       + '&payJun=&shop=LT&shopName=' + enc('FASHION') + '&client=' + enc(client || '') + '&clientName=' + enc(clientName || '');
     const pairs = [['sKey', sKey]].concat(idxValues.map((v) => ['idx', v]));
-    const r = await post(url, pairs);
+    const r = await post(url, pairs, WRITE_RE);
     return C.oiSubmitResult(r.url);
   }
   //  주문전표 목록(오늘 기본 범위, 최대 100행). 열 위치는 core 가 헤더 이름으로 찾는다.
   async function listJunRows() {
-    const r = await req('/jun/orderitem/orderItemList.do?tcode=order_item&pageSize=100&searchSortType=seq');
+    const r = await req('/jun/orderitem/orderItemList.do?tcode=order_item&pageSize=100&searchSortType=seq', null, /\/jun\/orderitem\/orderItemList\.do$/);
     return C.oiJunListRows(r.html);
   }
   async function findJunNums(orderSeqs) {

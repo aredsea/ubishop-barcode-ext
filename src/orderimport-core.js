@@ -94,10 +94,12 @@
   }
 
   //  SheetJS header:1 행 배열 → 줄 목록. 합계 행·빈 행은 버린다. 첫 행이 헤더.
-  function oiParseRows(rows) {
+  //  meta.numericPhoneRows: 휴대폰 셀이 **숫자형**이었던 행 인덱스(0=헤더) — 앞 0 이 사라진 값이 유효 번호처럼 통과하는 것을 막는다(Terra 14R P1).
+  function oiParseRows(rows, meta) {
     if (!Array.isArray(rows) || !rows.length) return { error: '빈 파일', lines: [] };
     const hm = oiHeaderMap(rows[0]);
     if (hm.missing.length) return { error: '필수 열 없음: ' + hm.missing.join(', '), lines: [] };
+    const numericPhone = new Set(((meta && meta.numericPhoneRows) || []).map(Number));
     const lines = [];
     rows.slice(1).forEach((r, i) => {
       const row = Array.isArray(r) ? r : [];
@@ -112,6 +114,7 @@
         market: oiMarket(seller),
         buyer: cell('buyer'),
         phone: oiNormPhone(cell('phone')),
+        phoneNumericCell: numericPhone.has(i + 1),
         productName: cell('name'),
         optionText: cell('option'),
         price: oiMoney(cell('price')),
@@ -269,6 +272,7 @@
     if (line.groupMismatch) issues.push('수령자 불일치: 같은 주문번호의 첫 줄과 수령자/휴대폰이 다름');
     if (line.tooMany) issues.push('줄 수 초과: 주문장 ' + line.tooMany + '줄 (최대 ' + OI_MAX_LINES + ') — 유비샵에서 나눠 넣으세요');
     if (!line.phone || !line.phone.ok) issues.push('휴대폰 형식: ' + (line.phone ? line.phone.raw : ''));
+    if (line.phoneNumericCell) issues.push('휴대폰 숫자 셀: 앞 0 이 사라졌을 수 있음 — 엑셀에서 텍스트 서식으로 저장하세요');
     if (!line.buyer) issues.push('수령자 없음');
     if (line.price == null) issues.push('판매가 없음');
     if (line.qty == null) issues.push('수량');
