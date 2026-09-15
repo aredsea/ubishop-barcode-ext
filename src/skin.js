@@ -1191,10 +1191,12 @@
         catch (_) { try { row.scrollIntoView(); } catch (_) {} }
         msLog('강조+스크롤', bc);
         ubHlPolling = false;
+        if (isRotateWrite()) rotAfterRowFound(row, bc);   // 회전입고: 같은 행에서 새바코드 → 보관함(스펙 §2)
         return;
       }
       if (++tries < 25) { setTimeout(tick, 300); return; }   // ~7.5s 폴링(렌더 지연 대비)
       ubHlPolling = false;   // 소진: flag 유지(60초 만료) → 옵저버/다음 로드가 재시도
+      if (isRotateWrite()) rotAfterRowMissing();          // 회전입고: 결과 행 없음 → 상태줄 경고(스펙 §4-4)
     };
     tick();   // 첫 틱 동기 OK — ubHlSetHere 가드로 outgoing 소비가 원천 차단(시간 의존 없음)
   }
@@ -1303,6 +1305,52 @@
     const msg = String((res && res.msg) || '');
     if (/가능한 상태가 아닙니다/.test(msg)) return { proceed: true, note: '본사반품확인 건너뜀(이미 확인됐거나 대상 아님)' };
     return { proceed: false, note: msg || '반품 신청된 건인지 확인' };
+  }
+  // 결과 화면(회전입고장 표)에서 새바코드 읽기 — 순수. 헤더가 '새바코드' 로 **시작**하는 열(실측 2026-09-15:
+  //  헤더 셀 '새바코드<br>새상품번호', 데이터 셀 '<b>2609I8</b><br>F-NF-…')의 첫 토큰. idx 체크박스 값은
+  //  'seq,기존바코드,상태' 라 새바코드가 없어 셀에서 읽는다(스펙 §3). 6자 영숫자이고 기존 바코드와 다를 때만 채택.
+  function rotNewBarcodeFromCells(headerTexts, rowTexts, oldBc) {
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+    const hs = Array.isArray(headerTexts) ? headerTexts : [];
+    const rs = Array.isArray(rowTexts) ? rowTexts : [];
+    const i = hs.findIndex((h) => norm(h).indexOf('새바코드') === 0);
+    if (i < 0 || i >= rs.length) return '';
+    const tok = (norm(rs[i]).split(' ')[0] || '').toUpperCase();
+    if (!/^[0-9A-Z]{6}$/.test(tok)) return '';
+    if (tok === String(oldBc == null ? '' : oldBc).trim().toUpperCase()) return '';
+    return tok;
+  }
+  // DOM 래퍼: 강조된 행이 속한 표에서 '새바코드' 를 품은 다른 행을 헤더로 삼는다. 못 찾으면 ''.
+  function rotNewBarcodeFromRow(tr, oldBc) {
+    try {
+      const tbl = tr && tr.closest ? tr.closest('table') : null;
+      if (!tbl) return '';
+      const hdr = [...tbl.rows].find((r) => r !== tr && /새바코드/.test(r.textContent || ''));
+      if (!hdr) return '';
+      const texts = (r) => [...r.cells].map((c) => c.textContent || '');
+      return rotNewBarcodeFromCells(texts(hdr), texts(tr), oldBc);
+    } catch (_) { return ''; }
+  }
+  // 결과 화면 상태줄(#ub-rot-st). 사이드바가 아직/이미 없으면 무시 — 표시용이라 실패해도 아무 일도 안 일어난다.
+  function rotSetResultStatus(text, kind) {
+    const el = document.getElementById('ub-rot-st');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'ub-stk-st' + (kind ? ' ' + kind : '');
+  }
+  let rotMsgShown = false;   // 로드 시 URL msg(서버 거부)를 띄웠으면 '행 못 찾음' 경고로 덮지 않는다(스펙 §4)
+  // 폴러가 기존 바코드 행을 찾은 순간: 같은 행에서 새바코드 → 재고화 보관함(본사확인 팝업이 강조) → 상태 ok.
+  async function rotAfterRowFound(tr, oldBc) {
+    const nb = rotNewBarcodeFromRow(tr, oldBc);
+    if (!nb) { rotLog('새바코드 못 읽음', oldBc); rotSetResultStatus('행은 찾았으나 새바코드를 못 읽음(표 구조 변경?)', 'warn'); return; }
+    try { await stkRecentAdd(nb); } catch (e) { rotLog('보관함 저장 실패', e); }
+    rotLog('새바코드', oldBc, '→', nb, '보관함 등록');
+    rotSetResultStatus(stkNorm(oldBc) + ' → 새바코드 ' + nb + ' · 본사확인 팝업 강조 등록', 'ok');
+  }
+  // 폴러가 소진(약 7.5초)될 때까지 행이 없음: 서버가 거부했거나 표가 안 떴다.
+  function rotAfterRowMissing() {
+    if (rotMsgShown) return;
+    rotSetResultStatus('회전입고 결과 행을 못 찾음 — 화면 메시지 확인', 'warn');
   }
   let rotBusy = false;
   async function rotateRun(barcode, shop, setStatus) {
@@ -3598,6 +3646,10 @@
       try {
         const last = JSON.parse(localStorage.getItem('UB_ROTATE_LAST') || 'null');
         if (last && last.barcode) setRotStatus('직전: ' + last.barcode + ' → ' + rotShopName(last.shop) + ' 회전입고 실행됨', 'ok');
+      } catch (_) {}
+      try {   // 서버가 회전입고를 거부하면 리다이렉트 URL msg 로 온다 → 그 문구 그대로 빨강(스펙 §4-1). '직전:' 보다 우선.
+        const m = new URLSearchParams(location.search).get('msg') || '';
+        if (m.trim()) { rotMsgShown = true; setRotStatus('회전입고 실패: ' + m.trim(), 'err'); }
       } catch (_) {}
       setTimeout(() => { try { rotIn.focus(); } catch (_) {} }, 400);
     }
