@@ -90,6 +90,7 @@
   }
   //  읽기 전용 보강: 마스터 폼(k/색상 옵션·기본값)·고객 판정·추천 후보. 실패해도 검토 표는 뜬다.
   async function enrich() {
+    if (S.running) return;   // 실행 중엔 같은 세션에 GET 을 끼우지 않는다 — 실행기의 sKey GET→POST 사이에 들어가면 안 된다(Fable F2)
     const seqs = new Set();
     S.orders.forEach((o) => o.lines.forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
     for (const seq of seqs) {
@@ -205,8 +206,9 @@
   //  코드표 밖 판매처: 이 세션에서만 접미·마켓을 정한다(스펙 §2.3, Terra 4R P2). 표에는 저장하지 않는다.
   const MARKET_OPTS = [['2', 'SSG'], ['3', 'CJ몰'], ['4', 'H몰'], ['5', '스마트스토어'], ['6', '카페24'], ['7', 'GS샵'], ['8', '쿠팡'], ['9', '위메프'], ['10', '롯데ON'], ['11', '카카오'], ['12', '11번가'], ['13', 'G마켓'], ['14', '옥션'], ['15', '더리본샵'], ['16', 'AK몰'], ['17', '지그재그'], ['18', '아몬즈'], ['19', '지인소개'], ['20', '퀸잇'], ['21', '에이블리'], ['22', '오늘룩']];
   function marketPick(o, oi) {
-    return '<span class="oi-issue">판매처 미등록(' + esc(o.seller) + ')</span> 접미 <input class="oi-in sm" data-f="mkt-suffix" data-o="' + oi + '" placeholder="예: 십" maxlength="4"> 마켓 <select class="oi-in" style="width:auto" data-f="mkt-job" data-o="' + oi + '"><option value="">— 선택 —</option>'
-      + MARKET_OPTS.map(([v, t]) => '<option value="' + v + '">' + esc(t) + '</option>').join('') + '</select> <button class="oi-btn" data-act="mkt-apply" data-o="' + oi + '">적용</button>';
+    const dis = S.running ? ' disabled' : '';
+    return '<span class="oi-issue">판매처 미등록(' + esc(o.seller) + ')</span> 접미 <input class="oi-in sm" data-f="mkt-suffix" data-o="' + oi + '" placeholder="예: 십" maxlength="4"' + dis + '> 마켓 <select class="oi-in" style="width:auto" data-f="mkt-job" data-o="' + oi + '"' + dis + '><option value="">— 선택 —</option>'
+      + MARKET_OPTS.map(([v, t]) => '<option value="' + v + '">' + esc(t) + '</option>').join('') + '</select> <button class="oi-btn" data-act="mkt-apply" data-o="' + oi + '"' + dis + '>적용</button>';
   }
   function custText(o) {
     if (!o.customer) return '<span class="oi-muted">조회 전</span>';
@@ -217,14 +219,15 @@
     return '<span class="oi-issue">조회 실패</span>';
   }
   function lineRow(o, oi, l, li) {
+    const dis = S.running ? ' disabled' : '';   // 실행 중엔 줄 컨트롤 전부 잠금(Fable F2)
     const e = l.mapping ? l.mapping.entry : null;
     const prod = e
-      ? esc(e.name) + ' <span class="oi-muted">' + esc(e.code) + '</span> <button class="oi-btn" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="매핑 지우기">✕</button>'
-        + '<div style="margin-top:3px"><input class="oi-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"></div>'
-      : '<select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
+      ? esc(e.name) + ' <span class="oi-muted">' + esc(e.code) + '</span> <button class="oi-btn" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="매핑 지우기"' + dis + '>✕</button>'
+        + '<div style="margin-top:3px"><input class="oi-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"' + dis + '></div>'
+      : '<select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"' + dis + '><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
         + (l.suggest || []).map((s) => '<option value="' + esc(s.seq + '|' + s.code + '|' + s.name) + '">' + esc(s.name) + ' · ' + esc(s.code) + '</option>').join('')
-        + '</select><div style="display:flex;gap:4px;margin-top:3px"><input class="oi-in" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '"><button class="oi-btn" data-act="search" data-o="' + oi + '" data-l="' + li + '">검색</button></div>';
-    const inp = (f, v, cls) => '<input class="oi-in ' + (cls || 'sm') + '" data-f="' + f + '" data-o="' + oi + '" data-l="' + li + '" value="' + esc(v == null ? '' : v) + '">';
+        + '</select><div style="display:flex;gap:4px;margin-top:3px"><input class="oi-in" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '"' + dis + '><button class="oi-btn" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>검색</button></div>';
+    const inp = (f, v, cls) => '<input class="oi-in ' + (cls || 'sm') + '" data-f="' + f + '" data-o="' + oi + '" data-l="' + li + '" value="' + esc(v == null ? '' : v) + '"' + dis + '>';
     const issues = l.issues.length ? '<div class="oi-issue">' + l.issues.map(esc).join('<br>') + '</div>' : '';
     return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + '"><td></td><td colspan="2">' + esc(l.productName) + '<br><span class="oi-muted">' + esc(l.optionText || '(옵션 없음)') + '</span>' + issues + '</td>'
       + '<td>' + prod + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
@@ -248,7 +251,7 @@
       + (nOrd ? '<span>' + esc(S.fileName) + ' · 주문장 ' + nOrd + ' · 줄 ' + nLines + ' · 실행 가능 ' + nReady + ' · 체크 ' + nChk + '</span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가 열 포함)를 선택하세요</span>')
       + '<span style="margin-left:auto"></span>'
       + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>등록 시작</button>'
-      + '<button class="oi-btn" data-act="export-map">매핑표 내보내기</button><label class="oi-btn">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden></label>'
+      + '<button class="oi-btn" data-act="export-map">매핑표 내보내기</button><label class="oi-btn">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden' + (S.running ? ' disabled' : '') + '></label>'
       + '<button class="oi-btn" data-act="export-log">로그 JSON</button></div>'
       + (nOrd ? '<table class="oi-t"><thead><tr><th><input type="checkbox" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제"' + (nReady && nChk === nReady ? ' checked' : '') + (nReady && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th>수량</th><th>판매가</th><th>비고</th></tr></thead><tbody>'
         + S.orders.map(orderRow).join('') + '</tbody></table>' : '')
@@ -280,6 +283,7 @@
   async function onClick(e) {
     const btn = e.target.closest('[data-act]'); if (!btn) return;
     const act = btn.dataset.act;
+    if (S.running && act !== 'close' && act !== 'export-log' && act !== 'export-map') return;   // 실행 중 조작 차단(Fable F2) — 다운로드·닫기만 허용
     if (act === 'close') closePanel();
     else if (act === 'run') run();
     else if (act === 'export-map') download('ub-orderimport-map-' + new Date().toISOString().slice(0, 10) + '.json', S.map);
@@ -307,6 +311,7 @@
     }
   }
   async function onChange(e) {
+    if (S.running) return;   // 실행 중 조작 차단(Fable F2)
     const el = e.target;
     if (el.id === 'ub-oi-file') { const f = el.files && el.files[0]; if (f) await loadFile(f); return; }
     if (el.id === 'ub-oi-mapfile') { const f = el.files && el.files[0]; if (f) await importMap(f); return; }
@@ -367,7 +372,7 @@
       if (!obj || typeof obj !== 'object') throw new Error('JSON 객체가 아닙니다');
       let n = 0, bad = 0;
       Object.keys(obj).forEach((k) => { if (C.oiValidMapEntry(obj[k])) { S.map[k] = obj[k]; n++; } else bad++; });   // seq·code 둘 다 없는 항목은 버린다(Terra 8R P2)
-      await saveMap(); S.orders.forEach(refreshOrder); render();
+      await saveMap(); S.orders.forEach(refreshOrder); await enrich(); render();   // 새로 매핑된 줄의 품위·색상 옵션 검사가 검토 단계에서 빠지지 않게(Fable F5)
       alert(n + '개 항목을 매핑표에 합쳤습니다.' + (bad ? ' (seq/code 가 없는 ' + bad + '개는 건너뜀)' : ''));
     } catch (err) { alert('매핑표 가져오기 실패: ' + (err && err.message || err)); }
   }

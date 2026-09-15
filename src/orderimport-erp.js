@@ -103,7 +103,7 @@
       + '&payJun=&shop=LT&shopName=' + enc('FASHION') + '&client=' + enc(client || '') + '&clientName=' + enc(clientName || '');
     const pairs = [['sKey', sKey]].concat(idxValues.map((v) => ['idx', v]));
     const r = await post(url, pairs, WRITE_RE);
-    return C.oiSubmitResult(r.url);
+    return Object.assign(C.oiSubmitResult(r.url), { before: f.rows || [] });   // 삭제 직전 행 목록 — core 가 남의 줄 소실(초과 삭제)을 검사한다(Fable F1)
   }
   //  주문전표 목록(오늘 기본 범위, 최대 100행). 열 위치는 core 가 헤더 이름으로 찾는다.
   async function listJunRows() {

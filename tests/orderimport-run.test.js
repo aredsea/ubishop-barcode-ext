@@ -52,7 +52,7 @@ function makeErp(opts) {
     async postLine(fields) { calls.push(['postLine', Object.fromEntries(fields)]); if (opts.lineFailsAt != null && srv.rows.length === opts.lineFailsAt) return { ok: false, msg: '실패', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; if (!srv.tradeJun) srv.tradeJun = '141236'; const f = Object.fromEntries(fields); srv.rows.push(row(String(++srv.seqNo), srv.tradeJun, f.itemSize, f.shopRemark)); return { ok: true, msg: '', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; },
     async getForm10(p) { calls.push(['getForm10', p.tradeJun]); const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; return { values: form10Values({ tradeJun: closed ? p.tradeJun : srv.tradeJun, client: p.client }), missing: opts.form10Missing || [], rows: closed ? closed.slice() : srv.rows.slice() }; },
     async postComplete(fields) { calls.push(['postComplete', Object.fromEntries(fields)]); if (opts.completeFails) return { ok: false, msg: '완료 실패' }; srv.closed = srv.closed || {}; srv.closed[srv.tradeJun] = srv.rows.slice(); srv.tradeJun = ''; srv.rows = []; return { ok: true, msg: '' }; },
-    async deleteLines(tradeJun, client, clientName, idxValues) { calls.push(['deleteLines', tradeJun, idxValues.slice()]); if (opts.deleteFails) return { ok: false, msg: 'x' }; const seqs = idxValues.map((v) => v.split(',')[0]); srv.rows = srv.rows.filter((r) => !seqs.includes(r.orderSeq)); if (!srv.rows.length) srv.tradeJun = ''; return { ok: true, msg: '' }; },
+    async deleteLines(tradeJun, client, clientName, idxValues) { calls.push(['deleteLines', tradeJun, idxValues.slice()]); if (opts.deleteFails) return { ok: false, msg: 'x' }; const before = srv.rows.slice(); const seqs = idxValues.map((v) => v.split(',')[0]); srv.rows = srv.rows.filter((r) => !seqs.includes(r.orderSeq)); if (!srv.rows.length) srv.tradeJun = ''; return { ok: true, msg: '', before }; },   // before = 삭제 직전 목록(어댑터 계약)
     async findJunNums(orderSeqs) { calls.push(['findJunNums', orderSeqs.slice()]); return orderSeqs.map((s) => ({ orderSeq: s, junNum: '0000002YF5', status: '주문완료' })); },
     async listJunRows() { calls.push(['listJunRows']); return []; }   // 기본: 목록에 다른 줄 없음(테스트가 필요하면 덮어쓴다)
   };
@@ -407,6 +407,49 @@ test('줄 응답에 tradeJun 이 없으면 삭제·후속 쓰기 없이 fatal(tr
   assert.equal(erp.calls.filter((c) => c[0] === 'postLine').length, 1);
   assert.ok(!names(erp).includes('deleteLines')); assert.ok(!names(erp).includes('postComplete'));
   assert.equal(C.oiPostRunState(r, 'now').uncheck, true);
+});
+
+//  Fable 5 F1 (2026-09-15): 되돌리기가 내 줄 밖까지 지워도(서버 계약이 idx 단독 삭제가 아니면) 남의 줄 소실이 'skipped' 로 통과해 배치가 계속됐다.
+test('되돌리기가 남의 줄까지 지우면 fatal(rollback_overreach), 다음 주문장 blocked', async () => {
+  const erp = makeErp({ foreignRowAt: 1 });        // 둘째 줄 GET 때 남의 줄 999999 가 끼어든다 → mismatch → 되돌리기
+  erp.deleteLines = async (tradeJun, client, clientName, idxValues) => { erp.calls.push(['deleteLines', tradeJun, idxValues.slice()]); const before = erp.srv.rows.slice(); erp.srv.rows = []; erp.srv.tradeJun = ''; return { ok: true, msg: '', before }; };   // 전체 삭제 계약
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /rollback_overreach:999999/);
+  assert.equal(rs[1].status, 'blocked');
+});
+test('되돌리기 응답에 삭제 직전 목록(before)이 없으면 fatal(rollback_unverifiable)', async () => {
+  const erp = makeErp({ lineFailsAt: 1 });
+  const oDel = erp.deleteLines.bind(erp);
+  erp.deleteLines = async (...a) => { const r = await oDel(...a); delete r.before; return r; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /rollback_unverifiable/);
+});
+
+//  Fable 5 F3 (2026-09-15): remain.some(내 orderSeq) 가드를 지워도 통과했다(변이 생존) — 장부(unverified) 기록을 좌우하는 가드다.
+test('되돌리기가 ok 라고 답했는데 내 줄이 그대로면 rollback_failed·rolledBack 0·장부 unverified', async () => {
+  const erp = makeErp({ lineFailsAt: 1 });
+  erp.deleteLines = async (tradeJun, client, clientName, idxValues) => { erp.calls.push(['deleteLines', tradeJun, idxValues.slice()]); return { ok: true, msg: '', before: erp.srv.rows.slice() }; };   // 아무것도 안 지움
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /rollback_failed/);
+  assert.equal(r.rolledBack, 0);
+  const ps = C.oiPostRunState(r, 'now'); assert.equal(ps.uncheck, true); assert.equal(ps.ledgerEntry.unverified, true);
+});
+
+//  Fable 5 F3 Nit (2026-09-15): 진입 가드의 rows>0 과 줄 응답의 행 수 대조가 테스트 밖이었다(변이 생존 — 하류가 잡지만 결과가 달라진다).
+test('진입 가드: tradeJun 이 비어도 행이 남아 있으면 시작하지 않는다(open_trade)', async () => {
+  const erp = makeErp();
+  erp.state = async () => { erp.calls.push(['state']); return { tradeJun: '', client: '', rows: 1 }; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.equal(r.reason, 'open_trade');
+  assert.ok(!names(erp).includes('postLine'));
+});
+test('줄 응답의 행 수가 기대(내 줄 수+1)와 다르면 새 줄이 하나뿐이어도 삭제 없이 fatal(rowmismatch)', async () => {
+  const erp = makeErp();
+  const oPost = erp.postLine.bind(erp); let n = 0;
+  erp.postLine = async (fields) => { if (++n === 2) erp.srv.rows.shift(); return oPost(fields); };   // 둘째 POST 직전 내 첫 줄이 사라짐 → rows=[C]
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /line_unverified:rowmismatch/);
+  assert.ok(!names(erp).includes('deleteLines')); assert.ok(!names(erp).includes('postComplete'));
 });
 
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {

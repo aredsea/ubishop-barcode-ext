@@ -641,6 +641,12 @@
           const remain = (after.rows || []).map((r) => r.orderSeq);
           if (!del.ok || remain.some((s) => res.orderSeqs.includes(s))) { res.status = 'fatal'; res.reason = 'rollback_failed:' + reason; return res; }
           res.rolledBack = res.idxValues.length;
+          //  되돌리기가 내 줄 **밖**까지 지웠는지 — 삭제 직전 목록(어댑터의 키 발급 GET 응답 `before`)에 있던 남의 줄이 사라졌으면 서버 계약이
+          //  idx 단독 삭제가 아니라는 뜻이라 사람이 봐야 한다(Fable F1). 되돌리기는 라이브 미실측이므로 계약이 틀렸을 때도 fail-closed 여야 한다.
+          if (!Array.isArray(del.before)) { res.status = 'fatal'; res.reason = 'rollback_unverifiable:' + reason; return res; }
+          const mine = res.orderSeqs.map(String);
+          const lost = del.before.map((r) => String(r.orderSeq)).filter((s) => s && !mine.includes(s) && !remain.map(String).includes(s));
+          if (lost.length) { res.status = 'fatal'; res.reason = 'rollback_overreach:' + lost.join(',') + ' (' + reason + ')'; return res; }
           if (remain.length) { res.status = 'fatal'; res.reason = 'foreign_rows_remain:' + reason; return res; }
           //  내 줄이 사라졌어도 세션에 빈 주문장이 남아 있으면 다음 주문장을 시작할 수 없다 — 조용히 skipped 로 넘기지 않는다(Terra 10R P2).
           const st = await erp.state();
