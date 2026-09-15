@@ -77,10 +77,97 @@
 | 60 | 포커스-1R | Luna | `app-files.json` 해시 미갱신 — loader 가 번들 전체를 거부해 배포가 안 되거나 신규 설치가 안 뜬다(P1) | **채택·처리** | 맞다. 검수 전에 인덱스를 안 올린 내 순서 문제. `node build-app-index.js 2.9.10` 로 갱신 |
 | 61 | 포커스-2R | Luna | 같은 pathname 의 `master_item`·`master_item_image` 탭에도 걸리니 `tcode=master_item_k` 로 제한하라(P2) | 🔴 **기각** | 요청은 "기초상품관리 페이지" 전체이고 세 탭(기본정보/품위정보/이미지보기)이 **같은 검색 폼**을 공유한다. 칸이 없으면 `apply` 가 스스로 빠진다 |
 | 62 | 포커스-2R | Luna | 번들이 비동기로 늦게 붙는 사이 사용자가 **빈 칸·셀렉트**에 먼저 들어가 있으면 첫 타이머가 포커스를 뺏는다(P2) | **채택·수정** | 빈 값 조건을 버리고 `activeElement` 가 어떤 컨트롤이든 잡혀 있으면 취소(`isControl`). 페이지 자체는 로드 후 포커스를 안 준다(실측 body) |
+| 63 | 주문-1R~2R | Terra | 완료 POST 성공 뒤 확인 GET 예외가 완료된 줄을 지움 · 되돌리기 예외가 runAll 까지 reject · 완료/줄 POST 응답 유실 · 주문번호 빈 행 | **채택·수정** | `res.completed/completing`(완료 POST 이후 실패는 삭제 금지 fatal) · `res.lineUnknown` · 빈 주문번호 행 분리+차단 |
+| 64 | 주문-3R | Terra | 줄 POST 예외 뒤 skipped 로 계속(지연 커밋) · 스위치 OFF 뒤 열린 패널 실행 | **채택·수정** | 줄 POST 예외는 무조건 `line_unverified` fatal · run() 진입 시 storage 재확인 |
+| 65 | 주문-3R | Terra | 완료 직전 **서버측 compare-and-complete/배타 잠금**, 불가능하면 자동 완료 금지(P1) | 🔴 **부분 채택·나머지 기각** | 유비샵(Struts 폼 POST)에 원자 연산이 없다. "자동 완료 금지"는 사장님 결정(실행 중 조작 금지)으로 기각. 완료 직후 전표 목록 사후 검출(`foreign_line_completed`) + 쓰기 직전 plain GET 대조(#73)로 대응 |
+| 66 | 주문-4R~6R | Terra | 수령자 불일치 · 이중 클릭 · 새 줄 귀속 불명 · 미등록 판매처 · 수동 보정 시 미해석 토큰 · 빈 주문장 열림 · 완료 대조가 code 만 | **채택·수정(7건)** | groupMismatch · `S.starting` 선점 · rowmismatch fatal · oiApplyMarket · optOverride · 첫 줄 tradeJun 빈값 요구 · 등록 응답 행 스냅샷 전체 일치 |
+| 67 | 주문-7R | Terra | 되돌리기 직전 세션 확인 없음(완료된 전표를 지울 수 있음) · `shell-files.json` 미재생성 | **채택·수정 / 배포 단계** | plain state 대조 후 다르면 삭제 없이 fatal · 인덱스는 검수 중 파일 변경 금지라 배포 직전 재생성(`loader-integrity`) |
+| 68 | 주문-8R~9R | Terra | 파일 연속 선택 시 늦은 파싱이 표를 덮음 · 매핑 항목 seq/code 미검증 · 21줄 이상 주문장 중간 fatal(pageSize 20) | **채택·수정** | fileGen 토큰 · `oiValidMapEntry` · `OI_MAX_LINES=20` 쓰기 전 차단 |
+| 69 | 주문-10R | Terra | 코드만 다른 유일 새 줄을 lineUnknown 처리 · 되돌린 뒤 plain state 미확인 · 전표 미확인을 done 으로 | **채택·수정** | code_mismatch 는 내 줄로 기록 후 일반 되돌리기 · rollback 후 `state()` 비움 확인 · '완료 응답 성공, 전표 미확인' 경고 |
+| 70 | 주문-10R | Terra | 고객 등록 응답 유실을 fatal 로(P2) | 🔴 **기각** | 같은 고객이 같은 배치에 다시 나오면 이름 검색이 등록분을 찾아 재사용 → 중복 고객 없음. 고객 등록은 주문 쓰기가 아니다 |
+| 71 | 주문-11R~14R | Terra | 소수 판매가 반올림 · 정산 0 차단 · 재매핑/매핑 지우기 시 접미·폴백 소실 · 수동 색상 미학습 · 숫자형 휴대폰 셀 · 세션 만료 리다이렉트를 성공으로 오판 | **채택·수정** | 정수만 · `oiMoney0` · 메타 승계·`priorMeta`·colorFallback 학습(+`oiFallbackColor` 미적용 결함 자체 발견) · 브리지 `raw:false`+`numericPhoneRows` · 어댑터 `assertUbdstore` |
+| 72 | 주문-O1 | Opus 5 | 완료됐을 수 있는 fatal 주문장이 체크된 채 장부 없이 남아 재클릭 시 **중복 주문장**(P1) | **채택·수정** | `oiPostRunState` 순수 함수 — 체크 해제 + 장부 unverified('이전에 넣음' 경고) |
+| 73 | 주문-O1 | Opus 5 | 쓰기 경로(둘째 줄 이후·완료 직전)에 plain GET 세션 대조 없음 — 명시 tradeJun GET 은 완료돼도 행을 보여줘 스텁이 사각을 가렸다(P2) | **채택·수정** | `assertTradeOpen` + 스텁 `srv.closed` 로 실제 서버처럼 모델링 |
+| 74 | 주문-O1 | Opus 5 | 가드 3개 테스트 미고정(변이 생존) · 휴대폰 재조립이 다른 번호를 만듦 · 장부 덮어쓰기 · 실행 중 매핑표 변경 유실 · 브리지 휴대폰 열 과검출 | **채택·수정** | 변이 KILL 테스트 · 원문 하이픈 유지/국가코드 검토 · 장부 병합 저장 · onChanged 반영 · 검출 열 한정 |
+| 75 | 주문-O2 | Opus 5 | **O1 수정이 만든 회귀** — 세션 대조 GET 이 form10 GET 과 완료 POST 사이에 끼어 완료 POST 의 sKey 가 직전 GET 의 것이 아니게 됨(P1) | **채택·수정** | 대조를 form10 GET 앞으로. GET 마다 고유 sKey 를 내는 스텁으로 모든 쓰기 POST 가 마지막 발급 키를 쓰는지 고정. 스펙 §4 에 "그 GET 과 POST 사이에 다른 GET 을 끼우지 않는다" 명문화 |
+| 76 | 주문-O2 | Opus 5 | `trade_switched` 가드가 테스트 밖이고 code_mismatch 뒤 · lineUnknown 이 장부에 안 남음 · 공백 구분 휴대폰 · 미확인 장부 표시(P2·P2·Nit·Nit) | **채택·수정** | 순서 교정+테스트 · mayRemain 에 lineUnknown · 토막 유지 · 표시 |
+| 77 | 주문-O3 | Opus 5 | 응답 tradeJun 빈값 경로를 명시 사유로(Nit) · deleteLines 의 sKey 는 어댑터 구조상 안전하나 스텁 밖(Nit) | **채택·수정 / 인지·기록** | `trade_missing` lineUnknown fatal · 어댑터 변경 시 그물이 없다는 기록만 |
+| 78 | 주문-O3 | Opus 5 | 키 발급 GET 에서 tradeJun 명시를 빼면 대조 GET 이 불필요(창 0)해진다 | **보류(미실측)** | 전제 2개(세션 반영 GET 의 form1/form10 렌더)가 라이브 미실측. 다음 라이브 읽기 때 재서 결정. 지금 구조는 스펙 §4 와 일치 |
+| 79 | 주문-X1 | DeepSeek v4-pro | 지적 없음(재시도). `oiReadForm10` 구간 경계 정규식이 이론상 form20 에 걸린다는 관찰 | **문제 없음** | 구간은 form10 시작에서 *그 뒤* form 태그까지라 어느 폼에서 잘려도 form10 필드는 전부 안에 있고 실제 페이지에 form20 없음. CJK 오염 0 |
+| 80 | 주문-F1 | Fable 5.1 | 되돌리기가 내 줄 **밖**까지 지워도(서버 계약이 idx 단독 삭제가 아니면) 남의 줄 소실이 skipped 로 통과해 배치가 계속(P1 조건부) | **채택·수정** | 어댑터가 삭제 직전 행 목록 `before` 를 돌려주고 core 가 남의 줄 소실 시 `rollback_overreach` fatal, `before` 없으면 `rollback_unverifiable` fatal. 되돌리기 라이브 미실측이라 계약이 틀려도 fail-closed |
+| 81 | 주문-F1 | Fable 5.1 | 실행 중에도 검토 표의 선택·검색·매핑 지우기가 살아 있어 enrich/검색 GET 이 실행기의 sKey GET→POST 사이에 끼어들 수 있음(P2) | **채택·수정** | onClick/onChange/enrich 게이트 + 줄·마켓·매핑표 컨트롤 disabled(배선 테스트 고정) |
+| 82 | 주문-F1 | Fable 5.1 | `remain.some(내 orderSeq)`·진입 가드 rows>0·행 수 대조가 테스트 밖(변이 생존)(P2·Nit) · importMap 뒤 enrich 누락(Nit) | **채택·수정** | 테스트 3건(변이 4종 각 1건 실패로 KILL) · importMap 뒤 `enrich()` |
+| 83 | 주문-F1 | Fable 5.1 | 검토 표에서 품위/색상 칸을 비우면 파싱값으로 되살아나 "마스터 기본값 사용"을 표현할 수 없다(Nit) | 🔴 **기각** | 값이 화면에 그대로 보이고 잘못된 값이 조용히 나가지 않는다. 그 표현은 요청 밖 |
+| 84 | 주문-F2 | Fable 5.1 | F2 수정의 빈틈 — 파일 로드 직후 **이미 진행 중인** enrich 가 [등록 시작] 뒤에도 남은 요청을 보냄(진입 게이트만 있었다)(P2) | **채택·수정** | `S.enriching` 프라미스(겹치면 직렬화)를 run() 이 끝까지 기다린 뒤 running · 요청마다 게이트 · 조회 중 실행 버튼 잠금 |
+| 85 | 주문-F3~F4 | Fable 5.1 | 시작 대기(`S.starting`) 중 핸들러가 열려 confirm 한 집합≠실행 집합 가능 · 조기 return 시 삼킨 체크박스 표시 불일치(Nit·Nit) | **채택·수정** | 게이트에 `S.starting` 포함 + confirm 전 `jobs` 스냅샷을 그대로 실행 · 조기 return 시 `render()` |
 
 ---
 
 ## 회차별 상세
+
+### 판매처 주문 가져오기(이지어드민 xls → 유비샵 주문장) — SHELL v4.2.0 (2026-09-14 ~ 09-15)
+
+**대상**: `src/orderimport-core.js`(순수 로직 ~830줄) · `src/orderimport-erp.js`(fetch 어댑터) · `src/orderimport.js`(패널 UI) ·
+`src/orderimport-xls.js`(SheetJS MAIN 브리지) · `src/background.js`(주입 핸들러) · `manifest.json` 4.2.0 · `src/skin.js`(사이드바 섹션) ·
+`popup/*`(스위치·일괄체크·새버전 알림) · `build-shell-index.ps1` · `tests/orderimport-*.test.js` 4파일 + 픽스처.
+스펙 `docs/superpowers/specs/2026-09-14-orderimport-design.md`, 플랜 `docs/superpowers/plans/2026-09-14-orderimport.md`.
+브랜치 `feat/orderimport` → main. 검수 대상은 `git diff main...HEAD -- <15경로>` 로 좁혔고 `vendor/`·`docs/` 제외.
+
+**검수 등급 T3** — 근거: ①런타임 영향(판매처 계정 주문 화면) ②**되돌리기 어려움**(실제 ERP 에 주문장·고객을 만든다,
+되돌리기 경로는 사장님 결정으로 라이브 미실측) ③**위험 도메인 = 주문·데이터 손실·동시성**(로그인 세션당 열린 주문장 1개를
+다른 탭/사람과 공유 — 개발 중 실제 사고 1건: 사장님 작업 중인 주문장에 내 줄이 섞여 9호·17호 삭제) ④복잡도 높음(5파일·상태 얽힘).
+→ 라운드 무제한(채택 0까지) + Opus 5 + 교차 1회 + Fable 5(되돌리기 어려운 라이브 쓰기 조건).
+
+| 라운드 | 자리 | 모델 | 지적 | 채택 | 기각 | 비용 |
+|---|---|---|---|---|---|---|
+| 1R | 고위험 | `openai/gpt-5.6-terra` (high) | 2 (P1·P1) | 2 | 0 | $0.3970 |
+| 2R | 재검수 | `openai/gpt-5.6-terra` | 3 (P1·P1·P2) | 3 | 0 | $0.3497 |
+| 3R | 재검수 | `openai/gpt-5.6-terra` | 3 (P1·P1·P2) | 2 + 부분 1 | 부분 1 | $0.5522 |
+| 4R | 재검수 | `openai/gpt-5.6-terra` | 5 (P1×3·P2×2) | 5 | 0 | $0.6018 |
+| 5R | 재검수 | `openai/gpt-5.6-terra` | 1 (P1) | 1 | 0 | $0.4300 |
+| 6R | 재검수 | `openai/gpt-5.6-terra` | 1 (P1) | 1 | 0 | $0.4614 |
+| 7R | 재검수 | `openai/gpt-5.6-terra` | 2 (P1·P1) | 2 (1은 배포 단계) | 0 | $0.5159 |
+| 8R | 재검수 | `openai/gpt-5.6-terra` | 2 (P1·P2) | 2 | 0 | $0.4862 |
+| 9R | 재검수 | `openai/gpt-5.6-terra` | 1 (P1) | 1 | 0 | $0.5169 |
+| 10R | 재검수 | `openai/gpt-5.6-terra` | 4 (P1·P2×3) | 3 | **1** | $0.6235 |
+| 11R | 재검수 | `openai/gpt-5.6-terra` | 1 (P1) | 1 | 0 | $0.5069 |
+| 12R | 재검수 | `openai/gpt-5.6-terra` | 2 (P2·P2) | 2 | 0 | $0.5158 |
+| 13R | 재검수 | `openai/gpt-5.6-terra` | 2 (P2·P2) | 2 (+자체 발견 1) | 0 | $0.4439 |
+| 14R | 재검수 | `openai/gpt-5.6-terra` | 2 (P1·P2) | 2 | 0 | $0.5570 |
+| 15R | 재검수 | `openai/gpt-5.6-terra` | 0 | — | — | $0.4208 |
+| O1 | 내부 | Opus 5 xhigh | 5 (P1·P2×4) + Nit | 5 + Nit | 0 | 구독(미분리) |
+| O2 | 내부 재검수 | Opus 5 xhigh | 3 (P1·P2·P2) + Nit 2 | 3 + 2 | 0 | 구독(미분리) |
+| O3 | 내부 재검수 | Opus 5 xhigh | Nit 2 | 1 | 0(인지 1) | 구독(미분리) |
+| X1 | 교차 | `deepseek/deepseek-v4-pro` | **중단**(의견 없이 `Review was interrupted`, exit 0) | — | — | $0.7902(+지연 반영 $0.0284) — 산출물 없음 |
+| X1 재시도 | 교차 | `deepseek/deepseek-v4-pro` (탐색 최소화 지시) | 0 (관찰 1) | 0 | 0(문제 없음) | $0.2996 (CJK 오염 0) |
+| F1 | 고위험 추가 | Fable 5.1 (`fable-reviewer`) | 5 (P1조건부·P2·P2·Nit·Nit) +Nit 변이 2 | 4 + 2 | **1** | 구독(미분리) — 첫 시도는 세션 한도 429 로 시작 직후 사망(13:10 리셋 후 재시도) |
+| F2 | 재검수 | Fable 5.1 | 1 (P2) | 1 | 0 | 구독(미분리) |
+| F3 | 재검수 | Fable 5.1 | Nit 1(2항) | 1 | 0 | 구독(미분리) |
+| F4 | 재검수 | Fable 5.1 | Nit 1 | 1 | 0 | 구독(미분리) — 반영분(한 줄 `render()`)은 검수자가 지정한 그대로라 추가 라운드 없이 자체 검증(86/86)으로 닫음 |
+
+**OpenRouter 검수 비용**: Terra 15R 합계 **$7.3790**(`usage_daily` 0.1003 → 7.4793) + DeepSeek 교차 **$1.1182**(중단 1회 포함, `usage_daily` 7.6283 → 8.7466) = **$8.4972**.
+worker 위임 없음 — 메인 세션 직접 구현(전역 지침 ③: 라이브 실측(Phase 0)·사고 맥락에 강하게 묶인 작업).
+⚠️ Terra 15라운드는 이 저장소 최장이다 — 되돌리기 어려운 쓰기 경로라 상한 없이 돌렸고, 1~14R 지적이 전부 유효(기각 1)했다.
+채택률이 높았던 이유는 실행기의 실패 분기(응답 유실·세션 경합)가 많아서이고, 매 라운드 "내 수정의 꼬리"(1R→2R→3R 의
+completing/lineUnknown, O1→O2 의 sKey 회귀)가 실제로 나왔다 — 재검수 생략 금지 규칙이 또 맞았다.
+
+**채택·수정한 것 (전부 코드로 재현 후)** — 회차 표는 브리프/원장 「누적 판정」 #63~ 참조. 핵심만:
+- 실패 분기 fail-closed 체계: `res.completing`(완료 POST 전송 뒤 불명 → 삭제 금지 fatal) · `res.lineUnknown`(줄 POST 불명·귀속 불명 → 삭제 금지 fatal) ·
+  되돌리기 직전/줄 사이/완료 직전 plain GET 세션 대조 · 되돌린 뒤 세션 비움 확인 · 완료 직후 전표 목록 사후 검출.
+- 판정 강화: 등록 응답 행 스냅샷 전체 일치 · 첫 줄은 tradeJun 빈값 요구 · 20줄 상한 · 정수 금액 · 코드만 다른 유일 새 줄은 내 줄로 되돌림.
+- UI/상태: `oiPostRunState`(완료됐을 수 있는 fatal 은 체크 해제+장부 unverified) · 장부 병합 저장 · fileGen · 매핑 메타 승계·학습 · 세션 만료 리다이렉트 검출.
+- **O2 P1 은 O1 수정이 만든 회귀**(세션 대조 GET 이 form10 GET 과 완료 POST 사이에 끼어 sKey 규칙 위반) — 스펙 §4 에 "그 GET 과 POST 사이에 다른 GET 을 끼우지 않는다" 를 명문화.
+
+**기각·부분 채택 (근거)**
+- 3R Terra "서버측 compare-and-complete/배타 잠금, 불가능하면 자동 완료 금지": 유비샵(Struts 폼 POST)에 원자 연산이 없다. 자동 완료 금지는 사장님 결정(실행 중 조작 금지)으로 기각. 사후 검출 + plain GET 대조로 대응.
+- 10R Terra "고객 등록 응답 유실 → fatal": 같은 고객이 같은 배치에 다시 나오면 이름 검색이 등록분을 재사용 — 중복 고객 없음. 고객 등록은 주문 쓰기가 아니다.
+- O3 Opus "키 발급 GET 에서 tradeJun 명시를 빼면 대조 GET 이 불필요(창 0)": 전제 2개(세션 반영 GET 의 form1/form10 렌더)가 **미실측** — 다음 라이브 읽기 때 재서 결정. 지금 구조는 스펙 §4 와 일치.
+
+**라이브 실측(Phase 0·실제 실행)**: 2026-09-14 실제 주문 4건(1건은 동시성 사고로 중단) · 2026-09-15 당일 주문 10주문장·11줄 전부 이지어드민과 일치(사장님 확인).
+되돌리기(`orderItemDelete`)만 미실측 — 사장님이 실제 건에서 직접 확인하며 진행하기로 결정.
+
+**편향 메모**: Terra 단독 15라운드(고위험 자리 고정)라 회차 안 비교 대상이 없다. 교차 DeepSeek 과 Fable 이 Terra·Opus 가 못 본 것을 냈는지가 이 회차의 편향 지표 — **Terra·Opus 18라운드가 닫은 뒤 Fable 이 P1 조건부 1건(되돌리기 초과 삭제 미검출) + P2 2건(실행 중 패널 조작·진행 중 enrich)을 단독 적발했다** — 셋 다 '스텁 계약이 틀렸을 때'와 'UI 가 같은 세션에 요청을 끼우는' 각도로, Terra(실행기 분기)·Opus(테스트 고정·sKey 규칙)와 겹치지 않았다. DeepSeek 은 이번엔 값을 못 했다(중단 1회 + 0건). 편향 신호: 없음 — 자리마다 다른 것을 냈다.
+
 
 ### 기초상품관리 자동 포커스 — app-files v2.9.10 (2026-09-14)
 
