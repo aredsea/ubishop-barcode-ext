@@ -285,7 +285,12 @@
       if (!C.oiApplyMarket(o, suf, job)) return;
       o.customer = null; refreshOrder(o); render(); await enrich(); render();
     }
-    else if (act === 'unmap') { const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l]; l.keys.forEach((k) => { delete S.map[k]; }); l.suggest = null; await saveMap(); S.orders.forEach(refreshOrder); await enrich(); render(); }
+    else if (act === 'unmap') {
+      const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l];
+      //  지우기 전에 부가정보를 줄에 보관 — 같은 상품을 다시 고르면 접미·색상 폴백이 살아난다(Terra 13R P2)
+      const e = l.mapping && l.mapping.entry; if (e) l.priorMeta = { seq: String(e.seq), remarkSuffix: e.remarkSuffix || '', colorFallback: e.colorFallback || '' };
+      l.keys.forEach((k) => { delete S.map[k]; }); l.suggest = null; await saveMap(); S.orders.forEach(refreshOrder); await enrich(); render();
+    }
     else if (act === 'search') {
       const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l];
       const q = (btn.parentElement.querySelector('input[data-f="q"]') || {}).value || '';
@@ -305,12 +310,22 @@
     if (f === 'pick') {
       if (!el.value) return;
       const [seq, code, name] = el.value.split('|');
-      S.map = C.oiLearn(S.map, l.keys, { seq, code, name }, new Date().toISOString());
+      const entry = { seq, code, name };
+      if (l.priorMeta && l.priorMeta.seq === String(seq)) { if (l.priorMeta.remarkSuffix) entry.remarkSuffix = l.priorMeta.remarkSuffix; if (l.priorMeta.colorFallback) entry.colorFallback = l.priorMeta.colorFallback; }
+      S.map = C.oiLearn(S.map, l.keys, entry, new Date().toISOString());
       await saveMap();
       S.orders.forEach(refreshOrder);        // 같은 키의 다른 줄에도 즉시 전파
       await enrich(); render(); return;
     }
-    if (f === 'k' || f === 'color') { l.spec[f] = el.value.trim() || null; l.spec.optOverride = true; }     // 사람이 보정 → 원문 미해석 토큰은 차단 사유에서 제외(Terra 4R P2)
+    if (f === 'k' || f === 'color') {
+      l.spec[f] = el.value.trim() || null; l.spec.optOverride = true;     // 사람이 보정 → 원문 미해석 토큰은 차단 사유에서 제외(Terra 4R P2)
+      //  옵션도 마스터 기본값도 없는 상품에 색상을 손으로 넣었으면 그 상품의 매핑에 colorFallback 으로 학습(Terra 13R P2) — 다음 파일부터 자동
+      if (f === 'color' && l.spec.color && l.mapping && !l.parsed.color) {
+        const seq = String(l.mapping.entry.seq); const fb = l.spec.color.toUpperCase();
+        Object.keys(S.map).forEach((k) => { if (S.map[k] && String(S.map[k].seq) === seq) S.map[k] = Object.assign({}, S.map[k], { colorFallback: fb }); });
+        await saveMap();
+      }
+    }
     else if (f === 'itemSize') { l.spec.itemSize = el.value.trim(); l.spec.optOverride = true; }
     else if (f === 'qty') l.spec.qty = C.oiMoney(el.value);
     else if (f === 'price') l.spec.price = C.oiMoney(el.value);

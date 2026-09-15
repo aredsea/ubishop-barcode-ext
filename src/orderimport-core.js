@@ -152,6 +152,13 @@
     return out;
   }
 
+  //  마스터 기본 색상이 비었을 때의 색상: 매핑의 colorFallback(색상 코드 'WG' 같은 2글자)이 셀렉트에 있으면 그것, 아니면 상품코드 4번째 토막.
+  //  (예전엔 colorFallback 을 코드 파서에 넣어 실제로 한 번도 동작하지 않았다 — 2026-09-15 Terra 13R 계기로 발견)
+  function oiFallbackColor(master, colorOpts) {
+    const fb = master && typeof master.colorFallback === 'string' ? master.colorFallback.trim().toUpperCase() : '';
+    if (/^[A-Z0-9]{2}$/.test(fb) && (!colorOpts || colorOpts.some((o) => o.value === fb))) return fb;
+    return oiColorFromCode(master ? master.code : '', colorOpts);
+  }
   //  마스터 기본 색상이 비었을 때: 상품코드 4번째 토막(F-NF-P-WG-UU-00DH → WG)이 셀렉트에 있으면 그 값.
   function oiColorFromCode(code, colorOpts) {
     const seg = String(code == null ? '' : code).split('-')[3] || '';
@@ -276,7 +283,7 @@
       if (parsed.color && !(form.colorOpts || []).some((o) => o.value === parsed.color)) issues.push('색상 없음: ' + parsed.color);
     }
     if (form && parsed && !parsed.color && !(form.defaults && form.defaults.color)) {
-      const fb = resolved.mapping ? oiColorFromCode(resolved.mapping.entry.colorFallback || resolved.mapping.entry.code, form.colorOpts) : null;
+      const fb = resolved.mapping ? oiFallbackColor(resolved.mapping.entry, form.colorOpts) : null;
       if (!fb) issues.push('색상 없음(마스터 기본값 빈값)');
     }
     return issues;
@@ -510,7 +517,7 @@
       }
     }
     let color = spec.color || v.color || '';
-    if (!color) color = oiColorFromCode((master && (master.colorFallback || master.code)) || '', form.colorOpts) || '';
+    if (!color) color = oiFallbackColor(master, form.colorOpts) || '';
     if (!color) issues.push('색상 없음');
     else if (form.colorOpts && form.colorOpts.length && !form.colorOpts.some((o) => o.value === color)) issues.push('색상 없음: ' + color);
     v.color = color;
@@ -737,7 +744,7 @@
   const api = {
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiParseRows,
-    oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
+    oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiLineIssues,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,

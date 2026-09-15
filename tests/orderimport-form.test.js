@@ -114,6 +114,20 @@ test('oiLinePayload: 스펙 덮어쓰기, 색상 폴백, orgOrderPrice 는 마�
   assert.ok(C.oiLinePayload(f, master, { qty: 0, price: 0, remark: '' }).issues.includes('수량'));
 });
 
+//  Terra 13R 계기로 발견(2026-09-15): colorFallback 'WG' 를 코드 파서(4번째 토막)에 넣어 실제로는 한 번도 동작하지 않았다.
+test('oiLinePayload / oiLineIssues: 매핑의 colorFallback(색상 코드)이 마스터 기본 색상이 빈 상품에 실제로 적용된다', () => {
+  const f = C.oiReadWriteForm(WRITE);
+  const noColor = Object.assign({}, f, { values: Object.assign({}, f.values, { color: '' }) });
+  const master = { seq: '7083', code: 'F-AF-Z-XY-ZZ-004E', colorFallback: 'PG' };   // 코드 4번째 토막 XY 는 셀렉트에 있지만 폴백이 우선
+  assert.equal(Object.fromEntries(C.oiLinePayload(noColor, master, { qty: 1, price: 1400, remark: '' }).fields).color, 'PG');
+  const bad = { seq: '7083', code: 'F-AF-Z-QQ-ZZ-004E', colorFallback: 'ZZ' };      // 폴백이 셀렉트에 없고 코드 토막도 없음 → 이슈
+  assert.ok(C.oiLinePayload(noColor, bad, { qty: 1, price: 1400, remark: '' }).issues.includes('색상 없음'));
+  const line = { market: { suffix: 'a' }, phone: { ok: true }, buyer: 'x', orderNo: '1', price: 1, qty: 1, seller: 's' };
+  const form = { kOpts: [{ value: '5', text: '925' }], colorOpts: f.colorOpts, defaults: { color: '' } };
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: master }, parsed: C.oiParseOption(''), form }), []);
+  assert.ok(C.oiLineIssues(line, { mapping: { entry: bad }, parsed: C.oiParseOption(''), form }).some((s) => s.startsWith('색상 없음')));
+});
+
 test('oiLinePayload: 품위를 바꾸면 kchange 처럼 배열에서 weight/orgOrderPrice/inputPrice 를 다시 뽑는다', () => {
   const f = C.oiReadWriteForm(WRITE);
   f.kOpts = [{ value: '1', text: '14K', selected: true }, { value: '2', text: '18K' }];
