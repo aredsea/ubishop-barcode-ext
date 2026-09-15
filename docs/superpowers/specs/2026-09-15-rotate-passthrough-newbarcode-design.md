@@ -51,7 +51,7 @@
 4. **warn** — 폴링 소진(약 7.5초) 안에 행을 못 찾음 → `회전입고 결과 행을 못 찾음 — 화면 메시지 확인`.
 5. **info** — 위 어느 것도 아니면 지금처럼 `직전: <바코드> → <새매장> 회전입고 실행됨`(localStorage `UB_ROTATE_LAST`).
 
-1은 로드 즉시, 2~4는 폴링 결과로 덮어쓴다. 1이 있으면 폴링이 행을 못 찾는 게 정상이라 4로 덮어쓰지 않는다(1 유지).
+1은 로드 즉시, 2~4는 폴링 결과로 덮어쓴다. **1이 있으면 2~4 어느 것도 덮지 않는다**(Opus 5 P2 2026-09-15): msg 가 있다는 것은 이번 제출로 생긴 행이 없다는 뜻이라, 폴러가 찾은 행은 열린 회전입고장에 남아 있던 **이전 실행의 것**이다(같은 바코드 재스캔 → 거부 시 재현) — 보관함도 상태줄도 건드리지 않는다. 4는 flag 의 바코드가 이 화면의 직전 회전입고(`UB_ROTATE_LAST`)와 같을 때만 띄운다(다른 화면이 60초 안에 남긴 flag 로 오경고 방지). 2는 보관함 저장이 실제로 됐을 때만 '등록'이고, 못 넣었으면 warn `… · 보관함 저장 실패(팝업 강조 안 됨)`. 마지막 폴링 결과는 기억해 뒀다가 사이드바 재렌더(접기/펼치기·storage 변경) 뒤에도 다시 그린다.
 
 ## 5. 컴포넌트 (전부 `src/skin.js` §5.6)
 
@@ -59,11 +59,11 @@
 |---|---|---|
 | `rotStep1Outcome(res)` | 순수 | `{ok:true}` → `{proceed:true, note:''}` · `{ok:false,msg}` 에 `가능한 상태가 아닙니다` 포함 → `{proceed:true, note:'본사반품확인 건너뜀(이미 확인됐거나 대상 아님)'}` · 그 외 → `{proceed:false, note: msg || '반품 신청된 건인지 확인'}` |
 | `rotNewBarcodeFromCells(headerTexts, rowTexts, oldBc)` | 순수 | 헤더 텍스트(공백 정규화)가 `새바코드` 로 **시작**하는 첫 열 i → `rowTexts[i]` 첫 공백 토큰 → 대문자. `/^[0-9A-Z]{6}$/` 이고 `oldBc` 대문자와 다를 때만 반환, 아니면 `''` |
-| `rotNewBarcodeFromRow(tr, oldBc)` | DOM 래퍼 | `tr.closest('table')` 의 행 중 텍스트에 `새바코드` 가 있는 첫 행을 헤더로, `tr` 을 데이터로 셀 텍스트 배열을 만들어 위 순수 함수 호출. 표를 못 찾으면 `''` |
-| `rotAfterRowFound(tr, oldBc)` | 부작용 | 새바코드 → `stkRecentAdd` (실패 삼킴) → 상태줄 2/3 |
-| `rotSetResultStatus(text, kind)` | DOM | `#ub-rot-st` 갱신(사이드바 미렌더면 무시) |
+| `rotNewBarcodeFromRow(tr, oldBc)` | DOM 래퍼 | `tr.closest('table')` 의 행 중 **자기 행이 아니고** 텍스트에 `새바코드` 가 있는 첫 행을 헤더로, `tr` 을 데이터로 셀 텍스트 배열을 만들어 위 순수 함수 호출. 셀 텍스트는 자식 노드를 **공백으로 이어** 만든다(`<span>2609I8</span><br>F-NF…` 처럼 `<br>` 뒤 공백이 없어도 첫 토큰이 바코드). 표를 못 찾으면 `''` |
+| `rotAfterRowFound(tr, oldBc)` | 부작용 | `rotMsgShown` 이면 무시(이전 실행의 행). 새바코드 → `stkRecentAdd`(이제 `true/false` 반환) → 저장됐으면 상태 2(ok), 못 넣었으면 warn, 못 읽었으면 상태 3 |
+| `rotSetResultStatus(text, kind)` | DOM | `#ub-rot-st` 갱신(사이드바 미렌더면 무시) + 마지막 결과를 `rotLastResult` 에 기억 — 배선이 재렌더 때 msg 다음에 다시 적용 |
 | `rotateRun` 변경 | 기존 | 1단계 결과를 `rotStep1Outcome` 으로 판정. `proceed` 면 note 를 상태에 붙이고 진행 |
-| `ubHighlightPending` 변경 | 기존(공용) | 행 발견 시 `isRotateWrite()` 면 `rotAfterRowFound`, 소진 시 `isRotateWrite()` 면 상태 4. 재고화·메인석 페이지 동작은 불변 |
+| `ubHighlightPending` 변경 | 기존(공용) | 행 발견 시 `isRotateWrite()` 면 `rotAfterRowFound`, 소진 시 `isRotateWrite()` 면 `rotAfterRowMissing(bc)`(상태 4). 재고화·메인석 페이지 동작은 불변 |
 | 회전입고 배선 변경 | 기존 | init 에서 URL `msg` 를 읽어 상태 1 |
 
 ## 6. 에러 처리

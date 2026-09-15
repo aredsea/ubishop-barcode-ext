@@ -27,7 +27,7 @@ function extractFn(src, name) {
   }
   throw new Error(`${name} 본문의 중괄호 균형을 찾지 못했습니다`);
 }
-const NAMES = ['rotStep1Outcome', 'rotNewBarcodeFromCells'];
+const NAMES = ['rotStep1Outcome', 'rotNewBarcodeFromCells', 'rotNewBarcodeFromRow'];
 const F = {};
 new Function('exports', NAMES.map((n) => extractFn(SRC, n)).join('\n') + '\n' + NAMES.map((n) => `exports.${n} = ${n};`).join('\n'))(F);
 
@@ -43,6 +43,11 @@ test('rotStep1Outcome: "가능한 상태가 아닙니다" 실패는 건너뛰고
 test('rotStep1Outcome: 다른 문구 실패는 중단하고 문구를 그대로 전달', () => {
   const r = F.rotStep1Outcome({ ok: false, msg: '폼페이지 구조 변경(관리자 문의)' });
   assert.deepStrictEqual(r, { proceed: false, note: '폼페이지 구조 변경(관리자 문의)' });
+});
+test('rotStep1Outcome: 근접 문구("…아닙니다" 만 같은)는 통과시키지 않는다', () => {
+  //  Opus 5 Nit(2026-09-15): 정규식을 /아닙니다/ 로 느슨하게 바꿔도 살아남던 변이
+  assert.equal(F.rotStep1Outcome({ ok: false, msg: '반품 대상이 아닙니다' }).proceed, false);
+  assert.equal(F.rotStep1Outcome({ ok: false, msg: '본사반품확인 가능한 상태입니다' }).proceed, false);
 });
 test('rotStep1Outcome: msg 없는 실패·이상한 입력은 중단 + 기본 안내 문구', () => {
   assert.deepStrictEqual(F.rotStep1Outcome({ ok: false }), { proceed: false, note: '반품 신청된 건인지 확인' });
@@ -98,19 +103,66 @@ test('rotNewBarcodeFromCells: 행 셀이 헤더보다 짧거나 입력이 배열
 test('ubHighlightPending: 행 발견 시 회전입고 페이지면 rotAfterRowFound, 소진 시 rotAfterRowMissing', () => {
   const body = extractFn(SRC, 'ubHighlightPending');
   assert.ok(/msLog\('강조\+스크롤', bc\);\s*ubHlPolling = false;\s*if \(isRotateWrite\(\)\) rotAfterRowFound\(row, bc\);/.test(body), '행 발견 훅');
-  assert.ok(/if \(\+\+tries < 25\) \{ setTimeout\(tick, 300\); return; \}[^\n]*\n\s*ubHlPolling = false;[^\n]*\n\s*if \(isRotateWrite\(\)\) rotAfterRowMissing\(\);/.test(body), '소진 훅');
+  assert.ok(/if \(\+\+tries < 25\) \{ setTimeout\(tick, 300\); return; \}[^\n]*\n\s*ubHlPolling = false;[^\n]*\n\s*if \(isRotateWrite\(\)\) rotAfterRowMissing\(bc\);/.test(body), '소진 훅');
 });
-test('rotAfterRowFound: 새바코드를 읽으면 보관함에 넣고 ok, 못 읽으면 warn (return 경로 2개)', () => {
+test('rotAfterRowFound: msg 거부면 무시, 새바코드를 읽으면 보관함에 넣고 ok(저장 실패는 warn), 못 읽으면 warn (return 경로 4개)', () => {
   const body = extractFn(SRC, 'rotAfterRowFound');
+  //  Opus 5 P2(2026-09-15): 거부(msg)됐는데 열린 회전입고장의 옛 행을 찾아 초록 '등록' 이 빨강을 덮었다 → 첫 줄에서 무시
+  assert.ok(/^async function rotAfterRowFound\(tr, oldBc\) \{\s*if \(rotMsgShown\) \{[^}]*return; \}/.test(body), 'msg 거부면 첫 줄에서 return');
   assert.ok(/const nb = rotNewBarcodeFromRow\(tr, oldBc\);/.test(body));
   assert.ok(/if \(!nb\) \{[^}]*rotSetResultStatus\('행은 찾았으나 새바코드를 못 읽음\(표 구조 변경\?\)', 'warn'\); return; \}/.test(body));
-  assert.ok(/await stkRecentAdd\(nb\);/.test(body), '보관함 저장');
+  assert.ok(/saved = await stkRecentAdd\(nb\) === true;/.test(body), '보관함 저장 결과를 본다');
+  assert.ok(/if \(!saved\) \{ rotSetResultStatus\([^;]*보관함 저장 실패\(팝업 강조 안 됨\)', 'warn'\); return; \}/.test(body), '저장 실패는 등록이라 말하지 않는다');
   assert.ok(/rotSetResultStatus\(stkNorm\(oldBc\) \+ ' → 새바코드 ' \+ nb \+ ' · 본사확인 팝업 강조 등록', 'ok'\);/.test(body));
 });
-test('rotAfterRowMissing: 서버 msg 가 이미 떠 있으면 덮어쓰지 않는다', () => {
+test('stkRecentAdd 는 저장 여부를 돌려준다(true 저장·false 실패) — 회전입고 상태줄이 이걸 믿는다', () => {
+  const body = extractFn(SRC, 'stkRecentAdd');
+  assert.ok(/if \(!bc\) return false;/.test(body));
+  assert.ok(/if \(!cur\.ok\) \{[^}]*return false; \}/.test(body));
+  assert.ok(/const saved = await stkRecentSave\(next\);[\s\S]*return saved;/.test(body));
+  const save = extractFn(SRC, 'stkRecentSave');
+  assert.ok(/resolve\(!e\);/.test(save) && /catch \(_\) \{ resolve\(false\); \}/.test(save));
+});
+test('rotAfterRowMissing: 서버 msg 가 떠 있거나 flag 바코드가 이 화면의 직전 회전입고가 아니면 경고하지 않는다', () => {
   const body = extractFn(SRC, 'rotAfterRowMissing');
+  assert.ok(/^function rotAfterRowMissing\(bc\)/.test(body), 'flag 바코드를 받는다');
   assert.ok(/if \(rotMsgShown\) return;/.test(body));
+  assert.ok(/if \(!last \|\| stkNorm\(last\.barcode\) !== stkNorm\(bc\)\) return;/.test(body), '남의 화면 flag 는 무시(Opus 5 Nit)');
   assert.ok(/rotSetResultStatus\('회전입고 결과 행을 못 찾음 — 화면 메시지 확인', 'warn'\);/.test(body));
+  assert.ok(/let rotMsgShown = false;/.test(SRC), 'rotMsgShown 초기값 false(변이 생존분)');
+  assert.ok(/if \(isRotateWrite\(\)\) rotAfterRowMissing\(bc\);/.test(extractFn(SRC, 'ubHighlightPending')), '폴러가 flag 바코드를 넘긴다');
+});
+test('rotSetResultStatus 는 마지막 결과를 기억하고 배선이 재렌더 뒤 다시 그린다', () => {
+  const body = extractFn(SRC, 'rotSetResultStatus');
+  assert.ok(/rotLastResult = \{ text: text \|\| '', kind: kind \|\| '' \};/.test(body));
+  const i = SRC.indexOf("const rotIn = bar.querySelector('#ub-rot-in');");
+  const block = SRC.slice(i, i + 3200);
+  assert.ok(/get\('msg'\)[\s\S]{0,400}?if \(rotLastResult\) setRotStatus\(rotLastResult\.text, rotLastResult\.kind\);/.test(block), 'msg 뒤에 마지막 결과 재적용');
+});
+//  DOM 래퍼: 자식 노드를 공백으로 잇고(<br> 뒤 공백 없어도 첫 토큰이 바코드), 헤더는 자기 행이 아닌 '새바코드' 행.
+function fakeCell(nodes) { return { childNodes: nodes.map((t) => ({ textContent: t })), textContent: nodes.join('') }; }
+function fakeRow(cellNodes) { const r = { cells: cellNodes.map(fakeCell) }; r.textContent = r.cells.map((c) => c.textContent).join(''); return r; }
+test('rotNewBarcodeFromRow: <br> 뒤 공백이 없어도(textContent 가 붙어 나와도) 새바코드를 읽는다', () => {
+  const hdr = fakeRow([['No'], [''], ['새바코드', '새상품번호'], ['새매장명', '새상품정보'], [''], [''], [''], [''], ['기존바코드 / 기존판매가', '중량'], [''], [''], ['']]);
+  const tr = fakeRow([['1'], [''], ['2609I8', 'F-NF-P-WG-PA-00DU'], ['D102본사', '925 1 g ()'], ['0'], ['1'], ['48,000'], ['0'], ['240H1B / 22,000', '1 g'], ['0'], [''], ['']]);
+  const table = { rows: [hdr, tr] };
+  tr.closest = (sel) => (sel === 'table' ? table : null);
+  assert.equal(tr.cells[2].textContent, '2609I8F-NF-P-WG-PA-00DU', '픽스처가 붙은 textContent 를 흉내낸다');
+  assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '2609I8');
+});
+test('rotNewBarcodeFromRow: 데이터 행 비고에 "새바코드" 가 있고 헤더보다 앞에 와도 자기 행을 헤더로 쓰지 않는다', () => {
+  const hdr = fakeRow([['No'], [''], ['새바코드', '새상품번호'], ['']]);
+  const tr = fakeRow([['1'], ['비고: 새바코드 재발급'], ['2609I8', 'F-NF-P'], ['']]);
+  const table = { rows: [tr, hdr] };
+  tr.closest = (sel) => (sel === 'table' ? table : null);
+  assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '2609I8');
+});
+test('rotNewBarcodeFromRow: 표·헤더가 없거나 closest 가 없으면 빈 문자열', () => {
+  const tr = fakeRow([['1'], ['2609I8']]);
+  assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '');
+  tr.closest = () => ({ rows: [tr] });
+  assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '');
+  assert.equal(F.rotNewBarcodeFromRow(null, '240H1B'), '');
 });
 test('회전입고 배선: 로드 시 URL msg 를 읽어 err 로 띄우고 rotMsgShown 을 세운다', () => {
   const i = SRC.indexOf("const rotIn = bar.querySelector('#ub-rot-in');");

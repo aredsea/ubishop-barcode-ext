@@ -695,8 +695,9 @@
 
   //  ── chrome.storage 접근(부작용) ─────────────────────────────────────────
   //  실패는 전부 삼킨다. 이 기능이 안 되는 것보다 재고화·배정 자체가 멈추는 게 훨씬 나쁘다.
-  //  ⚠ 읽고-고쳐-쓰기라 두 창이 동시에 쓰면 한쪽이 덮일 수 있다. 쓰기 지점이 재고화 한 곳뿐이고
-  //   (사람이 바코드를 하나씩 치는 흐름이다) 잃어도 '강조가 한 건 빠지는' 정도라 잠금은 두지 않았다.
+  //  ⚠ 읽고-고쳐-쓰기라 두 창이 동시에 쓰면 한쪽이 덮일 수 있다. 쓰기 지점은 재고화(run)와 회전입고 결과 폴러
+  //   (rotAfterRowFound, 2026-09-15) 두 곳인데 둘 다 사람이 바코드를 하나씩 치는 흐름이라, 다른 탭에서 동시에
+  //   겹쳐 잃어도 '강조가 한 건 빠지는' 정도라 잠금은 두지 않았다.
   //  ★반환은 `{ ok, list }` 다 — 읽기 실패와 '정말 비어 있음' 을 반드시 구분해야 한다.
   //   구분하지 않으면 일시적 읽기 실패 한 번이 "빈 보관함" 으로 읽히고, 그 위에 덮어쓰는
   //   순간 기존 49건이 통째로 날아간다(Opus 5 검수 F2). 모르면 쓰지 않는다.
@@ -712,27 +713,29 @@
       } catch (err) { stkLog('보관함 읽기 예외', err); resolve({ ok: false, list: [] }); }
     });
   }
-  function stkRecentSave(list) {
+  function stkRecentSave(list) {   // resolve(true) = 저장됨, false = 실패(삼킴)
     return new Promise((resolve) => {
       try {
         const rec = {}; rec[STK_RECENT_KEY] = list;
         chrome.storage.local.set(rec, () => {
           const e = chrome.runtime.lastError;
           if (e) stkLog('보관함 쓰기 실패', e.message || e);
-          resolve();
+          resolve(!e);
         });
-      } catch (_) { resolve(); }
+      } catch (_) { resolve(false); }
     });
   }
+  //  반환 true = 보관함에 들어감, false = 못 넣음(읽기/쓰기 실패 — 호출자는 '등록됐다' 고 말하면 안 된다).
   async function stkRecentAdd(barcode) {
     const bc = stkNorm(barcode);
-    if (!bc) return;
+    if (!bc) return false;
     const cur = await stkRecentLoad();
     // 못 읽었으면 쓰지 않는다 — 덮어쓰면 남아 있던 보관함을 이 한 건으로 갈아버린다.
-    if (!cur.ok) { stkLog('보관함을 못 읽어 저장을 건너뜀', bc); return; }
+    if (!cur.ok) { stkLog('보관함을 못 읽어 저장을 건너뜀', bc); return false; }
     const next = stkRecentPut(cur.list, bc, Date.now());
-    await stkRecentSave(next);
-    stkLog('보관함 +', bc, '(' + next.length + '건)');
+    const saved = await stkRecentSave(next);
+    if (saved) stkLog('보관함 +', bc, '(' + next.length + '건)');
+    return saved;
   }
 
   let stkBusy = false;
@@ -1196,7 +1199,7 @@
       }
       if (++tries < 25) { setTimeout(tick, 300); return; }   // ~7.5s 폴링(렌더 지연 대비)
       ubHlPolling = false;   // 소진: flag 유지(60초 만료) → 옵저버/다음 로드가 재시도
-      if (isRotateWrite()) rotAfterRowMissing();          // 회전입고: 결과 행 없음 → 상태줄 경고(스펙 §4-4)
+      if (isRotateWrite()) rotAfterRowMissing(bc);        // 회전입고: 결과 행 없음 → 상태줄 경고(스펙 §4-4)
     };
     tick();   // 첫 틱 동기 OK — ubHlSetHere 가드로 outgoing 소비가 원천 차단(시간 의존 없음)
   }
@@ -1327,29 +1330,44 @@
       if (!tbl) return '';
       const hdr = [...tbl.rows].find((r) => r !== tr && /새바코드/.test(r.textContent || ''));
       if (!hdr) return '';
-      const texts = (r) => [...r.cells].map((c) => c.textContent || '');
+      //  셀 텍스트는 자식 노드를 공백으로 이어 붙인다 — `<span>2609I8</span><br>F-NF-…` 처럼 <br> 뒤에 공백이 없어도
+      //  첫 토큰이 새바코드로 남게(Opus 5 Nit 2026-09-15). textContent 는 <br> 을 빈 문자열로 지운다.
+      const cellText = (c) => (c.childNodes && c.childNodes.length ? [...c.childNodes].map((n) => n.textContent || '').join(' ') : (c.textContent || ''));
+      const texts = (r) => [...r.cells].map(cellText);
       return rotNewBarcodeFromCells(texts(hdr), texts(tr), oldBc);
     } catch (_) { return ''; }
   }
   // 결과 화면 상태줄(#ub-rot-st). 사이드바가 아직/이미 없으면 무시 — 표시용이라 실패해도 아무 일도 안 일어난다.
+  //  마지막 폴링 결과를 기억해 사이드바가 재렌더(접기/펼치기·storage 변경)돼도 배선이 다시 그린다(Opus 5 Nit 2026-09-15).
+  let rotLastResult = null;
   function rotSetResultStatus(text, kind) {
+    rotLastResult = { text: text || '', kind: kind || '' };
     const el = document.getElementById('ub-rot-st');
     if (!el) return;
     el.textContent = text || '';
     el.className = 'ub-stk-st' + (kind ? ' ' + kind : '');
   }
-  let rotMsgShown = false;   // 로드 시 URL msg(서버 거부)를 띄웠으면 '행 못 찾음' 경고로 덮지 않는다(스펙 §4)
+  let rotMsgShown = false;   // 로드 시 URL msg(서버 거부)를 띄웠으면 폴링 결과로 덮지 않는다(스펙 §4)
   // 폴러가 기존 바코드 행을 찾은 순간: 같은 행에서 새바코드 → 재고화 보관함(본사확인 팝업이 강조) → 상태 ok.
+  //  ⚠ URL msg(서버 거부)가 떠 있으면 이번 제출로 생긴 행은 없다 — 찾은 행은 열린 회전입고장에 남아 있던 **이전 실행의 것**이라
+  //   보관함도 상태줄도 건드리지 않는다(Opus 5 P2 2026-09-15: 같은 바코드 재스캔 → 거부 → 옛 행으로 초록 '등록' 이 빨강을 덮었다).
   async function rotAfterRowFound(tr, oldBc) {
+    if (rotMsgShown) { rotLog('서버 거부 상태 — 찾은 행은 이전 실행의 것, 무시', oldBc); return; }
     const nb = rotNewBarcodeFromRow(tr, oldBc);
     if (!nb) { rotLog('새바코드 못 읽음', oldBc); rotSetResultStatus('행은 찾았으나 새바코드를 못 읽음(표 구조 변경?)', 'warn'); return; }
-    try { await stkRecentAdd(nb); } catch (e) { rotLog('보관함 저장 실패', e); }
-    rotLog('새바코드', oldBc, '→', nb, '보관함 등록');
+    let saved = false;
+    try { saved = await stkRecentAdd(nb) === true; } catch (e) { rotLog('보관함 저장 실패', e); }
+    rotLog('새바코드', oldBc, '→', nb, saved ? '보관함 등록' : '보관함 저장 실패');
+    if (!saved) { rotSetResultStatus(stkNorm(oldBc) + ' → 새바코드 ' + nb + ' · 보관함 저장 실패(팝업 강조 안 됨)', 'warn'); return; }
     rotSetResultStatus(stkNorm(oldBc) + ' → 새바코드 ' + nb + ' · 본사확인 팝업 강조 등록', 'ok');
   }
   // 폴러가 소진(약 7.5초)될 때까지 행이 없음: 서버가 거부했거나 표가 안 떴다.
-  function rotAfterRowMissing() {
+  //  flag 의 바코드가 이 화면에서 마지막으로 회전입고한 것(UB_ROTATE_LAST)이 아니면 다른 화면(재고화 등)이 남긴 flag 라 경고하지 않는다.
+  function rotAfterRowMissing(bc) {
     if (rotMsgShown) return;
+    let last = null;
+    try { last = JSON.parse(localStorage.getItem('UB_ROTATE_LAST') || 'null'); } catch (_) {}
+    if (!last || stkNorm(last.barcode) !== stkNorm(bc)) return;
     rotSetResultStatus('회전입고 결과 행을 못 찾음 — 화면 메시지 확인', 'warn');
   }
   let rotBusy = false;
@@ -3651,6 +3669,7 @@
         const m = new URLSearchParams(location.search).get('msg') || '';
         if (m.trim()) { rotMsgShown = true; setRotStatus('회전입고 실패: ' + m.trim(), 'err'); }
       } catch (_) {}
+      if (rotLastResult) setRotStatus(rotLastResult.text, rotLastResult.kind);   // 재렌더 뒤에도 폴링 결과(스펙 §4 2~4)가 남게
       setTimeout(() => { try { rotIn.focus(); } catch (_) {} }, 400);
     }
 
