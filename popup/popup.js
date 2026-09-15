@@ -53,7 +53,9 @@
     chrome.storage.local.get({ ubUpdateAvailable: '' }, (r) => {
       const remoteVer = r && r.ubUpdateAvailable;
       const localVer = chrome.runtime.getManifest().version;
-      if (remoteVer && remoteVer !== localVer) {
+      // 원격이 **더 새 버전일 때만** 알린다 — 로컬이 앞서는(미배포 브랜치 테스트) 상황에서 다운그레이드를 '새 버전'으로 띄웠다(2026-09-15).
+      const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; } return false; };
+      if (remoteVer && newer(remoteVer, localVer)) {
         const block = document.getElementById('update-block');
         const verLbl = document.getElementById('update-ver');
         if (verLbl) verLbl.textContent = 'v' + localVer + ' → v' + remoteVer;

@@ -77,6 +77,19 @@ test('oiClientSearchRows / oiMasterSearchRows / oiJunListRows', () => {
   assert.deepEqual(C.oiClientSearchRows('<html><body>검색된 결과가 없습니다.</body></html>'), []);
 });
 
+test('oiJunListRows: 열 구성이 다른 목록(14열, 발주처명 열 삽입)도 헤더 이름으로 관리번호·고객명·상태를 찾는다', () => {
+  //  2026-09-15 실측: 같은 orderItemList.do 가 13열이 아니라 14열로 렌더됐다(3 발주처명/발주일, 5 매입처상품코드/고객명, 12 상태).
+  const jn = C.oiJunListRows(FX('junlist-14col.html'));
+  assert.equal(jn.length, 2);
+  assert.equal(jn[0].orderSeq, '389513'); assert.equal(jn[0].junNum, '0000002YFZ'); assert.equal(jn[0].status, '주문완료');
+  assert.ok(jn[0].title.includes('가나다8819/아'));
+  assert.equal(jn[1].junNum, '0000002YFY'); assert.equal(jn[1].status, '주문취소');
+  //  헤더가 없는 표는 13열 배치로 폴백한다(어제 픽스처에서 헤더 행을 지워도 같은 결과)
+  const noHdr = FX('junlist.html').replace(/<tr class="bg_1">[\s\S]*?<\/tr>/, '');
+  const fb = C.oiJunListRows(noHdr);
+  assert.equal(fb[0].junNum, '0000002YF3'); assert.equal(fb[0].status, '주문완료');
+});
+
 /* ------------------------------------------------------------ §4.2 페이로드 */
 test('oiLinePayload: 스펙 덮어쓰기, 색상 폴백, orgOrderPrice 는 마스터가 그대로', () => {
   const f = C.oiReadWriteForm(WRITE);

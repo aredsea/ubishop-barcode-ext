@@ -313,15 +313,17 @@
 
   /* --------------------------------------------- §4 목록(table.t_list) 파싱 */
   //  중첩 테이블(이미지 셀)이 있어 단순 <tr> 정규식은 안 된다 → 태그 스캐너로 깊이를 센다.
-  function oiTListRows(html) {
+  //  idx 를 가진 첫 t_list 테이블의 행 전부(헤더 행 포함). 데이터 행만 필요하면 oiTListRows.
+  function oiTListAllRows(html) {
     const h = String(html);
     const tre = /<table\b[^>]*\bclass\s*=\s*["']?t_list["']?[^>]*>/gi; let tm;
     while ((tm = tre.exec(h))) {
       const rows = oiScanTable(h, tm.index);
-      if (rows.some((r) => r.idx !== null)) return rows.filter((r) => r.idx !== null);
+      if (rows.some((r) => r.idx !== null)) return rows;
     }
     return [];
   }
+  function oiTListRows(html) { return oiTListAllRows(html).filter((r) => r.idx !== null); }
   function oiScanTable(h, start) {
     const tagRe = /<\/?(table|tr|td|th)\b[^>]*>/gi;
     tagRe.lastIndex = start;
@@ -364,11 +366,24 @@
   function oiWriteListRows(html) { return oiTListRows(html).map(oiWriteListRow); }
 
   //  MD 주문전표 목록 행: 1 idx=orderSeq · 2 '26-09-14'+'0000002YF3' · 4 상품명 코드 / 고객명 · 11 상태.
+  //  열 위치는 **헤더 이름으로** 찾는다 — 같은 목록이 계정·화면에 따라 열이 다르다(2026-09-14 13열: 2 주문장번호·4 고객명·11 상태,
+  //  2026-09-15 14열: '발주처명' 이 3에 끼어 5 고객명·12 상태). 헤더를 못 찾으면 13열 배치로 폴백.
   function oiJunListRows(html) {
-    return oiTListRows(html).map((row) => {
+    const all = oiTListAllRows(html);
+    const hdr = all.find((r) => r.idx === null && r.cells.some((t) => /상태/.test(t)) && r.cells.some((t) => /주문장번호/.test(t)));
+    const col = { jun: 2, title: 4, status: 11 };
+    if (hdr) {
+      hdr.cells.forEach((t, i) => {
+        const tx = String(t).replace(/\s+/g, '');
+        if (/주문장번호/.test(tx)) col.jun = i;
+        else if (/고객명/.test(tx)) col.title = i;
+        else if (tx === '상태') col.status = i;
+      });
+    }
+    return all.filter((r) => r.idx !== null).map((row) => {
       const c = row.cells || [];
-      const jm = String(c[2] || '').match(/(\d{7}[0-9A-Z]{3})\s*$/);
-      return { orderSeq: String(row.idx || '').split(',')[0], junNum: jm ? jm[1] : '', title: c[4] || '', status: c[11] || '' };
+      const jm = String(c[col.jun] || '').match(/(\d{7}[0-9A-Z]{3})\s*$/);
+      return { orderSeq: String(row.idx || '').split(',')[0], junNum: jm ? jm[1] : '', title: c[col.title] || '', status: c[col.status] || '' };
     });
   }
 
@@ -619,7 +634,7 @@
     oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiSuggestQueries,
     oiGroupOrders, oiLineIssues,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
-    oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
+    oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,
     oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll
   };

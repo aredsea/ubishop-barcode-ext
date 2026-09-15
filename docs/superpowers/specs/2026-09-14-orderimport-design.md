@@ -140,7 +140,7 @@ xls 읽기(SheetJS, MAIN) → 행 정규화 → 주문장 묶기 → 매핑 조�
 | `POST /etc/clientWrite.do?tcode=order_item` | clientWriteForm의 hidden 28개(`sKey` 포함) + `regShop=LT clientName phone tel='' smsType=1 emailType=1 grade=05 inDate=YYYYMMDD clientType=1 sexType=2 wedType=0 birthType=1 birthLeapType=0 weddingType=1 weddingLeapType=0 clientJob=<코드> clientRelation3..5=1 clientMemorial3..5=1 memorialType3..5=1 memorialLeapType3..5=0` 나머지 빈값 | 200 → `/etc/client.do?…&searchWord=<고객명>`으로 리다이렉트, `msg` 빈값. 그 페이지 행에서 seq |
 | `POST /order/item/orderItemWrite.do?tcode=order_item` | form1 25필드: `sKey pageSize searchSortType tradeJun payJun shop client master itemType inputPrice orgOrderPrice shopName clientName itemNum weight doc diaColor clarity surface k color itemSize orderQty orderPrice shopRemark`(input 22 + select k/color + textarea). `orgOrderPrice`(마스터가)는 그대로 두고 `orderPrice`만 판매가(콤마 문자열 `17,000`) | `orderItemWriteForm.do?…&tradeJun=<t>&client=<c>…`로 리다이렉트, `msg` 빈값. 첫 줄은 URL의 tradeJun이 비고 **hidden에 새 번호** → 세션 보관. 행 수 +1 |
 | `POST /jun/orderitem/orderItemJunWrite.do?tcode=order_item` | form10 23필드: `sKey pageSize searchSortType tradeJun payJun shop client payBank=0 payDia=0 txtOrderDate exdelivedyear/month/day regId beforePrice…payEtc(=0) payRemark`. 인도예정일은 오늘로 명시 | `orderItemWriteForm.do`로 리다이렉트, `msg` 빈값. plain GET → `tradeJun` 빈값·0행. 주문전표에 관리번호 |
-| `POST /order/item/orderItemDelete.do?tcode=order_item&<CONST_URL>` | form3 `sKey` + `idx`(선택 줄) | (미실측 — 되돌리기 구현 시 1건으로 확인) |
+| `POST /order/item/orderItemDelete.do?tcode=order_item&<CONST_URL>` | form3 `sKey` + `idx`(선택 줄) | **라이브 미실측(2026-09-15 사장님 결정)** — 실제 주문 데이터라 위험해 확장 경로로는 시험하지 않는다. 취소·되돌리기는 사장님이 실제 건에서 직접 확인하며 진행. 실행기의 되돌리기 분기는 스텁 테스트(`orderimport-run.test.js`)로만 검증됨 |
 
 - 폼 hidden은 **HTML 문자열 정규식**으로 뽑는다. 기존 메모리(DOMParser `form.elements`가 hidden을 놓침)와 같은 이유.
 - `sKey`는 매 쓰기 직전 GET에서 새로 받는다(재사용 금지). 페이지에 박힌 `alert("상품번호를 입력하세요!")` 류는 항상 있으므로 판정에 쓰지 않는다.
@@ -158,7 +158,7 @@ xls 읽기(SheetJS, MAIN) → 행 정규화 → 주문장 묶기 → 매핑 조�
 2. **실행 중 잠금 안내** — 사이드바 배너 "실행 중 — 주문 화면을 조작하지 마세요" + 같은 탭 주문폼 위 반투명 덮개. 안내일 뿐 강제가 아니다(3이 진짜 방어).
 3. **줄마다 기대치 대조(fail-closed)** — 줄 등록 전 GET 응답에서 `client` = 이번 주문장 고객 seq, 행 수 = 내가 넣은 수, 각 행의 `idx` orderSeq·상품코드 = 내가 기록한 값. 하나라도 다르면 그 주문장 중단 → §3.4-5 되돌리기(**내 orderSeq만** 삭제, 남의 줄은 건드리지 않음) → "외부 개입 감지"로 기록.
 4. **완료 전 최종 대조** — 행 수·상품코드·사이즈·주문가를 검토 표와 대조. 불일치면 완료하지 않는다.
-5. **완료 후 확인** — plain GET 세션 비움 + 주문전표 목록에서 고객명으로 관리번호. 못 찾으면 "완료 응답 성공, 전표 미확인" 경고(장부에는 tradeJun만).
+5. **완료 후 확인** — plain GET 세션 비움 + 주문전표 목록에서 `orderSeq`(idx)로 관리번호. 목록의 열 구성이 계정·화면마다 다르므로(2026-09-15 실측 13열↔14열) 열은 **헤더 이름**으로 찾는다. 못 찾으면 "완료 응답 성공, 전표 미확인" 경고(장부에는 tradeJun만).
 6. **판정 이중화** — 모든 쓰기는 `msg` 빈값 **그리고** 상태 변화(행 수·세션)로 판정.
 7. **실행 로그** — 주문장별 단계·요청 요약·판정·응답 URL을 사이드바에 남기고 JSON 내보내기.
 8. **탭 이탈 경고** — 실행 중 `beforeunload`로 확인창(기존 masterprice F3과 동일).
@@ -216,4 +216,5 @@ SHELL: manifest `version` 올림(4.1.9 → **4.2.0**, patch>9 규칙) → `pwsh 
 - 12:10~12:16 읽기 실측: 폼·팝업·콜백 구조, 검색 부분일치, 예물고객 휴대폰 충돌 실례.
 - 14:08~14:25 쓰기 실측 1: 차카타2567/아 등록(123784) + 줄 2개 → **수동 작업과 섞임**(§5.0). 차카타 건은 사장님이 직접 처리.
 - 14:25~14:40 쓰기 실측 2: 자차카8718/아(123787) 줄 1 → 완료 POST는 Claude 도구 차단으로 사장님이 클릭 → `0000002YF3`.
+- 2026-09-15 10:40 라이브 실행(사장님 직접, 확장 패널): 당일 파일 10주문장·11줄 전부 정확히 등록(`0000002YFQ`~`2YFZ`, 18K·옐로우골드·17호 분해, SSG `/s`, 2줄 주문장, 기존 고객 재사용 포함). 주문전표 대조로 확인.
 - 14:45~14:55 쓰기 실측 3: 마바사1931/아(123789) `0000002YF4` · 나다라7748/아(123790) `0000002YF5` · 파하가5207/아(123791) `0000002YF6` — 등록·줄·완료 전부 확장 경로, 3/3 성공, 완료 후 세션 비움 확인.
