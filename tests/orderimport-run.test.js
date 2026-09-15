@@ -257,6 +257,26 @@ test('첫 줄 GET 에 tradeJun 이 이미 있으면(빈 주문장 열림) POST �
   assert.ok(!names(erp).includes('postLine'));
 });
 
+//  Terra 6R P1 (2026-09-15): 줄 등록 뒤 완료 GET 전에 다른 탭이 그 줄의 색상/품위/비고/기본 사이즈만 고치면 행 수·코드·수량·가격 대조는 통과했다.
+test('완료 직전 행이 등록 응답 스냅샷과 한 글자라도 다르면(색상 변조) 완료하지 않고 되돌린다', async () => {
+  const erp = makeErp();
+  const origF10 = erp.getForm10.bind(erp);
+  erp.getForm10 = async (p) => { erp.srv.rows[0].color = '핑크'; return origF10(p); };   // 남이 첫 줄 색상을 바꿈
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.match(r.reason, /^final:snapshot 389461 color/);
+  assert.ok(!names(erp).includes('postComplete'));
+  assert.equal(r.rolledBack, 2);
+});
+
+test('완료 직전 비고만 바뀌어도 완료하지 않는다', async () => {
+  const erp = makeErp();
+  const origF10 = erp.getForm10.bind(erp);
+  erp.getForm10 = async (p) => { erp.srv.rows[1].remark = '정산 0 원'; return origF10(p); };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.match(r.reason, /^final:snapshot 389462 remark/);
+  assert.ok(!names(erp).includes('postComplete'));
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음

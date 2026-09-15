@@ -533,13 +533,23 @@
     if (!mine.length && !expect.tradeJun && v.tradeJun) return { ok: false, reason: 'tradeJun open ' + v.tradeJun };
     return { ok: true, reason: '' };
   }
-  //  완료 직전: 행 수·orderSeq·상품코드·사이즈·수량·주문가를 검토 표(lines)와 대조.
+  //  완료 직전: 행 수·orderSeq·상품코드·사이즈·수량·주문가를 검토 표(lines)와 대조하고,
+  //  등록 응답에서 받아 둔 행 스냅샷(expect.snaps)과 **모든 표시 필드**를 문자열 그대로 대조한다 —
+  //  다른 탭이 그 사이 색상·품위·비고·기본 사이즈만 고쳐도 완료하지 않는다(Terra 6R P1).
+  const SNAP_FIELDS = ['code', 'k', 'weight', 'color', 'size', 'qty', 'price', 'remark', 'name'];
   function oiCheckFinal(form, expect) {
     const base = oiCheckForm(form, expect);
     if (!base.ok) return base;
     const rows = form.rows || [];
     const lines = expect.lines || [];
     if (rows.length !== lines.length) return { ok: false, reason: 'rows ' + rows.length + '≠' + lines.length };
+    const snaps = expect.snaps || [];
+    for (let i = 0; i < snaps.length; i++) {
+      const snap = snaps[i]; if (!snap) continue;
+      const r = rows.find((x) => x.orderSeq === snap.orderSeq);
+      if (!r) return { ok: false, reason: 'snapshot ' + snap.orderSeq + ' missing' };
+      for (const f of SNAP_FIELDS) if (String(r[f] == null ? '' : r[f]) !== String(snap[f] == null ? '' : snap[f])) return { ok: false, reason: 'snapshot ' + snap.orderSeq + ' ' + f + ' ' + JSON.stringify(r[f]) + '≠' + JSON.stringify(snap[f]) };
+    }
     for (let i = 0; i < lines.length; i++) {
       const r = rows.find((x) => x.orderSeq === expect.orderSeqs[i]);
       const ln = lines[i];
@@ -566,7 +576,7 @@
   //  hooks: { today():Date, log(key, step, info) }
   async function oiRunOrder(order, erp, hooks) {
     const log = (step, info) => { try { hooks && hooks.log && hooks.log(order.key, step, info); } catch (_) {} };
-    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0, completed: false, completing: false, lineUnknown: false };
+    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], rowSnaps: [], junNums: [], rolledBack: 0, completed: false, completing: false, lineUnknown: false };
     const fail = async (status, reason) => {
       res.reason = reason; log('fail', reason);
       //  🔴 완료 POST 가 성공한 뒤의 실패는 되돌리지 않는다 — 이미 주문장이 확정됐으므로 그 줄을 지우면 안 된다.
@@ -632,12 +642,13 @@
           return await fail('skipped', 'rowmismatch:rows=' + rows.length + ',fresh=' + fresh.map((r) => r.orderSeq + '/' + r.code).join('|'));
         }
         res.orderSeqs.push(fresh[0].orderSeq);
+        res.rowSnaps.push(Object.assign({}, fresh[0]));       // 등록 응답의 행 그대로 — 완료 직전 대조 기준(Terra 6R)
         res.idxValues.push(fresh[0].orderSeq + ',' + (fresh[0].tradeJun || post.tradeJun));
         res.tradeJun = post.tradeJun || fresh[0].tradeJun;
       }
 
       const f10 = await erp.getForm10({ tradeJun: res.tradeJun, client: res.client.seq, clientName: res.client.name });
-      const fin = oiCheckFinal(f10, { client: res.client.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs, lines: order.lines });
+      const fin = oiCheckFinal(f10, { client: res.client.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs, lines: order.lines, snaps: res.rowSnaps });
       if (!fin.ok) return await fail('skipped', 'final:' + fin.reason);
       if (f10.missing && f10.missing.length) return await fail('skipped', 'form10 필드 누락: ' + f10.missing.join(','));
       //  완료 POST 를 **보내는 순간부터** 결과를 모르는 실패는 전부 '완료 미확인' 이다 — 응답이 유실돼도 서버는 완료했을 수 있다(Terra 2R P1).
