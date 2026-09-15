@@ -164,4 +164,6 @@ test('oiCheckForm / oiCheckFinal: client·행 수·orderSeq·코드·사이즈·
   assert.match(C.oiCheckFinal(f10, { client: '123790', tradeJun: '141240', orderSeqs: ['389463'], lines: [bad] }).reason, /^size/);
   const badPrice = { master: { code: 'F-RF-I-WG-PA-00F6' }, spec: { itemSize: '11', qty: 1, price: 18000 } };
   assert.match(C.oiCheckFinal(f10, { client: '123790', tradeJun: '141240', orderSeqs: ['389463'], lines: [badPrice] }).reason, /^price/);
+  const badQty = { master: { code: 'F-RF-I-WG-PA-00F6' }, spec: { itemSize: '11', qty: 2, price: 17000 } };   // Opus 5 P2: qty 대조 변이가 살아남았다
+  assert.match(C.oiCheckFinal(f10, { client: '123790', tradeJun: '141240', orderSeqs: ['389463'], lines: [badQty] }).reason, /^qty/);
 });

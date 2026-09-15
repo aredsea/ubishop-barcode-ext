@@ -23,7 +23,12 @@
     S.map = d[KEY_MAP] || {}; S.ledger = d[KEY_LEDGER] || {};
   }
   const saveMap = () => sset({ [KEY_MAP]: S.map });
-  const saveLedger = () => sset({ [KEY_LEDGER]: S.ledger });
+  //  장부는 저장 직전에 다시 읽어 병합한다 — 다른 탭이 그 사이 넣은 항목을 통째로 덮어쓰지 않게(Opus 5 P2).
+  async function saveLedger() {
+    const d = await sget({ [KEY_LEDGER]: {} });
+    S.ledger = Object.assign({}, d[KEY_LEDGER] || {}, S.ledger);
+    await sset({ [KEY_LEDGER]: S.ledger });
+  }
 
   /* ------------------------------------------------------------ xls (MAIN 주입) */
   function ensureXls() {
@@ -150,8 +155,10 @@
         log: logLine,
         onOrder: (r) => {
           S.results.push(r);
-          if (r.status === 'done') { S.ledger[r.key] = { at: new Date().toISOString(), tradeJun: r.tradeJun, junNums: r.junNums.map((j) => j.junNum), lines: r.orderSeqs.length }; saveLedger(); }
-          const o = S.orders.find((x) => x.key === r.key); if (o) { o.result = r; if (r.status === 'done') o.checked = false; }
+          //  체크 해제·장부 기록 판정은 core 의 순수 함수(Opus 5 P1 — 완료됐을 수 있는 fatal 이 체크된 채 남아 재클릭 때 중복 주문장이 생겼다)
+          const ps = C.oiPostRunState(r, new Date().toISOString());
+          if (ps.ledgerEntry) { S.ledger[r.key] = ps.ledgerEntry; saveLedger(); }
+          const o = S.orders.find((x) => x.key === r.key); if (o) { o.result = r; if (ps.uncheck) o.checked = false; }
           render();
         }
       });
@@ -376,7 +383,8 @@
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
     if (ch.ubSkin || ch.ubOrderImport) loadState().then(() => { if (!S.running) render(); });   // 열린 패널의 실행 버튼도 즉시 잠근다
-    if (ch[KEY_MAP] && !S.running) { S.map = ch[KEY_MAP].newValue || {}; S.orders.forEach(refreshOrder); render(); }
+    if (ch[KEY_MAP]) { S.map = ch[KEY_MAP].newValue || {}; if (!S.running) { S.orders.forEach(refreshOrder); render(); } }   // 실행 중에도 표는 받아 둔다(실행 배치는 스냅샷이라 영향 없음) — Opus 5 P2
+    if (ch[KEY_LEDGER]) { S.ledger = Object.assign({}, S.ledger, ch[KEY_LEDGER].newValue || {}); if (!S.running) { S.orders.forEach(refreshOrder); render(); } }
   });
   loadState();
 })();

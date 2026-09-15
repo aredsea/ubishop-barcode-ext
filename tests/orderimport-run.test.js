@@ -47,10 +47,11 @@ function makeErp(opts) {
     async state() { calls.push(['state']); return state(); },
     async searchClient(type, word) { calls.push(['searchClient', type, word]); return srv.clients.filter((c) => type === 'phone' ? c.phone === word : c.name.includes(word)); },
     async registerClient(name, phone, clientJob) { calls.push(['registerClient', name, phone, clientJob]); if (opts.registerFails) return { ok: false, msg: '등록 실패', client: null }; const c = { seq: '123784', name, phone }; srv.clients.push(c); return { ok: true, msg: '', client: c }; },
-    async getWriteForm(p) { calls.push(['getWriteForm', p.tradeJun, p.master, p.client]); if (opts.foreignRowAt != null && !srv.injected && srv.rows.length === opts.foreignRowAt) { srv.injected = true; srv.rows.push(Object.assign(row('999999', srv.tradeJun || '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); } return { values: formValues({ tradeJun: srv.tradeJun, client: p.client, master: p.master }), missing: [], kOpts: KOPTS, colorOpts: COLOR, arrays: { arr_weight: [0, 0], arr_salePrice: [19000, 0], arr_inputSupply: [4500, 0] }, rows: srv.rows.slice(), defaults: { k: '5', color: 'WG', itemSize: '11' } }; },
+    //  실제 서버처럼: tradeJun 을 **명시**해 GET 하면 이미 완료된 주문장의 줄도 계속 보인다(srv.closed). 세션의 열린 주문장은 srv.tradeJun/srv.rows.
+    async getWriteForm(p) { calls.push(['getWriteForm', p.tradeJun, p.master, p.client]); if (opts.foreignRowAt != null && !srv.injected && srv.rows.length === opts.foreignRowAt) { srv.injected = true; srv.rows.push(Object.assign(row('999999', srv.tradeJun || '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); } const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; const tj = closed ? p.tradeJun : srv.tradeJun; const rows = closed ? closed.slice() : srv.rows.slice(); return { values: formValues({ tradeJun: tj, client: p.client, master: p.master }), missing: [], kOpts: KOPTS, colorOpts: COLOR, arrays: { arr_weight: [0, 0], arr_salePrice: [19000, 0], arr_inputSupply: [4500, 0] }, rows, defaults: { k: '5', color: 'WG', itemSize: '11' } }; },
     async postLine(fields) { calls.push(['postLine', Object.fromEntries(fields)]); if (opts.lineFailsAt != null && srv.rows.length === opts.lineFailsAt) return { ok: false, msg: '실패', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; if (!srv.tradeJun) srv.tradeJun = '141236'; const f = Object.fromEntries(fields); srv.rows.push(row(String(++srv.seqNo), srv.tradeJun, f.itemSize, f.shopRemark)); return { ok: true, msg: '', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; },
-    async getForm10(p) { calls.push(['getForm10', p.tradeJun]); return { values: form10Values({ tradeJun: srv.tradeJun, client: p.client }), missing: [], rows: srv.rows.slice() }; },
-    async postComplete(fields) { calls.push(['postComplete', Object.fromEntries(fields)]); if (opts.completeFails) return { ok: false, msg: '완료 실패' }; srv.tradeJun = ''; srv.rows = []; return { ok: true, msg: '' }; },
+    async getForm10(p) { calls.push(['getForm10', p.tradeJun]); const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; return { values: form10Values({ tradeJun: closed ? p.tradeJun : srv.tradeJun, client: p.client }), missing: opts.form10Missing || [], rows: closed ? closed.slice() : srv.rows.slice() }; },
+    async postComplete(fields) { calls.push(['postComplete', Object.fromEntries(fields)]); if (opts.completeFails) return { ok: false, msg: '완료 실패' }; srv.closed = srv.closed || {}; srv.closed[srv.tradeJun] = srv.rows.slice(); srv.tradeJun = ''; srv.rows = []; return { ok: true, msg: '' }; },
     async deleteLines(tradeJun, client, clientName, idxValues) { calls.push(['deleteLines', tradeJun, idxValues.slice()]); if (opts.deleteFails) return { ok: false, msg: 'x' }; const seqs = idxValues.map((v) => v.split(',')[0]); srv.rows = srv.rows.filter((r) => !seqs.includes(r.orderSeq)); if (!srv.rows.length) srv.tradeJun = ''; return { ok: true, msg: '' }; },
     async findJunNums(orderSeqs) { calls.push(['findJunNums', orderSeqs.slice()]); return orderSeqs.map((s) => ({ orderSeq: s, junNum: '0000002YF5', status: '주문완료' })); },
     async listJunRows() { calls.push(['listJunRows']); return []; }   // 기본: 목록에 다른 줄 없음(테스트가 필요하면 덮어쓴다)
@@ -151,8 +152,10 @@ test('페이로드 문제(품위 옵션 없음): POST 없이 skipped', async () 
 //  Terra 1R P1 (2026-09-15): 완료 성공 뒤 확인 GET 이 죽으면 catch 가 fail() 로 들어가 **완료된 주문장의 줄을 지우려 했다**.
 test('완료 성공 뒤 state() 가 던지면 deleteLines 를 부르지 않고 fatal(complete_unverified)', async () => {
   const erp = makeErp();
-  const origState = erp.state.bind(erp); let n = 0;
-  erp.state = async () => { n++; if (n === 2) throw new Error('timeout'); return origState(); };   // 1=가드, 2=완료 후 확인
+  const origState = erp.state.bind(erp); let completed = false;
+  const origComplete = erp.postComplete.bind(erp);
+  erp.postComplete = async (f) => { const r = await origComplete(f); completed = true; return r; };
+  erp.state = async () => { if (completed) throw new Error('timeout'); return origState(); };   // 완료 **뒤** 확인 GET 만 죽는다(그 전 세션 대조는 정상)
   const r = await C.oiRunOrder(order(), erp, hooks);
   assert.equal(r.status, 'fatal'); assert.match(r.reason, /^complete_unverified:/);
   assert.ok(!names(erp).includes('deleteLines'), '완료된 주문장에 삭제를 걸면 안 된다');
@@ -319,6 +322,47 @@ test('전표 조회가 비거나 던지면 done 이지만 reason 에 전표 미�
   erp2.findJunNums = async () => { throw new Error('timeout'); };
   const r2 = await C.oiRunOrder(order(), erp2, hooks);
   assert.equal(r2.status, 'done'); assert.match(r2.reason, /전표 미확인/);
+});
+
+//  Opus 5 P2 (2026-09-15): 둘째 줄·완료 직전에 세션 대조가 없어, 남이 그 사이 내 주문장을 완료하면 명시 tradeJun GET 이 계속 행을 보여줘 완료된 전표에 줄을 붙일 수 있었다.
+test('첫 줄 뒤 남이 내 주문장을 완료하면 둘째 줄 POST·완료 POST 없이 fatal, 삭제도 없음', async () => {
+  const erp = makeErp();
+  const origPost = erp.postLine.bind(erp); let n = 0;
+  erp.postLine = async (fields) => { const r = await origPost(fields); if (++n === 1) { erp.srv.closed = { [erp.srv.tradeJun]: erp.srv.rows.slice() }; erp.srv.tradeJun = ''; erp.srv.rows = []; } return r; };   // 남이 완료
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(erp.calls.filter((c) => c[0] === 'postLine').length, 1, '둘째 줄을 완료된 전표에 붙이면 안 된다');
+  assert.ok(!names(erp).includes('postComplete'));
+  assert.ok(!names(erp).includes('deleteLines'));
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /trade_changed/);
+  assert.equal(rs[1].status, 'blocked');
+});
+
+test('완료 직전에 남이 내 주문장을 완료했으면 완료 POST 를 보내지 않는다', async () => {
+  const erp = makeErp();
+  const origF10 = erp.getForm10.bind(erp);
+  erp.getForm10 = async (p) => { erp.srv.closed = { [erp.srv.tradeJun]: erp.srv.rows.slice() }; erp.srv.tradeJun = ''; erp.srv.rows = []; return origF10(p); };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.ok(!names(erp).includes('postComplete'));
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /trade_changed/);
+});
+
+//  Opus 5 P2 (2026-09-15): form10 필드 누락 가드를 지워도 테스트가 통과했다(변이 생존).
+test('form10 필드가 빠지면 완료 POST 없이 되돌리고 skipped', async () => {
+  const erp = makeErp({ form10Missing: ['payBank'] });
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.match(r.reason, /form10 필드 누락/);
+  assert.ok(!names(erp).includes('postComplete'));
+  assert.equal(r.rolledBack, 2);
+});
+
+//  Opus 5 P2 (2026-09-15): fresh.length!==1 검사를 지우면 남의 줄을 내 줄로 기록해 삭제할 수 있었다(변이 생존).
+test('행 수는 맞는데 내 줄이 빠지고 남의 줄이 들어온 응답이면 삭제 없이 fatal', async () => {
+  const erp = makeErp();
+  const origPost = erp.postLine.bind(erp); let n = 0;
+  erp.postLine = async (fields) => { const r = await origPost(fields); if (++n === 2) { erp.srv.rows.shift(); erp.srv.rows.unshift(Object.assign(row('999999', '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); r.rows = erp.srv.rows.slice(); } return r; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /line_unverified/);
+  assert.ok(!names(erp).includes('deleteLines'));
 });
 
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {

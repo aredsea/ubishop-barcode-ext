@@ -87,10 +87,19 @@ test('erp 어댑터·UI·브리지가 기대한 이름을 노출한다', () => {
   assert.ok(xls.includes("source: 'ub-oi-xls'"));
 });
 
+//  Opus 5 P1·P2 (2026-09-15): 결과 → 체크/장부 판정은 core 의 순수 함수로 하고 UI 는 그 결과만 배선한다. 장부는 병합 저장, 매핑표 onChanged 는 실행 중에도 반영.
+test('UI 배선: onOrder 가 oiPostRunState 를 쓰고, 장부는 병합 저장, 매핑표 onChanged 는 실행 중에도 S.map 을 갱신한다', () => {
+  const ui = read('src/orderimport.js');
+  assert.ok(/onOrder:[\s\S]{0,400}?C\.oiPostRunState\(r/.test(ui), 'onOrder 안에서 oiPostRunState 호출');
+  assert.ok(/async function saveLedger\(\)[\s\S]{0,300}?sget\(\{ \[KEY_LEDGER\]/.test(ui), '장부는 저장 직전에 다시 읽어 병합');
+  assert.ok(/if \(ch\[KEY_MAP\]\) \{ S\.map = ch\[KEY_MAP\]\.newValue \|\| \{\};/.test(ui), '매핑표 변경은 실행 중에도 대입');
+  assert.ok(!/ch\[KEY_MAP\] && !S\.running/.test(ui), '실행 중 매핑표 변경을 버리는 옛 조건이 남아 있다');
+});
+
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
   const core = read('src/orderimport-core.js');
   assert.ok(core.includes('globalThis.ubOi = api;'));
   const api = require(path.join(ROOT, 'src', 'orderimport-core.js'));
-  for (const n of ['oiParseRows', 'oiGroupOrders', 'oiReadWriteForm', 'oiReadForm10', 'oiLinePayload', 'oiForm10Payload', 'oiRunOrder', 'oiRunAll'])
+  for (const n of ['oiParseRows', 'oiGroupOrders', 'oiReadWriteForm', 'oiReadForm10', 'oiLinePayload', 'oiForm10Payload', 'oiRunOrder', 'oiRunAll', 'oiPostRunState'])
     assert.equal(typeof api[n], 'function', n);
 });

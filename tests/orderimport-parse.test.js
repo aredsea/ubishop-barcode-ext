@@ -183,6 +183,41 @@ test('oiParseRows: 숫자형 휴대폰 셀(meta.numericPhoneRows)은 검토 대�
   assert.deepEqual(C.oiLineIssues(r.lines[1], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }), []);
 });
 
+//  Opus 5 P2 (2026-09-15): 12자리는 무조건 4-4-4, 11자리는 3-4-4 로 재조립해 '+82 10-…'·'0505-123-4567' 이 다른 번호 문자열이 됐다.
+test('oiNormPhone: 이미 세 토막이면 원문 하이픈 유지, 숫자만 왔을 때만 재구성, 국가코드는 검토', () => {
+  assert.equal(C.oiNormPhone('0505-123-4567').phone, '0505-123-4567');
+  assert.equal(C.oiNormPhone('010-1234-5678').phone, '010-1234-5678');
+  assert.equal(C.oiNormPhone('0504-0000-4166').phone, '0504-0000-4166');
+  assert.equal(C.oiNormPhone('01012345678').phone, '010-1234-5678');
+  assert.equal(C.oiNormPhone('+82 10-1234-5678').ok, false, '국가코드 형식은 검토');
+  assert.equal(C.oiNormPhone('821012345678').ok, false);
+  assert.equal(C.oiNormPhone('010-12345-678').ok, false, '토막 자릿수가 이상하면 검토');
+  assert.equal(C.oiNormPhone('0505-123-4567').last4, '4567');
+});
+
+//  Opus 5 P1 (2026-09-15): complete_unverified 등으로 끝난 주문장이 체크된 채·장부 미기록으로 남아 [등록 시작] 재클릭 때 중복 주문장이 생겼다.
+test('oiPostRunState: 완료됐을 수 있는 결과는 체크 해제 + 장부(unverified), 완전히 되돌린 skipped 만 재시도 가능', () => {
+  const base = { key: 'K', tradeJun: '141236', orderSeqs: ['1', '2'], junNums: [{ junNum: '0000002YF5' }], rolledBack: 0, completing: false, completed: false };
+  const done = C.oiPostRunState(Object.assign({}, base, { status: 'done' }), 'now');
+  assert.equal(done.uncheck, true); assert.deepEqual(done.ledgerEntry, { at: 'now', tradeJun: '141236', junNums: ['0000002YF5'], lines: 2 });
+  for (const r of [
+    Object.assign({}, base, { status: 'fatal', reason: 'complete_unverified:x', completing: true }),
+    Object.assign({}, base, { status: 'fatal', reason: 'session_not_clear', completed: true, completing: true }),
+    Object.assign({}, base, { status: 'fatal', reason: 'foreign_line_completed:…', completed: true, completing: true }),
+    Object.assign({}, base, { status: 'fatal', reason: 'line_unverified:x', junNums: [] })
+  ]) {
+    const st = C.oiPostRunState(r, 'now');
+    assert.equal(st.uncheck, true, r.reason);
+    assert.equal(st.ledgerEntry.unverified, true, r.reason); assert.equal(st.ledgerEntry.reason, r.reason);
+  }
+  const rolled = C.oiPostRunState(Object.assign({}, base, { status: 'skipped', reason: 'line_failed:x', rolledBack: 2, junNums: [] }), 'now');
+  assert.equal(rolled.uncheck, false); assert.equal(rolled.ledgerEntry, null);
+  const guard = C.oiPostRunState({ key: 'K', status: 'skipped', reason: 'open_trade', orderSeqs: [], junNums: [], rolledBack: 0 }, 'now');
+  assert.equal(guard.uncheck, false); assert.equal(guard.ledgerEntry, null);
+  const blocked = C.oiPostRunState({ key: 'K', status: 'blocked', reason: 'halted' }, 'now');
+  assert.equal(blocked.uncheck, false); assert.equal(blocked.ledgerEntry, null);
+});
+
 test('oiClientName / oiMarket / oiRemark', () => {
   assert.equal(C.oiClientName('아자차', '4492', '쿠'), '아자차4492/쿠');
   assert.equal(C.oiClientName(' 가*나 ', '0399', 'G'), '가*나0399/G');

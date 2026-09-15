@@ -51,14 +51,24 @@
   }
 
   /* ------------------------------------------------------------ §2.2 정규화 */
-  //  숫자만 남긴 뒤 하이픈 재구성. 유비샵은 하이픈 형식으로 저장·검색한다(실측). 그 외 길이는 ok:false.
+  //  유비샵은 하이픈 형식으로 저장·검색한다(실측). 원문이 이미 '토막-토막-토막' 이면 **그 하이픈을 그대로** 쓰고(0505-123-4567 처럼
+  //  4-3-4 도 있다 — 재조립하면 다른 번호가 된다, Opus 5 P2), 숫자만 왔을 때만 자릿수로 재구성한다. 국가코드(+82/82…)·그 외 형태는 검토.
   function oiNormPhone(raw) {
     const text = String(raw == null ? '' : raw).trim();
     const digits = text.replace(/\D/g, '');
     let phone = '';
-    if (digits.length === 11) phone = digits.replace(/^(\d{3})(\d{4})(\d{4})$/, '$1-$2-$3');
-    else if (digits.length === 12) phone = digits.replace(/^(\d{4})(\d{4})(\d{4})$/, '$1-$2-$3');
-    else if (digits.length === 10) phone = digits.replace(/^(\d{3})(\d{3})(\d{4})$/, '$1-$2-$3');
+    if (/^\+/.test(text) || (digits.length === 12 && /^82/.test(digits))) phone = '';
+    else if (/^\d{2,4}-\d{3,4}-\d{4}$/.test(text) && digits.length >= 10 && digits.length <= 12) phone = text;
+    else if (/^\d+$/.test(text)) {
+      if (digits.length === 11) phone = digits.replace(/^(\d{3})(\d{4})(\d{4})$/, '$1-$2-$3');
+      else if (digits.length === 12) phone = digits.replace(/^(\d{4})(\d{4})(\d{4})$/, '$1-$2-$3');
+      else if (digits.length === 10) phone = digits.replace(/^(\d{3})(\d{3})(\d{4})$/, '$1-$2-$3');
+    } else if (/^[\d\s-]+$/.test(text) && !/-/.test(text)) {
+      const d = digits;   // 공백으로만 나뉜 숫자(예 '106 249 2567')
+      if (d.length === 11) phone = d.replace(/^(\d{3})(\d{4})(\d{4})$/, '$1-$2-$3');
+      else if (d.length === 12) phone = d.replace(/^(\d{4})(\d{4})(\d{4})$/, '$1-$2-$3');
+      else if (d.length === 10) phone = d.replace(/^(\d{3})(\d{3})(\d{4})$/, '$1-$2-$3');
+    }
     return { raw: text, phone, last4: digits.slice(-4), ok: !!phone };
   }
 
@@ -662,8 +672,16 @@
         res.client = { seq: reg.client.seq, name: order.clientName, mode: phone ? 'new' : 'new_nophone' };
       }
 
+      //  세션의 열린 주문장이 아직 내 tradeJun 인지 plain GET 으로 본다 — 명시 tradeJun GET 은 완료된 전표의 줄도 계속 보여주므로 그것만으론
+      //  남이 그 사이 완료한 것을 못 잡는다(Opus 5 P2, 되돌리기 직전 대조와 같은 한 줄).
+      const assertTradeOpen = async (where) => {
+        const st = await erp.state();
+        if (String(st.tradeJun || '') !== String(res.tradeJun || '')) return 'trade_changed:' + where + ' ' + (st.tradeJun || '(none)') + '≠' + (res.tradeJun || '(none)');
+        return '';
+      };
       for (let i = 0; i < order.lines.length; i++) {
         const ln = order.lines[i];
+        if (i > 0) { const tc = await assertTradeOpen('line' + i); if (tc) return await fail('skipped', tc); }
         const form = await erp.getWriteForm({ tradeJun: res.tradeJun, master: ln.master.seq, client: res.client.seq, clientName: res.client.name });
         const chk = oiCheckForm(form, { client: res.client.seq, master: ln.master.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs });
         if (!chk.ok) return await fail('skipped', 'mismatch:' + chk.reason);
@@ -689,16 +707,18 @@
           res.tradeJun = post.tradeJun || fresh[0].tradeJun;
           return await fail('skipped', 'code_mismatch:' + fresh[0].code + '≠' + ln.master.code);
         }
+        const gotTrade = post.tradeJun || fresh[0].tradeJun;
+        if (res.tradeJun && gotTrade && String(gotTrade) !== String(res.tradeJun)) { res.lineUnknown = true; return await fail('skipped', 'trade_switched:' + gotTrade + '≠' + res.tradeJun); }   // 둘째 줄부터 tradeJun 이 바뀌면 어디에 붙었는지 모른다
         res.orderSeqs.push(fresh[0].orderSeq);
         res.rowSnaps.push(Object.assign({}, fresh[0]));       // 등록 응답의 행 그대로 — 완료 직전 대조 기준(Terra 6R)
-        res.idxValues.push(fresh[0].orderSeq + ',' + (fresh[0].tradeJun || post.tradeJun));
-        res.tradeJun = post.tradeJun || fresh[0].tradeJun;
+        res.idxValues.push(fresh[0].orderSeq + ',' + gotTrade);
+        res.tradeJun = gotTrade;
       }
-
       const f10 = await erp.getForm10({ tradeJun: res.tradeJun, client: res.client.seq, clientName: res.client.name });
       const fin = oiCheckFinal(f10, { client: res.client.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs, lines: order.lines, snaps: res.rowSnaps });
       if (!fin.ok) return await fail('skipped', 'final:' + fin.reason);
       if (f10.missing && f10.missing.length) return await fail('skipped', 'form10 필드 누락: ' + f10.missing.join(','));
+      { const tc = await assertTradeOpen('complete'); if (tc) return await fail('skipped', tc); }   // 완료 POST **직전** — 최종 대조 뒤에 남이 완료했을 수 있다(Opus 5 P2)
       //  완료 POST 를 **보내는 순간부터** 결과를 모르는 실패는 전부 '완료 미확인' 이다 — 응답이 유실돼도 서버는 완료했을 수 있다(Terra 2R P1).
       //  서버가 명시적으로 실패(msg)라고 답한 경우에만 되돌린다.
       res.completing = true;
@@ -729,6 +749,20 @@
     }
   }
 
+  //  실행 결과 → UI 가 해야 할 일(체크 해제 여부·장부 기록). 순수 함수라 테스트로 고정한다(Opus 5 P1).
+  //   - done → 해제 + 장부.  - 서버에 뭔가 남았을 수 있는 결과(완료 시도 이후 실패·되돌리지 못한 줄) → 해제 + 장부(unverified) → 재클릭 시 중복 주문장 방지·'이전에 넣음' 경고.
+  //   - 완전히 되돌린 skipped·가드 skipped·blocked → 그대로(재시도 가능).
+  function oiPostRunState(r, now) {
+    if (!r) return { uncheck: false, ledgerEntry: null };
+    const at = now || new Date().toISOString();
+    const juns = (r.junNums || []).map((j) => j.junNum).filter(Boolean);
+    const lines = (r.orderSeqs || []).length;
+    if (r.status === 'done') return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines } };
+    const mayRemain = !!(r.completing || r.completed) || (lines > 0 && (r.rolledBack || 0) < lines);
+    if (r.status !== 'blocked' && mayRemain) return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines, unverified: true, reason: r.reason || r.status } };
+    return { uncheck: false, ledgerEntry: null };
+  }
+
   //  주문장 순차 실행. fatal 이면 즉시 중단(이후 주문장은 'blocked').
   async function oiRunAll(orders, erp, hooks) {
     const results = [];
@@ -753,7 +787,7 @@
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,
-    oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll
+    oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll, oiPostRunState
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubOi = api; }

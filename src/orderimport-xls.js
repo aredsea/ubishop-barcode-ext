@@ -19,7 +19,7 @@
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
       const numericPhoneRows = [];
       const hdr = rows[0] || [];
-      const phoneCols = hdr.map((h, i) => (/휴대폰|전화/.test(String(h).replace(/\s+/g, '')) ? i : -1)).filter((i) => i >= 0);
+      const phoneCols = hdr.map((h, i) => (String(h).replace(/\s+/g, '') === '수령자휴대폰' ? i : -1)).filter((i) => i >= 0);   // 파싱이 쓰는 열만(Opus 5 Nit)
       if (phoneCols.length && ws['!ref']) {
         const range = XLSX.utils.decode_range(ws['!ref']);
         for (let r = range.s.r + 1; r <= range.e.r; r++) {
