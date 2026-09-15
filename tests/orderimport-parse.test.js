@@ -95,6 +95,18 @@ test('oiApplyMarket: 미등록 판매처에 세션 한정 접미·마켓을 넣�
   assert.equal(C.oiApplyMarket(g[0], '', '12'), false, '접미가 비면 적용하지 않는다');
 });
 
+//  Terra 8R P2 (2026-09-15): code 없는 매핑({seq}만)이 실행까지 통과해 POST 뒤 code 대조에서 fatal 로 끝났다 — POST 전에 막아야 한다.
+test('oiLineIssues: 매핑 항목에 seq·code 가 없으면 매핑 불완전으로 차단', () => {
+  const line = C.oiParseRows(ROWS_B).lines[0];
+  const parsed = C.oiParseOption(line.optionText);
+  assert.ok(C.oiLineIssues(line, { mapping: { entry: { seq: '7083' } }, parsed }).some((s) => s.startsWith('매핑 불완전')));
+  assert.ok(C.oiLineIssues(line, { mapping: { entry: { code: 'F-RF-I-WG-PA-00F6' } }, parsed }).some((s) => s.startsWith('매핑 불완전')));
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { seq: '7083', code: 'F-RF-I-WG-PA-00F6' } }, parsed }), []);
+  assert.deepEqual(C.oiValidMapEntry({ seq: '7083', code: 'F-RF-I-WG-PA-00F6', name: 'x' }), true);
+  assert.deepEqual(C.oiValidMapEntry({ seq: '7083' }), false);
+  assert.deepEqual(C.oiValidMapEntry({ seq: 7083, code: 'F-RF-I-WG-PA-00F6' }), false, 'seq 는 문자열');
+});
+
 test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검토 대상)', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰', '수량'],
     ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-0000-5678', '2']];

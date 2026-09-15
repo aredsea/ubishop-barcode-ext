@@ -12,7 +12,7 @@
   if (!C || !E) { console.warn('[UB][oi] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const KEY_MAP = 'ubOiMap', KEY_LEDGER = 'ubOiLedger', PANEL_ID = 'ub-oi-panel', STYLE_ID = 'ub-oi-style';
-  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, results: [], log: [], xlsReady: false, seq: 0, fileName: '' };
+  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '' };
 
   /* ------------------------------------------------------------ storage */
   const sget = (q) => new Promise((res) => chrome.storage.local.get(q, res));
@@ -317,22 +317,27 @@
     refreshOrder(o); render();
   }
   async function loadFile(file) {
+    //  파일을 연달아 고르면 먼저 고른(큰) 파일의 파싱이 나중에 끝나 나중 파일의 표를 덮어쓴다(Terra 8R P1) — 세대 토큰으로 최신 선택만 반영.
+    const gen = ++S.fileGen;
     try {
       S.fileName = file.name; S.results = []; S.orders = [];
       const rows = await readXls(file);
+      if (gen !== S.fileGen) return;
       buildOrders(rows);
       render();
       await enrich();
+      if (gen !== S.fileGen) return;
       render();
-    } catch (err) { alert('파일을 읽지 못했습니다: ' + (err && err.message || err)); S.orders = []; render(); }
+    } catch (err) { if (gen !== S.fileGen) return; alert('파일을 읽지 못했습니다: ' + (err && err.message || err)); S.orders = []; render(); }
   }
   async function importMap(file) {
     try {
       const obj = JSON.parse(await file.text());
       if (!obj || typeof obj !== 'object') throw new Error('JSON 객체가 아닙니다');
-      let n = 0; Object.keys(obj).forEach((k) => { if (obj[k] && obj[k].seq) { S.map[k] = obj[k]; n++; } });
+      let n = 0, bad = 0;
+      Object.keys(obj).forEach((k) => { if (C.oiValidMapEntry(obj[k])) { S.map[k] = obj[k]; n++; } else bad++; });   // seq·code 둘 다 없는 항목은 버린다(Terra 8R P2)
       await saveMap(); S.orders.forEach(refreshOrder); render();
-      alert(n + '개 항목을 매핑표에 합쳤습니다.');
+      alert(n + '개 항목을 매핑표에 합쳤습니다.' + (bad ? ' (seq/code 가 없는 ' + bad + '개는 건너뜀)' : ''));
     } catch (err) { alert('매핑표 가져오기 실패: ' + (err && err.message || err)); }
   }
 

@@ -165,6 +165,10 @@
     keys.push(base);
     return keys;
   }
+  //  매핑 항목은 seq·code 문자열이 둘 다 있어야 실행에 쓸 수 있다(가져온 JSON 이 불완전할 수 있다 — Terra 8R P2).
+  function oiValidMapEntry(e) {
+    return !!e && typeof e.seq === 'string' && !!e.seq.trim() && typeof e.code === 'string' && !!e.code.trim();
+  }
   function oiLookupMap(map, keys) {
     for (const k of keys || []) if (map && map[k]) return { key: k, entry: map[k] };
     return null;
@@ -246,6 +250,7 @@
     //  사람이 품위·색상·사이즈를 직접 보정했으면(optOverride) 원문의 미해석 토큰은 더 이상 차단 사유가 아니다(Terra 4R P2).
     if (parsed && parsed.unresolved.length && !(resolved && resolved.optOverride)) issues.push('옵션 해석 불가: ' + parsed.unresolved.join(', '));
     if (!resolved || !resolved.mapping) issues.push('상품 미매칭');
+    else if (!oiValidMapEntry(resolved.mapping.entry)) issues.push('매핑 불완전(seq/code 없음) — 매핑을 지우고 다시 고르세요');
     const form = resolved && resolved.form;
     if (form && parsed) {
       if (parsed.k && !oiResolveK(parsed.k, form.kOpts)) issues.push('품위 옵션 없음: ' + parsed.k);
@@ -701,7 +706,7 @@
   const api = {
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiComma, oiRemark, oiParseRows,
-    oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiSuggestQueries,
+    oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiLineIssues,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
