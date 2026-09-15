@@ -148,6 +148,29 @@ test('oiMoney: 원 단위는 정수만 — 소수·음수·문자는 null(검토
   assert.ok(C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).includes('판매가 없음'));
 });
 
+//  Terra 12R P2 (2026-09-15): 사은품처럼 정산금액이 0 인 행은 비고가 빈값이 됐다 — 값이 있으면 '정산 0 원' 을 써야 한다.
+test('정산금액 0 은 비고 "정산 0 원", 비어 있으면 생략, 소수는 거부', () => {
+  assert.equal(C.oiMoney0('0'), 0); assert.equal(C.oiMoney0(0), 0); assert.equal(C.oiMoney0('1,234'), 1234);
+  assert.equal(C.oiMoney0(''), null); assert.equal(C.oiMoney0('12.5'), null); assert.equal(C.oiMoney0('-1'), null);
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['아몬즈', '1', '[사은품] 가죽 트레이', '', 1400, 0, '홍길동', '010-1234-5678'],
+    ['아몬즈', '1', 'A', '', 1000, '', '홍길동', '010-1234-5678']];
+  const ls = C.oiParseRows(rows).lines;
+  assert.equal(ls[0].settle, 0); assert.equal(C.oiRemark(ls[0].settle), '정산 0 원');
+  assert.equal(ls[1].settle, null); assert.equal(C.oiRemark(ls[1].settle), '');
+});
+
+//  Terra 12R P2 (2026-09-15): [매핑 지우기] 뒤 같은 상품을 다시 고르면 seq/code/name 만 저장돼 remarkSuffix·colorFallback 이 사라졌다.
+test('oiLearn: 같은 seq 의 기존 항목이 있으면 remarkSuffix·colorFallback 을 이어받는다', () => {
+  const map = { 'a|x': { seq: '6965', code: 'F-NF-P-WG-UU-00DH', name: '이스키아N', remarkSuffix: '/블루칼세도니', colorFallback: 'WG' } };
+  const next = C.oiLearn(map, ['b'], { seq: '6965', code: 'F-NF-P-WG-UU-00DH', name: '이스키아N' }, 'now');
+  assert.equal(next.b.remarkSuffix, '/블루칼세도니'); assert.equal(next.b.colorFallback, 'WG');
+  const other = C.oiLearn(map, ['c'], { seq: '7083', code: 'X', name: 'y' }, 'now');
+  assert.equal(other.c.remarkSuffix, undefined);
+  const explicit = C.oiLearn(map, ['d'], { seq: '6965', code: 'F-NF-P-WG-UU-00DH', name: '이스키아N', remarkSuffix: '/새접미' }, 'now');
+  assert.equal(explicit.d.remarkSuffix, '/새접미', '명시한 값이 우선');
+});
+
 test('oiClientName / oiMarket / oiRemark', () => {
   assert.equal(C.oiClientName('아자차', '4492', '쿠'), '아자차4492/쿠');
   assert.equal(C.oiClientName(' 가*나 ', '0399', 'G'), '가*나0399/G');

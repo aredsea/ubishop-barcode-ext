@@ -213,6 +213,7 @@
     const e = l.mapping ? l.mapping.entry : null;
     const prod = e
       ? esc(e.name) + ' <span class="oi-muted">' + esc(e.code) + '</span> <button class="oi-btn" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="매핑 지우기">✕</button>'
+        + '<div style="margin-top:3px"><input class="oi-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"></div>'
       : '<select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
         + (l.suggest || []).map((s) => '<option value="' + esc(s.seq + '|' + s.code + '|' + s.name) + '">' + esc(s.name) + ' · ' + esc(s.code) + '</option>').join('')
         + '</select><div style="display:flex;gap:4px;margin-top:3px"><input class="oi-in" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '"><button class="oi-btn" data-act="search" data-o="' + oi + '" data-l="' + li + '">검색</button></div>';
@@ -314,6 +315,14 @@
     else if (f === 'qty') l.spec.qty = C.oiMoney(el.value);
     else if (f === 'price') l.spec.price = C.oiMoney(el.value);
     else if (f === 'remark') { l.spec.remark = el.value; l.spec.remarkAuto = false; }
+    else if (f === 'suffix') {                                 // 비고 접미 — 이 상품의 매핑 항목에 저장(스펙 §2.4, Terra 12R P2)
+      if (!l.mapping) return;
+      const suf = el.value.trim(); const seq = String(l.mapping.entry.seq);
+      Object.keys(S.map).forEach((k) => { if (S.map[k] && String(S.map[k].seq) === seq) S.map[k] = Object.assign({}, S.map[k], { remarkSuffix: suf }); });
+      await saveMap();
+      S.orders.forEach((oo) => oo.lines.forEach((ll) => { if (ll.spec) ll.spec.remarkAuto = ll.spec.remarkAuto !== false; }));
+      S.orders.forEach(refreshOrder); render(); return;
+    }
     refreshOrder(o); render();
   }
   async function loadFile(file) {

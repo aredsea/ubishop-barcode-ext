@@ -75,6 +75,14 @@
     const n = Number(s);
     return n > 0 && Number.isSafeInteger(n) ? n : null;
   }
+  //  정산금액 전용: 0 을 허용한다(사은품 행). 비었거나 소수·음수·문자는 null(Terra 12R P2).
+  function oiMoney0(v) {
+    if (v == null) return null;
+    const s = String(v).replace(/[,\s원]/g, '');
+    if (!/^\d+$/.test(s)) return null;
+    const n = Number(s);
+    return Number.isSafeInteger(n) ? n : null;
+  }
   function oiComma(n) { return String(Math.round(Number(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 
   //  비고 = '정산 12,133 원' (+ ' ' + 매핑표 remarkSuffix). 정산금액이 없으면 접미만(없으면 빈 문자열).
@@ -107,7 +115,7 @@
         productName: cell('name'),
         optionText: cell('option'),
         price: oiMoney(cell('price')),
-        settle: (k => (k in hm.idx) ? oiMoney(cell('settle')) : null)('settle'),
+        settle: (k => (k in hm.idx) ? oiMoney0(cell('settle')) : null)('settle'),
         qty: qtyRaw ? oiMoney(qtyRaw) : 1,
         status: cell('status')
       });
@@ -175,9 +183,14 @@
     return null;
   }
   //  학습: 주어진 키 전부에 같은 항목을 쓴다(원본 map 은 건드리지 않고 새 객체).
+  //  같은 seq(같은 유비샵 상품)의 기존 항목이 있으면 remarkSuffix·colorFallback 을 이어받는다 — [매핑 지우기] 뒤 다시 골라도
+  //  부가정보가 사라지지 않게(Terra 12R P2). entry 에 명시한 값이 우선.
   function oiLearn(map, keys, entry, now) {
     const next = Object.assign({}, map || {});
-    const rec = Object.assign({}, entry, { learnedAt: now || new Date().toISOString() });
+    const prior = Object.values(map || {}).find((e) => e && entry && String(e.seq) === String(entry.seq) && (e.remarkSuffix || e.colorFallback));
+    const carry = {};
+    if (prior) { if (prior.remarkSuffix) carry.remarkSuffix = prior.remarkSuffix; if (prior.colorFallback) carry.colorFallback = prior.colorFallback; }
+    const rec = Object.assign({}, carry, entry, { learnedAt: now || new Date().toISOString() });
     (keys || []).forEach((k) => { next[k] = rec; });
     return next;
   }
@@ -723,7 +736,7 @@
 
   const api = {
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
-    oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiComma, oiRemark, oiParseRows,
+    oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiLineIssues,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
