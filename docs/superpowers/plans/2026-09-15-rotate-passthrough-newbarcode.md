@@ -1,5 +1,7 @@
 # 회전입고 자동화 보강(본사반품확인 건너뛰기 · 새 바코드 팝업 강조) Implementation Plan
 
+> **결과(2026-09-15)**: Task 1~4 완료 — main `8326b49`(SHELL 4.2.1) 푸시, T2 검수 채택 0(원장 #86~#91). 플랜과 달리 O1·O2 반영 커밋이 2개 더 들어갔고(`91a9592`·`6ed3f43`), Task 2 Step 1 의 소진 훅 정규식은 같은 줄 주석을 못 봐 테스트 쪽을 고쳤다. 남은 것은 Step 6 라이브 확인(사장님).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 회전입고 자동화가 "본사반품확인 가능한 상태가 아닙니다"로 1단계가 거절돼도 회전입고로 진행하고, 결과 화면에서 새로 발급된 바코드를 읽어 재고화 보관함에 넣어 본사확인 팝업이 강조하게 한다. 결과 상태줄은 서버 거부/행 발견/행 없음을 구분해 보여준다.
@@ -30,7 +32,7 @@
 **Interfaces:**
 - Produces: `rotStep1Outcome(res: {ok:boolean, msg?:string}) → {proceed:boolean, note:string}`
 
-- [ ] **Step 1: 테스트 파일 생성(하네스 + Task 1 케이스)**
+- [x] **Step 1: 테스트 파일 생성(하네스 + Task 1 케이스)**
 
 `tests/rotate-flow.test.js`:
 
@@ -96,12 +98,12 @@ test('rotateRun 은 rotStep1Outcome 으로 판정하고 proceed 거짓이면 ret
 });
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `node --test tests/rotate-flow.test.js`
 Expected: 하네스가 `skin.js 에서 rotStep1Outcome 선언을 찾지 못했습니다` 로 즉시 실패(fail 1 이상).
 
-- [ ] **Step 3: `rotStep1Outcome` 추가 + `rotateRun` 변경**
+- [x] **Step 3: `rotStep1Outcome` 추가 + `rotateRun` 변경**
 
 `src/skin.js` — `confirmOpdelivedReturn` 함수의 닫는 `}` 바로 다음, `let rotBusy = false;` 앞에 추가:
 
@@ -136,12 +138,12 @@ Expected: 하네스가 `skin.js 에서 rotStep1Outcome 선언을 찾지 못했�
       setStatus((step1.note ? step1.note + ' → ' : '') + '회전입고 실행 중…', 'go');
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run: `node --test tests/rotate-flow.test.js`
 Expected: `ℹ pass 5` / `ℹ fail 0`. 그리고 `node -e "new Function(require('fs').readFileSync('src/skin.js','utf8'))"` 가 출력 없이 끝난다(문법).
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/skin.js tests/rotate-flow.test.js
@@ -162,7 +164,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `stkRecentAdd(barcode)`(재고화 보관함, `src/skin.js` 약 727행) · `stkNorm(bc)` · `isRotateWrite()` · `rotLog`
 - Produces: `rotNewBarcodeFromCells(headerTexts: string[], rowTexts: string[], oldBc: string) → string`, `rotNewBarcodeFromRow(tr, oldBc) → string`, `rotSetResultStatus(text, kind)`, `rotAfterRowFound(tr, oldBc)`, `rotAfterRowMissing()`, 모듈 상태 `rotMsgShown`
 
-- [ ] **Step 1: 테스트 추가(순수 함수 + 배선 대조)**
+- [x] **Step 1: 테스트 추가(순수 함수 + 배선 대조)**
 
 `tests/rotate-flow.test.js` 의 `const NAMES = ['rotStep1Outcome'];` 를 `const NAMES = ['rotStep1Outcome', 'rotNewBarcodeFromCells'];` 로 바꾸고, 파일 끝에 추가:
 
@@ -230,12 +232,12 @@ test('회전입고 배선: 로드 시 URL msg 를 읽어 err 로 띄우고 rotMs
 });
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `node --test tests/rotate-flow.test.js`
 Expected: 하네스가 `skin.js 에서 rotNewBarcodeFromCells 선언을 찾지 못했습니다` 로 실패.
 
-- [ ] **Step 3: 순수 함수·래퍼·상태 함수 추가**
+- [x] **Step 3: 순수 함수·래퍼·상태 함수 추가**
 
 `src/skin.js` — Task 1 의 `rotStep1Outcome` 바로 아래에 추가:
 
@@ -288,7 +290,7 @@ Expected: 하네스가 `skin.js 에서 rotNewBarcodeFromCells 선언을 찾지 �
   }
 ```
 
-- [ ] **Step 4: `ubHighlightPending` 훅 2줄**
+- [x] **Step 4: `ubHighlightPending` 훅 2줄**
 
 행 발견 분기의
 
@@ -324,7 +326,7 @@ Expected: 하네스가 `skin.js 에서 rotNewBarcodeFromCells 선언을 찾지 �
 
 으로 바꾼다.
 
-- [ ] **Step 5: 회전입고 배선에 `msg` 읽기**
+- [x] **Step 5: 회전입고 배선에 `msg` 읽기**
 
 회전입고 배선 블록의
 
@@ -344,18 +346,18 @@ Expected: 하네스가 `skin.js 에서 rotNewBarcodeFromCells 선언을 찾지 �
       } catch (_) {}
 ```
 
-- [ ] **Step 6: 통과 확인 + 문법**
+- [x] **Step 6: 통과 확인 + 문법**
 
 Run: `node --test tests/rotate-flow.test.js`
 Expected: `ℹ pass 16` / `ℹ fail 0`.
 Run: `node -e "new Function(require('fs').readFileSync('src/skin.js','utf8'))"` → 출력 없음.
 Run: `node --test tests/stock-recent.test.js tests/orderitem-assign.test.js` → 기존 통과 유지(보관함·팝업 코드는 손대지 않았다).
 
-- [ ] **Step 7: 변이 확인(테스트가 그물인지)**
+- [x] **Step 7: 변이 확인(테스트가 그물인지)**
 
 각각 스크래치 사본에서 걸고 `node --test tests/rotate-flow.test.js` 가 **정확히 그 테스트만** 실패하는지 본다: ① `if (isRotateWrite()) rotAfterRowFound(row, bc);` 제거 ② `if (isRotateWrite()) rotAfterRowMissing();` 제거 ③ `if (rotMsgShown) return;` 제거 ④ `rotNewBarcodeFromCells` 의 `tok === …oldBc…` 검사 제거 ⑤ `rotateRun` 의 `if (!step1.proceed)` 를 `if (false)` 로. 살아남는 변이가 있으면 테스트를 보강한 뒤 진행.
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add src/skin.js tests/rotate-flow.test.js
@@ -371,7 +373,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `manifest.json`(version), `src/skin.js` 머리말 버전 주석(있으면), `shell-files.json`(재생성), `docs/superpowers/specs/2026-09-15-rotate-passthrough-newbarcode-design.md`(변경 없음 확인)
 
-- [ ] **Step 1: 버전 상향**
+- [x] **Step 1: 버전 상향**
 
 `manifest.json` 의 `"version": "4.2.0"` → `"version": "4.2.1"`. `src/skin.js` 상단 변경 이력 주석에 한 줄 추가(형식은 기존 `v4.2.0 …` 줄과 같게):
 
@@ -379,7 +381,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
  *  v4.2.1 — 회전입고: 본사반품확인 '가능한 상태가 아닙니다' 통과 · 결과 새바코드 → 재고화 보관함(본사확인 팝업 강조) · 상태줄 거부/발견/없음.
 ```
 
-- [ ] **Step 2: 인덱스 재생성 + 무결성**
+- [x] **Step 2: 인덱스 재생성 + 무결성**
 
 Run: `pwsh -NoProfile -File build-shell-index.ps1`
 Expected: `shell-files.json v4.2.1: 18 files (LF-normalized text hashes)`
@@ -388,7 +390,7 @@ Expected: `ℹ pass 1` / `ℹ fail 0`
 Run: `node --test tests/rotate-flow.test.js tests/stock-recent.test.js tests/orderitem-assign.test.js tests/orderimport-wiring.test.js`
 Expected: 전부 fail 0.
 
-- [ ] **Step 3: 커밋**
+- [x] **Step 3: 커밋**
 
 ```bash
 git add manifest.json src/skin.js shell-files.json
@@ -405,9 +407,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Create: `REVIEW-BRIEF.tmp.md`(검수 브리프, 병합 전 삭제)
 - Modify: `docs/REVIEW-LEDGER.md`(회차 기록), `docs/superpowers/specs/…design.md`(라이브 확인 결과 1줄)
 
-- [ ] **Step 1: 검수 브리프** — 대상 `git diff <Task1 직전 커밋>..HEAD -- src/skin.js tests/rotate-flow.test.js manifest.json`. 저장소 밖 사실(스펙 §3 실측: 표 구조·idx 토큰·서버 거부는 msg·사장님 확인 "본사반품확인 안 된 건은 회전입고가 거부됨")과 원장 「누적 판정」을 붙인다. 관점: ① 1단계 통과 문구가 진짜 하나뿐인가 ② 재고화·메인석 페이지 회귀 0 ③ 상태줄 우선순위 ④ 보관함 오염(잘못된 토큰 등록) 경로.
-- [ ] **Step 2: GLM 1R**(`z-ai/glm-5.2`, `review "Read REVIEW-BRIEF.tmp.md …"`) → 지적을 코드로 재현해 채택/기각 → 수정 시 같은 모델 재검수(최대 3라운드).
-- [ ] **Step 3: Opus 5**(`opus-reviewer`) → 판정 → 수정 시 재검수.
-- [ ] **Step 4: 교차 1회**(`deepseek/deepseek-v4-pro`, 탐색 최소화 지시, CJK 통짜 스캔) → 판정.
-- [ ] **Step 5: 원장 기록**(등급·근거·모델·라운드·비용·채택/기각) → `REVIEW-BRIEF.tmp.md` 삭제 → 커밋 → `git push origin main`.
+- [x] **Step 1: 검수 브리프** — 대상 `git diff <Task1 직전 커밋>..HEAD -- src/skin.js tests/rotate-flow.test.js manifest.json`. 저장소 밖 사실(스펙 §3 실측: 표 구조·idx 토큰·서버 거부는 msg·사장님 확인 "본사반품확인 안 된 건은 회전입고가 거부됨")과 원장 「누적 판정」을 붙인다. 관점: ① 1단계 통과 문구가 진짜 하나뿐인가 ② 재고화·메인석 페이지 회귀 0 ③ 상태줄 우선순위 ④ 보관함 오염(잘못된 토큰 등록) 경로.
+- [x] **Step 2: GLM 1R**(`z-ai/glm-5.2`, `review "Read REVIEW-BRIEF.tmp.md …"`) → 지적을 코드로 재현해 채택/기각 → 수정 시 같은 모델 재검수(최대 3라운드).
+- [x] **Step 3: Opus 5**(`opus-reviewer`) → 판정 → 수정 시 재검수.
+- [x] **Step 4: 교차 1회**(`deepseek/deepseek-v4-pro`, 탐색 최소화 지시, CJK 통짜 스캔) → 판정.
+- [x] **Step 5: 원장 기록**(등급·근거·모델·라운드·비용·채택/기각) → `REVIEW-BRIEF.tmp.md` 삭제 → 커밋 → `git push origin main`.
 - [ ] **Step 6: 라이브 확인**(사장님 실제 회전입고 1건, 이미 본사반품확인된 건이면 더 좋음): 사이드바 상태줄이 `… → 새바코드 XXXXXX · 본사확인 팝업 강조 등록` 을 띄우고, 주문전표 본사확인 팝업에서 그 바코드 행이 강조되는지. 결과를 스펙 §3 끝에 한 줄 기록.
