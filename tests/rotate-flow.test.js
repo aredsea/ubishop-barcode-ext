@@ -108,7 +108,7 @@ test('ubHighlightPending: 행 발견 시 회전입고 페이지면 rotAfterRowFo
 test('rotAfterRowFound: msg 거부면 무시, 새바코드를 읽으면 보관함에 넣고 ok(저장 실패는 warn), 못 읽으면 warn (return 경로 4개)', () => {
   const body = extractFn(SRC, 'rotAfterRowFound');
   //  Opus 5 P2(2026-09-15): 거부(msg)됐는데 열린 회전입고장의 옛 행을 찾아 초록 '등록' 이 빨강을 덮었다 → 첫 줄에서 무시
-  assert.ok(/^async function rotAfterRowFound\(tr, oldBc\) \{\s*if \(rotMsgShown\) \{[^}]*return; \}/.test(body), 'msg 거부면 첫 줄에서 return');
+  assert.ok(/^async function rotAfterRowFound\(tr, oldBc\) \{\s*if \(rotServerMsg\(\)\) \{[^}]*return; \}/.test(body), 'msg 거부면 첫 줄에서 return');
   assert.ok(/const nb = rotNewBarcodeFromRow\(tr, oldBc\);/.test(body));
   assert.ok(/if \(!nb\) \{[^}]*rotSetResultStatus\('행은 찾았으나 새바코드를 못 읽음\(표 구조 변경\?\)', 'warn'\); return; \}/.test(body));
   assert.ok(/saved = await stkRecentAdd\(nb\) === true;/.test(body), '보관함 저장 결과를 본다');
@@ -126,10 +126,13 @@ test('stkRecentAdd 는 저장 여부를 돌려준다(true 저장·false 실패) 
 test('rotAfterRowMissing: 서버 msg 가 떠 있거나 flag 바코드가 이 화면의 직전 회전입고가 아니면 경고하지 않는다', () => {
   const body = extractFn(SRC, 'rotAfterRowMissing');
   assert.ok(/^function rotAfterRowMissing\(bc\)/.test(body), 'flag 바코드를 받는다');
-  assert.ok(/if \(rotMsgShown\) return;/.test(body));
+  assert.ok(/if \(rotServerMsg\(\)\) return;/.test(body));
   assert.ok(/if \(!last \|\| stkNorm\(last\.barcode\) !== stkNorm\(bc\)\) return;/.test(body), '남의 화면 flag 는 무시(Opus 5 Nit)');
   assert.ok(/rotSetResultStatus\('회전입고 결과 행을 못 찾음 — 화면 메시지 확인', 'warn'\);/.test(body));
-  assert.ok(/let rotMsgShown = false;/.test(SRC), 'rotMsgShown 초기값 false(변이 생존분)');
+  //  Opus 5 O2 Nit: 거부 문구는 배선 플래그가 아니라 URL 을 직접 읽는다(렌더 순서 무관)
+  const helper = extractFn(SRC, 'rotServerMsg');
+  assert.ok(/new URLSearchParams\(location\.search\)\.get\('msg'\)/.test(helper) && /\.trim\(\)/.test(helper) && /catch \(_\) \{ return ''; \}/.test(helper), 'rotServerMsg 는 location.search 의 msg 를 trim 해 돌려주고 실패 시 빈 문자열');
+  assert.ok(!/rotMsgShown/.test(SRC), '렌더 경로 플래그(rotMsgShown)는 남아 있으면 안 된다');
   assert.ok(/if \(isRotateWrite\(\)\) rotAfterRowMissing\(bc\);/.test(extractFn(SRC, 'ubHighlightPending')), '폴러가 flag 바코드를 넘긴다');
 });
 test('rotSetResultStatus 는 마지막 결과를 기억하고 배선이 재렌더 뒤 다시 그린다', () => {
@@ -137,7 +140,8 @@ test('rotSetResultStatus 는 마지막 결과를 기억하고 배선이 재렌�
   assert.ok(/rotLastResult = \{ text: text \|\| '', kind: kind \|\| '' \};/.test(body));
   const i = SRC.indexOf("const rotIn = bar.querySelector('#ub-rot-in');");
   const block = SRC.slice(i, i + 3200);
-  assert.ok(/get\('msg'\)[\s\S]{0,400}?if \(rotLastResult\) setRotStatus\(rotLastResult\.text, rotLastResult\.kind\);/.test(block), 'msg 뒤에 마지막 결과 재적용');
+  assert.ok(/rotServerMsg\(\);[\s\S]{0,400}?if \(rotLastResult\) setRotStatus\(rotLastResult\.text, rotLastResult\.kind\);/.test(block), 'msg 뒤에 마지막 결과 재적용');
+  assert.ok(/rotBusy = true;\s*rotLastResult = null;/.test(extractFn(SRC, 'rotateRun')), '새 실행 시작 때 이전 결과를 비운다(Opus 5 O2 Nit)');
 });
 //  DOM 래퍼: 자식 노드를 공백으로 잇고(<br> 뒤 공백 없어도 첫 토큰이 바코드), 헤더는 자기 행이 아닌 '새바코드' 행.
 function fakeCell(nodes) { return { childNodes: nodes.map((t) => ({ textContent: t })), textContent: nodes.join('') }; }
@@ -157,6 +161,14 @@ test('rotNewBarcodeFromRow: 데이터 행 비고에 "새바코드" 가 있고 �
   tr.closest = (sel) => (sel === 'table' ? table : null);
   assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '2609I8');
 });
+test('rotNewBarcodeFromRow: 셀 앞의 주석 노드는 토큰이 되지 않는다', () => {
+  const hdr = fakeRow([['No'], [''], ['새바코드', '새상품번호'], ['']]);
+  const tr = fakeRow([['1'], [''], ['2609I8', 'F-NF-P'], ['']]);
+  tr.cells[2].childNodes.unshift({ nodeType: 8, textContent: ' seq 123456 ' });   // <!-- seq 123456 -->
+  const table = { rows: [hdr, tr] };
+  tr.closest = (sel) => (sel === 'table' ? table : null);
+  assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '2609I8');
+});
 test('rotNewBarcodeFromRow: 표·헤더가 없거나 closest 가 없으면 빈 문자열', () => {
   const tr = fakeRow([['1'], ['2609I8']]);
   assert.equal(F.rotNewBarcodeFromRow(tr, '240H1B'), '');
@@ -168,6 +180,6 @@ test('회전입고 배선: 로드 시 URL msg 를 읽어 err 로 띄우고 rotMs
   const i = SRC.indexOf("const rotIn = bar.querySelector('#ub-rot-in');");
   assert.ok(i >= 0, '회전입고 배선 블록');
   const block = SRC.slice(i, i + 3000);
-  assert.ok(/const m = new URLSearchParams\(location\.search\)\.get\('msg'\) \|\| '';\s*if \(m\.trim\(\)\) \{ rotMsgShown = true; setRotStatus\('회전입고 실패: ' \+ m\.trim\(\), 'err'\); \}/.test(block), 'msg 읽기');
-  assert.ok(block.indexOf('UB_ROTATE_LAST') < block.indexOf("get('msg')"), 'msg 표시가 "직전:" 뒤라 우선한다(스펙 §4)');
+  assert.ok(/const m = rotServerMsg\(\);\s*if \(m\) setRotStatus\('회전입고 실패: ' \+ m, 'err'\);/.test(block), 'msg 읽기');
+  assert.ok(block.indexOf('UB_ROTATE_LAST') < block.indexOf('rotServerMsg()'), 'msg 표시가 "직전:" 뒤라 우선한다(스펙 §4)');
 });

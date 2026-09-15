@@ -59,12 +59,12 @@
 |---|---|---|
 | `rotStep1Outcome(res)` | 순수 | `{ok:true}` → `{proceed:true, note:''}` · `{ok:false,msg}` 에 `가능한 상태가 아닙니다` 포함 → `{proceed:true, note:'본사반품확인 건너뜀(이미 확인됐거나 대상 아님)'}` · 그 외 → `{proceed:false, note: msg || '반품 신청된 건인지 확인'}` |
 | `rotNewBarcodeFromCells(headerTexts, rowTexts, oldBc)` | 순수 | 헤더 텍스트(공백 정규화)가 `새바코드` 로 **시작**하는 첫 열 i → `rowTexts[i]` 첫 공백 토큰 → 대문자. `/^[0-9A-Z]{6}$/` 이고 `oldBc` 대문자와 다를 때만 반환, 아니면 `''` |
-| `rotNewBarcodeFromRow(tr, oldBc)` | DOM 래퍼 | `tr.closest('table')` 의 행 중 **자기 행이 아니고** 텍스트에 `새바코드` 가 있는 첫 행을 헤더로, `tr` 을 데이터로 셀 텍스트 배열을 만들어 위 순수 함수 호출. 셀 텍스트는 자식 노드를 **공백으로 이어** 만든다(`<span>2609I8</span><br>F-NF…` 처럼 `<br>` 뒤 공백이 없어도 첫 토큰이 바코드). 표를 못 찾으면 `''` |
-| `rotAfterRowFound(tr, oldBc)` | 부작용 | `rotMsgShown` 이면 무시(이전 실행의 행). 새바코드 → `stkRecentAdd`(이제 `true/false` 반환) → 저장됐으면 상태 2(ok), 못 넣었으면 warn, 못 읽었으면 상태 3 |
+| `rotNewBarcodeFromRow(tr, oldBc)` | DOM 래퍼 | `tr.closest('table')` 의 행 중 **자기 행이 아니고** 텍스트에 `새바코드` 가 있는 첫 행을 헤더로, `tr` 을 데이터로 셀 텍스트 배열을 만들어 위 순수 함수 호출. 셀 텍스트는 자식 노드(주석 노드 제외)를 **공백으로 이어** 만든다(`<span>2609I8</span><br>F-NF…` 처럼 `<br>` 뒤 공백이 없어도 첫 토큰이 바코드). 표를 못 찾으면 `''` |
+| `rotAfterRowFound(tr, oldBc)` | 부작용 | `rotServerMsg()`(URL msg 를 직접 읽는 헬퍼 — 배선 플래그가 아니라 렌더 순서와 무관)가 비어 있지 않으면 무시(이전 실행의 행). 새바코드 → `stkRecentAdd`(이제 `true/false` 반환) → 저장됐으면 상태 2(ok), 못 넣었으면 warn, 못 읽었으면 상태 3 |
 | `rotSetResultStatus(text, kind)` | DOM | `#ub-rot-st` 갱신(사이드바 미렌더면 무시) + 마지막 결과를 `rotLastResult` 에 기억 — 배선이 재렌더 때 msg 다음에 다시 적용 |
 | `rotateRun` 변경 | 기존 | 1단계 결과를 `rotStep1Outcome` 으로 판정. `proceed` 면 note 를 상태에 붙이고 진행 |
 | `ubHighlightPending` 변경 | 기존(공용) | 행 발견 시 `isRotateWrite()` 면 `rotAfterRowFound`, 소진 시 `isRotateWrite()` 면 `rotAfterRowMissing(bc)`(상태 4). 재고화·메인석 페이지 동작은 불변 |
-| 회전입고 배선 변경 | 기존 | init 에서 URL `msg` 를 읽어 상태 1 |
+| 회전입고 배선 변경 | 기존 | init 에서 `rotServerMsg()` 로 상태 1, 그 뒤 `rotLastResult` 재적용. `rotateRun` 은 새 실행 시작 때 `rotLastResult` 를 비운다 |
 
 ## 6. 에러 처리
 

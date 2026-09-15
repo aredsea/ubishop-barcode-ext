@@ -1332,7 +1332,7 @@
       if (!hdr) return '';
       //  셀 텍스트는 자식 노드를 공백으로 이어 붙인다 — `<span>2609I8</span><br>F-NF-…` 처럼 <br> 뒤에 공백이 없어도
       //  첫 토큰이 새바코드로 남게(Opus 5 Nit 2026-09-15). textContent 는 <br> 을 빈 문자열로 지운다.
-      const cellText = (c) => (c.childNodes && c.childNodes.length ? [...c.childNodes].map((n) => n.textContent || '').join(' ') : (c.textContent || ''));
+      const cellText = (c) => (c.childNodes && c.childNodes.length ? [...c.childNodes].filter((n) => n.nodeType !== 8).map((n) => n.textContent || '').join(' ') : (c.textContent || ''));   // 주석 노드(8)는 뺀다 — Comment.textContent 는 본문을 돌려준다(Opus 5 O2 Nit)
       const texts = (r) => [...r.cells].map(cellText);
       return rotNewBarcodeFromCells(texts(hdr), texts(tr), oldBc);
     } catch (_) { return ''; }
@@ -1347,12 +1347,16 @@
     el.textContent = text || '';
     el.className = 'ub-stk-st' + (kind ? ' ' + kind : '');
   }
-  let rotMsgShown = false;   // 로드 시 URL msg(서버 거부)를 띄웠으면 폴링 결과로 덮지 않는다(스펙 §4)
+  // 서버 거부 문구 — 리다이렉트 URL 의 msg. 배선(상태줄)과 폴러 훅이 **같은 출처**를 직접 읽어 렌더 순서에 안 기댄다(Opus 5 O2 Nit — 플래그를
+  //  배선에서만 세우면 사이드바가 접힌 채 폴링이 먼저 돌 때 가드가 빠졌다).
+  function rotServerMsg() {
+    try { return (new URLSearchParams(location.search).get('msg') || '').trim(); } catch (_) { return ''; }
+  }
   // 폴러가 기존 바코드 행을 찾은 순간: 같은 행에서 새바코드 → 재고화 보관함(본사확인 팝업이 강조) → 상태 ok.
   //  ⚠ URL msg(서버 거부)가 떠 있으면 이번 제출로 생긴 행은 없다 — 찾은 행은 열린 회전입고장에 남아 있던 **이전 실행의 것**이라
   //   보관함도 상태줄도 건드리지 않는다(Opus 5 P2 2026-09-15: 같은 바코드 재스캔 → 거부 → 옛 행으로 초록 '등록' 이 빨강을 덮었다).
   async function rotAfterRowFound(tr, oldBc) {
-    if (rotMsgShown) { rotLog('서버 거부 상태 — 찾은 행은 이전 실행의 것, 무시', oldBc); return; }
+    if (rotServerMsg()) { rotLog('서버 거부 상태 — 찾은 행은 이전 실행의 것, 무시', oldBc); return; }
     const nb = rotNewBarcodeFromRow(tr, oldBc);
     if (!nb) { rotLog('새바코드 못 읽음', oldBc); rotSetResultStatus('행은 찾았으나 새바코드를 못 읽음(표 구조 변경?)', 'warn'); return; }
     let saved = false;
@@ -1364,7 +1368,7 @@
   // 폴러가 소진(약 7.5초)될 때까지 행이 없음: 서버가 거부했거나 표가 안 떴다.
   //  flag 의 바코드가 이 화면에서 마지막으로 회전입고한 것(UB_ROTATE_LAST)이 아니면 다른 화면(재고화 등)이 남긴 flag 라 경고하지 않는다.
   function rotAfterRowMissing(bc) {
-    if (rotMsgShown) return;
+    if (rotServerMsg()) return;
     let last = null;
     try { last = JSON.parse(localStorage.getItem('UB_ROTATE_LAST') || 'null'); } catch (_) {}
     if (!last || stkNorm(last.barcode) !== stkNorm(bc)) return;
@@ -1375,6 +1379,7 @@
     barcode = (barcode || '').trim();
     if (barcode.length !== 6) { setStatus('바코드 6자리를 입력하세요', 'warn'); return; }
     if (rotBusy) return; rotBusy = true;
+    rotLastResult = null;   // 새 실행 — 이전 결과가 재렌더 때 되살아나지 않게(Opus 5 O2 Nit)
     try {
       setStatus('본사반품확인 처리 중…', 'go');
       const step1 = rotStep1Outcome(await confirmOpdelivedReturn(barcode));
@@ -3665,10 +3670,10 @@
         const last = JSON.parse(localStorage.getItem('UB_ROTATE_LAST') || 'null');
         if (last && last.barcode) setRotStatus('직전: ' + last.barcode + ' → ' + rotShopName(last.shop) + ' 회전입고 실행됨', 'ok');
       } catch (_) {}
-      try {   // 서버가 회전입고를 거부하면 리다이렉트 URL msg 로 온다 → 그 문구 그대로 빨강(스펙 §4-1). '직전:' 보다 우선.
-        const m = new URLSearchParams(location.search).get('msg') || '';
-        if (m.trim()) { rotMsgShown = true; setRotStatus('회전입고 실패: ' + m.trim(), 'err'); }
-      } catch (_) {}
+      {   // 서버가 회전입고를 거부하면 리다이렉트 URL msg 로 온다 → 그 문구 그대로 빨강(스펙 §4-1). '직전:' 보다 우선.
+        const m = rotServerMsg();
+        if (m) setRotStatus('회전입고 실패: ' + m, 'err');
+      }
       if (rotLastResult) setRotStatus(rotLastResult.text, rotLastResult.kind);   // 재렌더 뒤에도 폴링 결과(스펙 §4 2~4)가 남게
       setTimeout(() => { try { rotIn.focus(); } catch (_) {} }, 400);
     }
