@@ -93,7 +93,7 @@
   //  이미 돌고 있는 enrich 가 [등록 시작] 뒤에도 남은 요청을 보낸다(Fable G1) → 진행 중 프라미스를 S.enriching 에 잡아 run() 이 기다리고,
   //  루프의 매 요청 앞에서도 다시 본다.
   async function enrich() {
-    if (S.running) return;
+    if (S.running || S.starting) return;
     const p = Promise.resolve(S.enriching).catch(() => {}).then(enrichBody);   // 겹치는 조회는 직렬화 — S.enriching 이 항상 마지막 조회를 가리키게
     S.enriching = p; render();
     try { await p; } finally { if (S.enriching === p) { S.enriching = null; render(); } }
@@ -147,24 +147,26 @@
     //  첫 await 전에 선점한다 — 빠른 두 번 클릭이 둘 다 S.running 검사를 지나 이중 실행되던 경합(Terra 4R P1).
     if (S.running || S.starting) return;
     S.starting = true;
+    let jobs = [];
     try {
       await loadState();                                     // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다(Terra 3R P2) — 실행 직전에 다시 읽는다
       if (!S.enabled) { alert('[유비샵 스킨모드]·[주문 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
       const targets = S.orders.filter((o) => o.checked && o.ready);
       if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
       if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
-      if (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
+      jobs = targets.map(toRunOrder);                          // confirm 한 집합을 그대로 실행한다 — 조회 대기 뒤 다시 거르지 않는다(Fable F3 Nit)
+      while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
       S.running = true;
     } finally { S.starting = false; }
     if (!S.running) return;
-    await runTargets(S.orders.filter((o) => o.checked && o.ready));
+    await runTargets(jobs);
   }
-  async function runTargets(targets) {
+  async function runTargets(jobs) {
     S.results = [];
     window.addEventListener('beforeunload', onUnload);
     render();
     try {
-      const results = await C.oiRunAll(targets.map(toRunOrder), E, {
+      const results = await C.oiRunAll(jobs, E, {
         today: () => new Date(),
         log: logLine,
         onOrder: (r) => {
@@ -296,7 +298,7 @@
   async function onClick(e) {
     const btn = e.target.closest('[data-act]'); if (!btn) return;
     const act = btn.dataset.act;
-    if (S.running && act !== 'close' && act !== 'export-log' && act !== 'export-map') return;   // 실행 중 조작 차단(Fable F2) — 다운로드·닫기만 허용
+    if ((S.running || S.starting) && act !== 'close' && act !== 'export-log' && act !== 'export-map') return;   // 실행 중(시작 대기 포함) 조작 차단(Fable F2·F3 Nit) — 다운로드·닫기만 허용
     if (act === 'close') closePanel();
     else if (act === 'run') run();
     else if (act === 'export-map') download('ub-orderimport-map-' + new Date().toISOString().slice(0, 10) + '.json', S.map);
@@ -324,7 +326,7 @@
     }
   }
   async function onChange(e) {
-    if (S.running) return;   // 실행 중 조작 차단(Fable F2)
+    if (S.running || S.starting) return;   // 실행 중(시작 대기 포함) 조작 차단(Fable F2·F3 Nit)
     const el = e.target;
     if (el.id === 'ub-oi-file') { const f = el.files && el.files[0]; if (f) await loadFile(f); return; }
     if (el.id === 'ub-oi-mapfile') { const f = el.files && el.files[0]; if (f) await importMap(f); return; }

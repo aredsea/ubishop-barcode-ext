@@ -99,12 +99,13 @@ test('UI 배선: onOrder 가 oiPostRunState 를 쓰고, 장부는 병합 저장,
 //  Fable 5 F2 (2026-09-15): 실행 중에도 검토 표의 선택·검색·매핑 지우기가 살아 있어 enrich/검색 GET 이 실행기의 sKey GET→POST 사이에 끼어들 수 있었다.
 test('UI 배선: 실행 중에는 onClick/onChange/enrich 가 조작을 받지 않고 줄·마켓·매핑표 컨트롤이 disabled 다', () => {
   const ui = read('src/orderimport.js');
-  assert.ok(/async function onClick\(e\) \{[\s\S]{0,200}?if \(S\.running && act !== 'close' && act !== 'export-log' && act !== 'export-map'\) return;/.test(ui), 'onClick 실행 중 게이트');
-  assert.ok(/async function onChange\(e\) \{\s*if \(S\.running\) return;/.test(ui), 'onChange 실행 중 게이트');
-  assert.ok(/async function enrich\(\) \{\s*if \(S\.running\) return;/.test(ui), 'enrich 실행 중 게이트');
+  assert.ok(/async function onClick\(e\) \{[\s\S]{0,200}?if \(\(S\.running \|\| S\.starting\) && act !== 'close' && act !== 'export-log' && act !== 'export-map'\) return;/.test(ui), 'onClick 실행 중 게이트');
+  assert.ok(/async function onChange\(e\) \{\s*if \(S\.running \|\| S\.starting\) return;/.test(ui), 'onChange 실행 중 게이트');
+  assert.ok(/async function enrich\(\) \{\s*if \(S\.running \|\| S\.starting\) return;/.test(ui), 'enrich 실행 중 게이트');
   //  Fable 5 G1 (2026-09-15): 진입 게이트만으론 파일 로드 직후 진행 중인 enrich 가 실행 시작 뒤에도 요청을 보냈다 → 진행 중 프라미스 대기 + 루프 내 게이트.
   assert.ok(/S\.enriching = p; render\(\);/.test(ui), 'enrich 가 진행 중 프라미스를 S.enriching 에 잡는다');
-  assert.ok(/if \(S\.enriching\) \{ try \{ await S\.enriching; \} catch \(_\) \{\} \}\s*\/\/[^\n]*\n\s*S\.running = true;/.test(ui), 'run() 은 진행 중 enrich 를 기다린 뒤 running 을 세운다');
+  assert.ok(/jobs = targets\.map\(toRunOrder\);[^\n]*\n\s*while \(S\.enriching\) \{ try \{ await S\.enriching; \} catch \(_\) \{\} \}\s*\/\/[^\n]*\n\s*S\.running = true;/.test(ui), 'run() 은 confirm 한 집합을 스냅샷한 뒤 진행 중 enrich 를 기다리고 running 을 세운다');
+  assert.ok(ui.includes('await runTargets(jobs);') && ui.includes('await C.oiRunAll(jobs, E, {'), 'runTargets 는 대기 뒤 다시 거르지 않고 스냅샷을 실행한다(Fable F3 Nit)');
   const body = ui.slice(ui.indexOf('async function enrichBody()'), ui.indexOf('/* ------------------------------------------------------------ 실행 */'));
   const awaits = (body.match(/await E\./g) || []).length, gates = (body.match(/if \(S\.running\) return;/g) || []).length;
   assert.equal(awaits, 4, 'enrichBody 의 ERP 요청 수'); assert.equal(gates, 4, 'ERP 요청마다 실행 중 게이트');
