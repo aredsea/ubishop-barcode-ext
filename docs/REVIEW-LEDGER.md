@@ -100,10 +100,42 @@
 | 83 | 주문-F1 | Fable 5.1 | 검토 표에서 품위/색상 칸을 비우면 파싱값으로 되살아나 "마스터 기본값 사용"을 표현할 수 없다(Nit) | 🔴 **기각** | 값이 화면에 그대로 보이고 잘못된 값이 조용히 나가지 않는다. 그 표현은 요청 밖 |
 | 84 | 주문-F2 | Fable 5.1 | F2 수정의 빈틈 — 파일 로드 직후 **이미 진행 중인** enrich 가 [등록 시작] 뒤에도 남은 요청을 보냄(진입 게이트만 있었다)(P2) | **채택·수정** | `S.enriching` 프라미스(겹치면 직렬화)를 run() 이 끝까지 기다린 뒤 running · 요청마다 게이트 · 조회 중 실행 버튼 잠금 |
 | 85 | 주문-F3~F4 | Fable 5.1 | 시작 대기(`S.starting`) 중 핸들러가 열려 confirm 한 집합≠실행 집합 가능 · 조기 return 시 삼킨 체크박스 표시 불일치(Nit·Nit) | **채택·수정** | 게이트에 `S.starting` 포함 + confirm 전 `jobs` 스냅샷을 그대로 실행 · 조기 return 시 `render()` |
+| 86 | 회전-1R | GLM-5.2 | 지적 없음 | — | 5관점·return 경로 전부 셈 |
+| 87 | 회전-O1 | Opus 5 | 서버 거부(URL msg)인데 열린 회전입고장에 남은 **이전 실행의 행**을 폴러가 찾아 초록 '등록' 이 빨강을 덮는다(P2) | **채택·수정** | 같은 바코드 재스캔→거부 재현. msg 가 있으면 찾은 행은 이번 제출 것이 아니므로 보관함·상태줄 모두 무시(`rotServerMsg()` 가드) |
+| 88 | 회전-O1 | Opus 5 | 재렌더 시 폴링 결과 소실 · `<br>` 뒤 공백 의존 · 테스트 그물(초기값·정규식 완화·`r !== tr`) · 낡은 주석 · 저장 실패를 '등록' 으로 · 남의 화면 flag 오경고(Nit 6) | **채택·수정** | `rotLastResult` 재적용 · 자식 노드 공백 join · 테스트 3종(스텁 `rows=[tr,hdr]`) · 주석 · `stkRecentAdd` true/false · `UB_ROTATE_LAST` 대조 |
+| 89 | 회전-O1 | Opus 5 | 본사반품확인 POST 가 5xx 로 리다이렉트 없이 끝나면 `{ok:true}`(사전 존재 관찰) | **범위 밖·기록** | 이번 diff 이전과 같고 서버가 회전입고를 거부하므로 안전망 있음. 손대면 별도 회차 |
+| 90 | 회전-O2 | Opus 5 | 거부 플래그가 렌더 경로에서만 세워짐 · 셀 앞 주석 노드가 토큰이 됨 · 새 실행 시 `rotLastResult` 미초기화(Nit 3) | **채택·수정** | `rotServerMsg()` 가 URL 을 직접 읽어 배선·훅이 같은 출처 · `nodeType !== 8` 제외 · `rotateRun` 진입 시 null |
+| 91 | 회전-X1 | DeepSeek v4-pro | 지적 없음 | — | CJK 오염 0, 탐색 최소화 지시로 $0.06 |
 
 ---
 
 ## 회차별 상세
+
+### 회전입고 자동화 보강 — 본사반품확인 건너뛰기 · 새 바코드 팝업 강조 — SHELL v4.2.1 (2026-09-15)
+
+**대상**: `src/skin.js` §5.6(`rotStep1Outcome`·`rotNewBarcodeFromCells`·`rotNewBarcodeFromRow`·`rotAfterRowFound/Missing`·`rotServerMsg`·`rotSetResultStatus`, `rotateRun` 3줄, 공용 `ubHighlightPending` 훅 2줄, 회전입고 배선 msg/재적용, `stkRecentAdd/Save` 반환값) · `tests/rotate-flow.test.js`(신규 23건) · `manifest.json` 4.2.1 · `shell-files.json`.
+스펙 `docs/superpowers/specs/2026-09-15-rotate-passthrough-newbarcode-design.md`, 플랜 `docs/superpowers/plans/2026-09-15-rotate-passthrough-newbarcode.md`. 브랜치 `feat/rotate-passthrough` → main. 검수 대상은 `git diff f3e8bd3..HEAD -- src/skin.js tests/rotate-flow.test.js manifest.json`.
+
+**검수 등급 T2** — 근거: ①런타임 영향 있음(회전입고 화면 사이드바) ②되돌리기: 회전입고 쓰기(form1.submit)는 기존 경로 그대로이고 사장님 확인대로 서버가 상태를 거부, 새 코드는 표시·보관함용 ③재고 도메인이나 새 쓰기 요청 0 ④다함수 배선·소규모 diff(+~120줄). → 외부 1명(GLM, 최대 3라운드) + Opus 5 + 완료 직전 교차 1회. **Fable 은 사장님 지시(2026-09-15)로 생략.**
+
+| 라운드 | 자리 | 모델 | 지적 | 채택 | 기각 | 비용 |
+|---|---|---|---|---|---|---|
+| 1R | 복잡한 로직 | `z-ai/glm-5.2` | 0 | — | — | $0.4042 |
+| O1 | 내부 | Opus 5 xhigh | 1 (P2) + Nit 6 + 관찰 1 | 7 | 0(관찰 1 범위 밖) | 구독(미분리) |
+| O2 | 내부 재검수 | Opus 5 xhigh | Nit 3 | 3 | 0 | 구독(미분리) |
+| X1 | 교차 | `deepseek/deepseek-v4-pro` | 0 | — | — | $0.0573 (CJK 0) |
+
+**OpenRouter 검수 비용 합계 $0.4615**(`usage_daily` 8.9329 → 9.6320, 사이의 조회 포함). worker 위임 없음 — 메인 세션 직접 구현(오늘 읽기 실측한 DOM 사실에 묶인 소규모 변경). 채택 0 은 1R 에서 바로 나와 외부 라운드는 1회로 닫았고(상한은 할당량이 아니다), O1·O2 반영분은 교차(X1)가 최종 HEAD 에서 봤다.
+
+**채택·수정한 것 (전부 코드로 재현 후)**
+- O1 P2: 같은 바코드를 다시 스캔하면 1단계가 "가능한 상태가 아닙니다"로 통과 → form1.submit → 서버 거부 → `?msg=` 재로드인데 열린 회전입고장에 **이전 실행의 A→X 행**이 남아 있어 폴러가 그 행으로 초록 "등록"을 띄웠다 → msg 가 있으면 무시.
+- O1 Nit: 재렌더(접기/펼치기·storage 변경)로 결과가 "직전:" 으로 되돌아감 → `rotLastResult` · `<span>2609I8</span><br>F-NF…` 의 textContent 가 붙어 나올 위험 → 자식 노드 공백 join · 변이 3종 생존(초기값·정규식 완화·`r !== tr`) → 테스트 · 낡은 주석 · `stkRecentAdd` 가 조용히 건너뛰어도 "등록" → true/false 반환 · 재고화가 60초 안에 남긴 flag 로 "행 못 찾음" 오경고 → `UB_ROTATE_LAST` 대조.
+- O2 Nit: 거부 플래그를 배선에서만 세우면 사이드바가 접힌 채 폴링이 먼저 돌 때 가드가 빠짐 → `rotServerMsg()` 로 URL 직접 읽기 · 주석 노드가 토큰이 됨 → 제외 · 새 실행 시 `rotLastResult` 초기화.
+
+**편향 메모**: GLM(1R)·DeepSeek(X1)이 0 이고 Opus 가 P2 1 + Nit 9 를 냈다 — 셋 다 "코드로 재현" 조건은 지켰고, Opus 지적은 전부 상태줄·표시·테스트 그물 계열(데이터 영향 없음). 외부 자리가 두 회차 연속 0 인 것은 diff 가 작고 서버가 쓰기를 거르는 구조라서로 본다 — 다음 회차에서 외부 0 이 반복되면 선임(GLM 고정)을 의심한다.
+
+**라이브 확인**: 사장님이 실제 회전입고 1건(이미 본사반품확인된 건이면 더 좋음)으로 상태줄 `… → 새바코드 XXXXXX · 본사확인 팝업 강조 등록` 과 팝업 강조를 확인하기로. 결과는 스펙 §3 끝에 1줄 기록 예정.
+
 
 ### 판매처 주문 가져오기(이지어드민 xls → 유비샵 주문장) — SHELL v4.2.0 (2026-09-14 ~ 09-15)
 
