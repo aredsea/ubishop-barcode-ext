@@ -193,6 +193,8 @@ test('oiNormPhone: 이미 세 토막이면 원문 하이픈 유지, 숫자만 �
   assert.equal(C.oiNormPhone('821012345678').ok, false);
   assert.equal(C.oiNormPhone('010-12345-678').ok, false, '토막 자릿수가 이상하면 검토');
   assert.equal(C.oiNormPhone('0505-123-4567').last4, '4567');
+  assert.equal(C.oiNormPhone('0505 123 4567').phone, '0505-123-4567', '공백 구분도 토막 유지(Opus O2 Nit)');
+  assert.equal(C.oiNormPhone('106 249 2567').phone, '106-249-2567');
 });
 
 //  Opus 5 P1 (2026-09-15): complete_unverified 등으로 끝난 주문장이 체크된 채·장부 미기록으로 남아 [등록 시작] 재클릭 때 중복 주문장이 생겼다.
@@ -210,6 +212,9 @@ test('oiPostRunState: 완료됐을 수 있는 결과는 체크 해제 + 장부(u
     assert.equal(st.uncheck, true, r.reason);
     assert.equal(st.ledgerEntry.unverified, true, r.reason); assert.equal(st.ledgerEntry.reason, r.reason);
   }
+  //  Opus O2 P2: 첫 줄 응답 유실은 orderSeqs 가 비어 있어도 서버에 줄이 남았을 수 있다
+  const unknown = C.oiPostRunState({ key: 'K', status: 'fatal', reason: 'line_unverified:x', orderSeqs: [], junNums: [], rolledBack: 0, lineUnknown: true }, 'now');
+  assert.equal(unknown.uncheck, true); assert.equal(unknown.ledgerEntry.unverified, true);
   const rolled = C.oiPostRunState(Object.assign({}, base, { status: 'skipped', reason: 'line_failed:x', rolledBack: 2, junNums: [] }), 'now');
   assert.equal(rolled.uncheck, false); assert.equal(rolled.ledgerEntry, null);
   const guard = C.oiPostRunState({ key: 'K', status: 'skipped', reason: 'open_trade', orderSeqs: [], junNums: [], rolledBack: 0 }, 'now');

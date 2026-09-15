@@ -232,7 +232,7 @@
   }
   function orderRow(o, oi) {
     const st = o.result ? '<span class="st-' + esc(o.result.status) + '">' + esc(o.result.status) + '</span> ' + esc(o.result.reason || '') + (o.result.junNums && o.result.junNums.length ? ' · 관리번호 ' + o.result.junNums.map((j) => esc(j.junNum)).join(',') : '') : '';
-    const prev = o.prev ? '<div class="oi-issue">이전에 넣음 ' + esc(String(o.prev.at).slice(0, 16).replace('T', ' ')) + (o.prev.junNums ? ' · ' + esc(o.prev.junNums.join(',')) : '') + '</div>' : '';
+    const prev = o.prev ? '<div class="oi-issue">이전에 넣음 ' + esc(String(o.prev.at).slice(0, 16).replace('T', ' ')) + (o.prev.junNums && o.prev.junNums.length ? ' · ' + esc(o.prev.junNums.join(',')) : '') + (o.prev.unverified ? ' (미확인: ' + esc(o.prev.reason || '') + ' — 주문전표에서 확인)' : '') + '</div>' : '';
     return '<tr class="oi-o' + (o.ready ? '' : ' bad') + '"><td><input type="checkbox" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
       + '<td>' + esc(o.seller) + ' ' + esc(o.orderNo) + prev + '</td><td>' + (o.clientName ? esc(o.clientName) : '(' + esc(o.seller) + ' 미등록)') + '<br><span class="oi-muted">' + esc(o.phone.phone || o.phone.raw) + '</span></td>'
       + '<td colspan="7">' + (o.market ? custText(o) : marketPick(o, oi)) + (st ? ' · ' + st : '') + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');

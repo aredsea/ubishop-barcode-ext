@@ -337,12 +337,15 @@ test('첫 줄 뒤 남이 내 주문장을 완료하면 둘째 줄 POST·완료 P
   assert.equal(rs[1].status, 'blocked');
 });
 
+//  마지막 줄 등록 뒤~완료 사이에 남이 내 주문장을 완료한 경우. 대조는 plain GET 으로 form10 GET **앞**에서 한다(Opus O2 P1 —
+//  form10 GET 과 완료 POST 사이에 GET 을 끼우면 sKey 규칙이 깨진다). 그 plain GET 이후~POST 사이의 창은 줄 경로와 같은 크기로 받아들인다.
 test('완료 직전에 남이 내 주문장을 완료했으면 완료 POST 를 보내지 않는다', async () => {
   const erp = makeErp();
-  const origF10 = erp.getForm10.bind(erp);
-  erp.getForm10 = async (p) => { erp.srv.closed = { [erp.srv.tradeJun]: erp.srv.rows.slice() }; erp.srv.tradeJun = ''; erp.srv.rows = []; return origF10(p); };
+  const origPost = erp.postLine.bind(erp); let n = 0;
+  erp.postLine = async (fields) => { const r = await origPost(fields); if (++n === 2) { erp.srv.closed = { [erp.srv.tradeJun]: erp.srv.rows.slice() }; erp.srv.tradeJun = ''; erp.srv.rows = []; } return r; };   // 마지막 줄 응답 직후 남이 완료
   const r = await C.oiRunOrder(order(), erp, hooks);
   assert.ok(!names(erp).includes('postComplete'));
+  assert.ok(!names(erp).includes('getForm10'), '세션 대조가 form10 GET 보다 먼저다');
   assert.equal(r.status, 'fatal'); assert.match(r.reason, /trade_changed/);
 });
 
@@ -362,6 +365,35 @@ test('행 수는 맞는데 내 줄이 빠지고 남의 줄이 들어온 응답�
   erp.postLine = async (fields) => { const r = await origPost(fields); if (++n === 2) { erp.srv.rows.shift(); erp.srv.rows.unshift(Object.assign(row('999999', '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); r.rows = erp.srv.rows.slice(); } return r; };
   const r = await C.oiRunOrder(order(), erp, hooks);
   assert.equal(r.status, 'fatal'); assert.match(r.reason, /line_unverified/);
+  assert.ok(!names(erp).includes('deleteLines'));
+});
+
+//  Opus O2 P1 (2026-09-15): 세션 대조 GET 이 form10 GET 과 완료 POST 사이에 끼어 완료 POST 의 sKey 가 직전 GET 의 것이 아니게 됐다(스펙 §4).
+test('모든 쓰기 POST 의 sKey 는 직전에 발급된(마지막) 키다 — GET 마다 고유 sKey 를 내는 스텁', async () => {
+  const erp = makeErp();
+  let issued = 0; let last = '';
+  const stamp = (obj) => { last = 'K' + (++issued); obj.values.sKey = last; return obj; };
+  const oGet = erp.getWriteForm.bind(erp), oF10 = erp.getForm10.bind(erp), oState = erp.state.bind(erp);
+  erp.getWriteForm = async (p) => stamp(await oGet(p));
+  erp.getForm10 = async (p) => stamp(await oF10(p));
+  erp.state = async () => { last = 'K' + (++issued); return oState(); };            // plain GET 도 키를 새로 발급한다
+  const seen = [];
+  const oPost = erp.postLine.bind(erp), oComplete = erp.postComplete.bind(erp);
+  erp.postLine = async (fields) => { seen.push(['postLine', Object.fromEntries(fields).sKey, last]); return oPost(fields); };
+  erp.postComplete = async (fields) => { seen.push(['postComplete', Object.fromEntries(fields).sKey, last]); return oComplete(fields); };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'done');
+  for (const [what, sent, latest] of seen) assert.equal(sent, latest, what + ' 의 sKey 가 마지막 발급 키가 아니다');
+  assert.equal(seen.length, 3);
+});
+
+//  Opus O2 P2 (2026-09-15): 둘째 줄부터 응답 tradeJun 이 바뀌면 lineUnknown — 가드가 테스트에 없어 변이가 살아남았고, code_mismatch 분기보다 뒤에 있었다.
+test('둘째 줄 응답의 tradeJun 이 바뀌면 코드와 무관하게 삭제 없이 fatal(trade_switched)', async () => {
+  const erp = makeErp();
+  const oPost = erp.postLine.bind(erp); let n = 0;
+  erp.postLine = async (fields) => { const r = await oPost(fields); if (++n === 2) { r.tradeJun = '141237'; r.rows = r.rows.map((x, i) => (i === r.rows.length - 1 ? Object.assign({}, x, { code: 'OTHER' }) : x)); } return r; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /line_unverified:trade_switched/);
   assert.ok(!names(erp).includes('deleteLines'));
 });
 

@@ -63,11 +63,8 @@
       if (digits.length === 11) phone = digits.replace(/^(\d{3})(\d{4})(\d{4})$/, '$1-$2-$3');
       else if (digits.length === 12) phone = digits.replace(/^(\d{4})(\d{4})(\d{4})$/, '$1-$2-$3');
       else if (digits.length === 10) phone = digits.replace(/^(\d{3})(\d{3})(\d{4})$/, '$1-$2-$3');
-    } else if (/^[\d\s-]+$/.test(text) && !/-/.test(text)) {
-      const d = digits;   // 공백으로만 나뉜 숫자(예 '106 249 2567')
-      if (d.length === 11) phone = d.replace(/^(\d{3})(\d{4})(\d{4})$/, '$1-$2-$3');
-      else if (d.length === 12) phone = d.replace(/^(\d{4})(\d{4})(\d{4})$/, '$1-$2-$3');
-      else if (d.length === 10) phone = d.replace(/^(\d{3})(\d{3})(\d{4})$/, '$1-$2-$3');
+    } else if (/^\d{2,4}\s+\d{3,4}\s+\d{4}$/.test(text) && digits.length >= 10 && digits.length <= 12) {
+      phone = text.replace(/\s+/g, '-');   // 공백으로 나뉜 세 토막(예 '106 249 2567')도 토막을 유지한다(Opus O2 Nit)
     }
     return { raw: text, phone, last4: digits.slice(-4), ok: !!phone };
   }
@@ -700,25 +697,27 @@
           res.lineUnknown = true;
           return await fail('skipped', 'rowmismatch:rows=' + rows.length + ',fresh=' + fresh.map((r) => r.orderSeq + '/' + r.code).join('|'));
         }
+        //  둘째 줄부터 응답 tradeJun 이 바뀌면 어디에 붙었는지 모른다 → 코드 대조보다 **먼저** lineUnknown(Opus O2 P2 — 코드 불일치 분기가 먼저 잡으면 미검증 tradeJun 을 채택해 두 전표의 줄을 섞는다).
+        const gotTrade = post.tradeJun || fresh[0].tradeJun;
+        if (res.tradeJun && gotTrade && String(gotTrade) !== String(res.tradeJun)) { res.lineUnknown = true; return await fail('skipped', 'trade_switched:' + gotTrade + '≠' + res.tradeJun); }
         //  새 줄이 정확히 하나인데 코드가 다르면 그 줄은 **내가 만든 줄이 확실**(매핑 seq 가 엉뚱한 상품) → 기록해 두고 일반 되돌리기(Terra 10R P1).
         if (fresh[0].code !== ln.master.code) {
           res.orderSeqs.push(fresh[0].orderSeq);
-          res.idxValues.push(fresh[0].orderSeq + ',' + (fresh[0].tradeJun || post.tradeJun));
-          res.tradeJun = post.tradeJun || fresh[0].tradeJun;
+          res.idxValues.push(fresh[0].orderSeq + ',' + gotTrade);
+          res.tradeJun = gotTrade;
           return await fail('skipped', 'code_mismatch:' + fresh[0].code + '≠' + ln.master.code);
         }
-        const gotTrade = post.tradeJun || fresh[0].tradeJun;
-        if (res.tradeJun && gotTrade && String(gotTrade) !== String(res.tradeJun)) { res.lineUnknown = true; return await fail('skipped', 'trade_switched:' + gotTrade + '≠' + res.tradeJun); }   // 둘째 줄부터 tradeJun 이 바뀌면 어디에 붙었는지 모른다
         res.orderSeqs.push(fresh[0].orderSeq);
         res.rowSnaps.push(Object.assign({}, fresh[0]));       // 등록 응답의 행 그대로 — 완료 직전 대조 기준(Terra 6R)
         res.idxValues.push(fresh[0].orderSeq + ',' + gotTrade);
         res.tradeJun = gotTrade;
       }
+      //  세션 대조는 form10 GET **앞**에 둔다 — sKey 는 쓰기 직전 GET 의 것이어야 하므로(스펙 §4, Opus O2 P1) 그 사이에 다른 GET 을 끼우지 않는다. 줄 경로와 같은 모양.
+      { const tc = await assertTradeOpen('complete'); if (tc) return await fail('skipped', tc); }
       const f10 = await erp.getForm10({ tradeJun: res.tradeJun, client: res.client.seq, clientName: res.client.name });
       const fin = oiCheckFinal(f10, { client: res.client.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs, lines: order.lines, snaps: res.rowSnaps });
       if (!fin.ok) return await fail('skipped', 'final:' + fin.reason);
       if (f10.missing && f10.missing.length) return await fail('skipped', 'form10 필드 누락: ' + f10.missing.join(','));
-      { const tc = await assertTradeOpen('complete'); if (tc) return await fail('skipped', tc); }   // 완료 POST **직전** — 최종 대조 뒤에 남이 완료했을 수 있다(Opus 5 P2)
       //  완료 POST 를 **보내는 순간부터** 결과를 모르는 실패는 전부 '완료 미확인' 이다 — 응답이 유실돼도 서버는 완료했을 수 있다(Terra 2R P1).
       //  서버가 명시적으로 실패(msg)라고 답한 경우에만 되돌린다.
       res.completing = true;
@@ -758,7 +757,8 @@
     const juns = (r.junNums || []).map((j) => j.junNum).filter(Boolean);
     const lines = (r.orderSeqs || []).length;
     if (r.status === 'done') return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines } };
-    const mayRemain = !!(r.completing || r.completed) || (lines > 0 && (r.rolledBack || 0) < lines);
+    //  lineUnknown(줄 POST 응답 유실)은 orderSeqs 가 비어 있어도 서버에 줄이 남았을 수 있다(Opus O2 P2).
+    const mayRemain = !!(r.completing || r.completed || r.lineUnknown) || (lines > 0 && (r.rolledBack || 0) < lines);
     if (r.status !== 'blocked' && mayRemain) return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines, unverified: true, reason: r.reason || r.status } };
     return { uncheck: false, ledgerEntry: null };
   }

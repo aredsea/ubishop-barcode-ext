@@ -119,7 +119,7 @@ xls 읽기(SheetJS, MAIN) → 행 정규화 → 주문장 묶기 → 매핑 조�
 1. **가드**: plain GET(`orderItemWriteForm.do?tcode=order_item&pageSize=20&searchSortType=seq`) → `tradeJun` 빈값 + `idx` 0개가 아니면 시작하지 않는다.
 2. **고객 확정**: 고객명 정확일치 검색(`searchWordType=clientName`, 서버는 부분일치라 확장이 `name===` 로 거른다) → 있으면 seq. 없으면 휴대폰 검색 → 다른 이름이 있으면 phone 빈칸, 없으면 phone 포함 → `clientWrite.do` POST → 리다이렉트된 고객검색 페이지의 행에서 seq(실측: `msg` 빈값 + 그 이름으로 검색된 페이지).
 3. **줄 등록**(줄마다): `orderItemWriteForm.do?tcode=order_item&tradeJun=<t|빈값>&master=<seq>&client=<seq>&clientName=<enc>` GET → form1 25필드 정규식 추출(§4.2) → 기대치 대조(§5) → k/color/itemSize/orderQty/orderPrice/shopRemark 덮어쓰기 → `orderItemWrite.do` POST → `msg` 빈값 + 목록 행 수 +1 + 새 행의 상품코드 일치. 응답 hidden `tradeJun`을 다음 줄에 전달(첫 줄에서 생성됨).
-4. **완료**: GET(tradeJun·client 명시) → form10 23필드 추출 → **인도예정일 오늘로 명시 세팅**(HTML엔 selected가 없어 추출값이 01/01) → 최종 대조(행 수·상품코드·사이즈·주문가 = 검토 표) → `orderItemJunWrite.do` POST → `msg` 빈값 → plain GET으로 `tradeJun` 빈값·0행 확인 → 주문전표 목록(`/jun/orderitem/orderItemList.do`)에서 고객명으로 관리번호 조회 → 장부 기록.
+4. **완료**: plain GET으로 세션의 열린 주문장이 아직 내 `tradeJun`인지 대조(둘째 줄부터 매 줄 앞에서도 같은 대조) → GET(tradeJun·client 명시) → form10 23필드 추출 → **인도예정일 오늘로 명시 세팅**(HTML엔 selected가 없어 추출값이 01/01) → 최종 대조(행 수·상품코드·사이즈·주문가 = 검토 표) → `orderItemJunWrite.do` POST → `msg` 빈값 → plain GET으로 `tradeJun` 빈값·0행 확인 → 주문전표 목록(`/jun/orderitem/orderItemList.do`)에서 고객명으로 관리번호 조회 → 장부 기록.
 5. **실패 처리**: 어느 단계든 판정 실패면 그 주문장 중단 → 이번 실행에서 넣은 `orderSeq`만 골라 `orderItemDelete.do`(form3 `idx`=`<orderSeq>,<tradeJun>`)로 삭제 → plain GET 0행 확인 → 결과에 "건너뜀(사유)·되돌림 n줄" → 다음 주문장. 되돌리기 후에도 세션에 줄이 남으면 **전체 중단**.
 
 ---
@@ -143,7 +143,7 @@ xls 읽기(SheetJS, MAIN) → 행 정규화 → 주문장 묶기 → 매핑 조�
 | `POST /order/item/orderItemDelete.do?tcode=order_item&<CONST_URL>` | form3 `sKey` + `idx`(선택 줄) | **라이브 미실측(2026-09-15 사장님 결정)** — 실제 주문 데이터라 위험해 확장 경로로는 시험하지 않는다. 취소·되돌리기는 사장님이 실제 건에서 직접 확인하며 진행. 실행기의 되돌리기 분기는 스텁 테스트(`orderimport-run.test.js`)로만 검증됨 |
 
 - 폼 hidden은 **HTML 문자열 정규식**으로 뽑는다. 기존 메모리(DOMParser `form.elements`가 hidden을 놓침)와 같은 이유.
-- `sKey`는 매 쓰기 직전 GET에서 새로 받는다(재사용 금지). 페이지에 박힌 `alert("상품번호를 입력하세요!")` 류는 항상 있으므로 판정에 쓰지 않는다.
+- `sKey`는 매 쓰기 직전 GET에서 새로 받는다(재사용 금지). **그 GET과 POST 사이에 다른 GET을 끼우지 않는다** — 세션 대조 같은 plain GET은 form10 GET 앞에 둔다(2026-09-15 Opus O2 P1). 그래서 plain GET 대조 이후~POST 사이의 창은 남는다(줄 경로와 같은 크기, 사장님 '실행 중 조작 금지'로 받아들임). 페이지에 박힌 `alert("상품번호를 입력하세요!")` 류는 항상 있으므로 판정에 쓰지 않는다.
 - 응답 인코딩: 주문폼·고객폼·주문전표 목록 모두 UTF-8이었다(U+FFFD 0). `src/erp.js`의 `decodeErpHtml`을 그대로 쓴다.
 - 폼의 `validate()`가 REQUIRED로 잡는 것: form1 `shopName color orderQty orderPrice`, form10 결제 8필드. 서버는 color 빈값도 받았으나(실측) 확장은 §2.2 규칙으로 채운다.
 
