@@ -247,6 +247,16 @@ test('줄 POST 성공인데 새 줄이 둘 이상이면(외부 줄 동시 삽입
   assert.equal(rs[1].status, 'blocked');
 });
 
+//  Terra 5R P1 (2026-09-15): 가드 직후 다른 탭이 줄 0개 주문장을 열어 두면 첫 줄 GET 이 행 0·고객 일치로 통과해 거기에 붙었다.
+test('첫 줄 GET 에 tradeJun 이 이미 있으면(빈 주문장 열림) POST 없이 skipped', async () => {
+  const erp = makeErp();
+  const origGet = erp.getWriteForm.bind(erp);
+  erp.getWriteForm = async (p) => { const f = await origGet(p); if (!erp.srv.rows.length) f.values.tradeJun = '140000'; return f; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.match(r.reason, /^mismatch:tradeJun open 140000/);
+  assert.ok(!names(erp).includes('postLine'));
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음

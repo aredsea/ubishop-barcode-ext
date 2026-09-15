@@ -138,6 +138,11 @@ test('oiCheckForm / oiCheckFinal: client·행 수·orderSeq·코드·사이즈·
   assert.match(C.oiCheckForm(f, { client: '999', master: '7083', tradeJun: '141240', orderSeqs: ['389463'] }).reason, /^client/);
   assert.match(C.oiCheckForm(f, { client: '123790', master: '7083', tradeJun: '141240', orderSeqs: ['1'] }).reason, /^foreign row 389463/);
   assert.match(C.oiCheckForm(f, { client: '123790', master: '7083', tradeJun: '999', orderSeqs: ['389463'] }).reason, /^tradeJun/);
+  //  Terra 5R P1 (2026-09-15): 첫 줄(내 줄 0개)인데 폼에 tradeJun 이 이미 있으면 남의 빈 주문장이 열린 것 — 붙이면 안 된다.
+  const empty = Object.assign({}, f, { rows: [] });
+  assert.match(C.oiCheckForm(empty, { client: '123790', master: '7083', tradeJun: '', orderSeqs: [] }).reason, /^tradeJun open 141240/);
+  const clean = Object.assign({}, f, { rows: [], values: Object.assign({}, f.values, { tradeJun: '' }) });
+  assert.equal(C.oiCheckForm(clean, { client: '123790', master: '7083', tradeJun: '', orderSeqs: [] }).ok, true);
   const f10 = C.oiReadForm10(WRITE);
   const line = { master: { code: 'F-RF-I-WG-PA-00F6' }, spec: { itemSize: '11', qty: 1, price: 17000 } };
   assert.equal(C.oiCheckFinal(f10, { client: '123790', tradeJun: '141240', orderSeqs: ['389463'], lines: [line] }).ok, true);

@@ -529,6 +529,8 @@
     if (rows.length !== mine.length) return { ok: false, reason: 'rows ' + rows.length + '≠' + mine.length };
     for (const r of rows) if (!mine.includes(r.orderSeq)) return { ok: false, reason: 'foreign row ' + r.orderSeq };
     if (mine.length && expect.tradeJun && String(v.tradeJun) !== String(expect.tradeJun)) return { ok: false, reason: 'tradeJun ' + v.tradeJun + '≠' + expect.tradeJun };
+    //  첫 줄(내 줄 0개)인데 폼에 tradeJun 이 이미 있으면 가드 직후 다른 탭이 연 **빈 주문장**이다 — 거기에 붙이면 남의 주문장이 된다(Terra 5R P1).
+    if (!mine.length && !expect.tradeJun && v.tradeJun) return { ok: false, reason: 'tradeJun open ' + v.tradeJun };
     return { ok: true, reason: '' };
   }
   //  완료 직전: 행 수·orderSeq·상품코드·사이즈·수량·주문가를 검토 표(lines)와 대조.
