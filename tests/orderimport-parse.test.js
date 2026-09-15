@@ -58,6 +58,43 @@ test('oiParseRows/oiGroupOrders: 주문번호가 빈 행은 검토 대상이 되
   assert.ok(C.oiLineIssues(r.lines[2], { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }).some((s) => s.startsWith('판매처 미등록')));
 });
 
+//  Terra 4R P1 (2026-09-15): 같은 주문번호에 수령자/휴대폰이 다른 행이 첫 행 고객으로 합쳐졌다.
+test('oiGroupOrders: 같은 주문장 안에서 수령자나 휴대폰이 첫 줄과 다르면 그 줄은 검토 대상', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', '010-1234-5678'],
+    ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', '010-1234-5678'],
+    ['쿠팡', 'O1', 'C', '', 3000, 300, '김철수', '010-1234-5678'],
+    ['쿠팡', 'O1', 'D', '', 4000, 400, '홍길동', '010-9999-0000']];
+  const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
+  assert.equal(g.length, 1);
+  const iss = (l) => C.oiLineIssues(l, { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') });
+  assert.deepEqual(iss(g[0].lines[0]), []); assert.deepEqual(iss(g[0].lines[1]), []);
+  assert.ok(iss(g[0].lines[2]).some((s) => s.startsWith('수령자 불일치')));
+  assert.ok(iss(g[0].lines[3]).some((s) => s.startsWith('수령자 불일치')));
+});
+
+//  Terra 4R P2 (2026-09-15): 미해석 토큰(3푼)을 사람이 보정해도 영구 차단됐다.
+test('oiLineIssues: optOverride 면 미해석 토큰 이슈를 내지 않는다', () => {
+  const line = C.oiParseRows(ROWS_B).lines[0];
+  const parsed = C.oiParseOption('[14K-로즈골드-3푼-45cm]');
+  assert.ok(C.oiLineIssues(line, { mapping: { entry: { code: 'X' } }, parsed }).some((s) => s.startsWith('옵션 해석 불가')));
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { code: 'X' } }, parsed, optOverride: true }), []);
+});
+
+//  Terra 4R P2 (2026-09-15): 코드표 밖 판매처를 세션에서 보정할 길이 없었다(스펙 §2.3 약속 항목).
+test('oiApplyMarket: 미등록 판매처에 세션 한정 접미·마켓을 넣으면 고객명이 생기고 줄에도 전파된다', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['11번가', 'O9', 'A', '', 1000, 100, '홍길동', '010-1234-5678']];
+  const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
+  assert.equal(g[0].market, null); assert.equal(g[0].clientName, '');
+  C.oiApplyMarket(g[0], '십', '12');
+  assert.deepEqual(g[0].market, { name: '11번가', suffix: '십', clientJob: '12', sessionOnly: true });
+  assert.equal(g[0].clientName, '홍길동5678/십');
+  assert.equal(g[0].lines[0].market.clientJob, '12');
+  assert.deepEqual(C.oiLineIssues(g[0].lines[0], { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }), []);
+  assert.equal(C.oiApplyMarket(g[0], '', '12'), false, '접미가 비면 적용하지 않는다');
+});
+
 test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검토 대상)', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰', '수량'],
     ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-0000-5678', '2']];

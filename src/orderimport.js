@@ -12,7 +12,7 @@
   if (!C || !E) { console.warn('[UB][oi] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const KEY_MAP = 'ubOiMap', KEY_LEDGER = 'ubOiLedger', PANEL_ID = 'ub-oi-panel', STYLE_ID = 'ub-oi-style';
-  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, results: [], log: [], xlsReady: false, seq: 0, fileName: '' };
+  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, results: [], log: [], xlsReady: false, seq: 0, fileName: '' };
 
   /* ------------------------------------------------------------ storage */
   const sget = (q) => new Promise((res) => chrome.storage.local.get(q, res));
@@ -69,7 +69,7 @@
     if (sp.price == null) sp.price = line.price;
     if (sp.remark == null || sp.remarkAuto !== false) { sp.remark = C.oiRemark(line.settle, entry && entry.remarkSuffix); sp.remarkAuto = true; }
     const form = entry ? S.masters[entry.seq] : null;
-    line.issues = C.oiLineIssues(Object.assign({}, line, { price: sp.price, qty: sp.qty }), { mapping: line.mapping, parsed: Object.assign({}, line.parsed, { k: sp.k, color: sp.color, itemSize: sp.itemSize }), form });
+    line.issues = C.oiLineIssues(Object.assign({}, line, { price: sp.price, qty: sp.qty }), { mapping: line.mapping, parsed: Object.assign({}, line.parsed, { k: sp.k, color: sp.color, itemSize: sp.itemSize }), form, optOverride: !!sp.optOverride });
   }
   function refreshOrder(o) {
     o.lines.forEach(refreshLine);
@@ -126,13 +126,22 @@
     };
   }
   async function run() {
-    if (S.running) return;
-    await loadState();                                       // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다(Terra 3R P2) — 실행 직전에 다시 읽는다
-    if (!S.enabled) { alert('[유비샵 스킨모드]·[주문 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
-    const targets = S.orders.filter((o) => o.checked && o.ready);
-    if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
-    if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
-    S.running = true; S.results = [];
+    //  첫 await 전에 선점한다 — 빠른 두 번 클릭이 둘 다 S.running 검사를 지나 이중 실행되던 경합(Terra 4R P1).
+    if (S.running || S.starting) return;
+    S.starting = true;
+    try {
+      await loadState();                                     // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다(Terra 3R P2) — 실행 직전에 다시 읽는다
+      if (!S.enabled) { alert('[유비샵 스킨모드]·[주문 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
+      const targets = S.orders.filter((o) => o.checked && o.ready);
+      if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
+      if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
+      S.running = true;
+    } finally { S.starting = false; }
+    if (!S.running) return;
+    await runTargets(S.orders.filter((o) => o.checked && o.ready));
+  }
+  async function runTargets(targets) {
+    S.results = [];
     window.addEventListener('beforeunload', onUnload);
     render();
     try {
@@ -186,6 +195,12 @@
 `;
   function ensureStyle() { if (!document.getElementById(STYLE_ID)) { const s = document.createElement('style'); s.id = STYLE_ID; s.textContent = CSS; document.head.appendChild(s); } }
 
+  //  코드표 밖 판매처: 이 세션에서만 접미·마켓을 정한다(스펙 §2.3, Terra 4R P2). 표에는 저장하지 않는다.
+  const MARKET_OPTS = [['2', 'SSG'], ['3', 'CJ몰'], ['4', 'H몰'], ['5', '스마트스토어'], ['6', '카페24'], ['7', 'GS샵'], ['8', '쿠팡'], ['9', '위메프'], ['10', '롯데ON'], ['11', '카카오'], ['12', '11번가'], ['13', 'G마켓'], ['14', '옥션'], ['15', '더리본샵'], ['16', 'AK몰'], ['17', '지그재그'], ['18', '아몬즈'], ['19', '지인소개'], ['20', '퀸잇'], ['21', '에이블리'], ['22', '오늘룩']];
+  function marketPick(o, oi) {
+    return '<span class="oi-issue">판매처 미등록(' + esc(o.seller) + ')</span> 접미 <input class="oi-in sm" data-f="mkt-suffix" data-o="' + oi + '" placeholder="예: 십" maxlength="4"> 마켓 <select class="oi-in" style="width:auto" data-f="mkt-job" data-o="' + oi + '"><option value="">— 선택 —</option>'
+      + MARKET_OPTS.map(([v, t]) => '<option value="' + v + '">' + esc(t) + '</option>').join('') + '</select> <button class="oi-btn" data-act="mkt-apply" data-o="' + oi + '">적용</button>';
+  }
   function custText(o) {
     if (!o.customer) return '<span class="oi-muted">조회 전</span>';
     const m = o.customer.mode;
@@ -212,7 +227,7 @@
     const prev = o.prev ? '<div class="oi-issue">이전에 넣음 ' + esc(String(o.prev.at).slice(0, 16).replace('T', ' ')) + (o.prev.junNums ? ' · ' + esc(o.prev.junNums.join(',')) : '') + '</div>' : '';
     return '<tr class="oi-o' + (o.ready ? '' : ' bad') + '"><td><input type="checkbox" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
       + '<td>' + esc(o.seller) + ' ' + esc(o.orderNo) + prev + '</td><td>' + (o.clientName ? esc(o.clientName) : '(' + esc(o.seller) + ' 미등록)') + '<br><span class="oi-muted">' + esc(o.phone.phone || o.phone.raw) + '</span></td>'
-      + '<td colspan="7">' + custText(o) + (st ? ' · ' + st : '') + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
+      + '<td colspan="7">' + (o.market ? custText(o) : marketPick(o, oi)) + (st ? ' · ' + st : '') + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
   }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
@@ -261,6 +276,14 @@
     else if (act === 'run') run();
     else if (act === 'export-map') download('ub-orderimport-map-' + new Date().toISOString().slice(0, 10) + '.json', S.map);
     else if (act === 'export-log') download('ub-orderimport-log-' + Date.now() + '.json', { results: S.results, log: S.log });
+    else if (act === 'mkt-apply') {
+      const o = S.orders[+btn.dataset.o]; const wrap = btn.parentElement;
+      const suf = (wrap.querySelector('input[data-f="mkt-suffix"]') || {}).value || '';
+      const job = (wrap.querySelector('select[data-f="mkt-job"]') || {}).value || '';
+      if (!suf.trim() || !job) { alert('접미와 마켓을 모두 고르세요.'); return; }
+      if (!C.oiApplyMarket(o, suf, job)) return;
+      o.customer = null; refreshOrder(o); render(); await enrich(); render();
+    }
     else if (act === 'unmap') { const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l]; l.keys.forEach((k) => { delete S.map[k]; }); l.suggest = null; await saveMap(); S.orders.forEach(refreshOrder); await enrich(); render(); }
     else if (act === 'search') {
       const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l];
@@ -286,8 +309,8 @@
       S.orders.forEach(refreshOrder);        // 같은 키의 다른 줄에도 즉시 전파
       await enrich(); render(); return;
     }
-    if (f === 'k' || f === 'color') l.spec[f] = el.value.trim() || null;
-    else if (f === 'itemSize') l.spec.itemSize = el.value.trim();
+    if (f === 'k' || f === 'color') { l.spec[f] = el.value.trim() || null; l.spec.optOverride = true; }     // 사람이 보정 → 원문 미해석 토큰은 차단 사유에서 제외(Terra 4R P2)
+    else if (f === 'itemSize') { l.spec.itemSize = el.value.trim(); l.spec.optOverride = true; }
     else if (f === 'qty') l.spec.qty = C.oiMoney(el.value);
     else if (f === 'price') l.spec.price = C.oiMoney(el.value);
     else if (f === 'remark') { l.spec.remark = el.value; l.spec.remarkAuto = false; }

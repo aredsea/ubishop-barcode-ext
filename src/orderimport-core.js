@@ -205,9 +205,22 @@
           lines: []
         });
       }
-      map.get(key).lines.push(ln);
+      const o = map.get(key);
+      //  같은 주문장인데 수령자/휴대폰이 첫 줄과 다르면 그 줄을 검토로 올린다(Terra 4R P1 — 첫 줄 고객으로 조용히 합쳐지면 오배송).
+      ln.groupMismatch = !!(o.lines.length && (ln.buyer !== o.buyer || (ln.phone && ln.phone.phone) !== (o.phone && o.phone.phone)));
+      o.lines.push(ln);
     });
     return [...map.values()];
+  }
+
+  //  코드표 밖 판매처를 **이 세션에서만** 보정(스펙 §2.3). 표에 저장하지 않는다. 접미가 비면 적용하지 않는다.
+  function oiApplyMarket(order, suffix, clientJob) {
+    const suf = String(suffix == null ? '' : suffix).trim();
+    if (!order || !suf) return false;
+    order.market = { name: order.seller, suffix: suf, clientJob: String(clientJob == null ? '' : clientJob), sessionOnly: true };
+    order.clientName = oiClientName(order.buyer, order.phone ? order.phone.last4 : '', suf);
+    (order.lines || []).forEach((l) => { l.market = order.market; });
+    return true;
   }
 
   //  품위 '14'/'18'/'925' → k 셀렉트 옵션(텍스트 '14K'/'18K'/'925' 대조). 없으면 null.
@@ -224,12 +237,14 @@
     const issues = [];
     if (!line.market) issues.push('판매처 미등록: ' + line.seller);
     if (!line.orderNo) issues.push('주문번호 없음');
+    if (line.groupMismatch) issues.push('수령자 불일치: 같은 주문번호의 첫 줄과 수령자/휴대폰이 다름');
     if (!line.phone || !line.phone.ok) issues.push('휴대폰 형식: ' + (line.phone ? line.phone.raw : ''));
     if (!line.buyer) issues.push('수령자 없음');
     if (line.price == null) issues.push('판매가 없음');
     if (line.qty == null) issues.push('수량');
     const parsed = resolved && resolved.parsed;
-    if (parsed && parsed.unresolved.length) issues.push('옵션 해석 불가: ' + parsed.unresolved.join(', '));
+    //  사람이 품위·색상·사이즈를 직접 보정했으면(optOverride) 원문의 미해석 토큰은 더 이상 차단 사유가 아니다(Terra 4R P2).
+    if (parsed && parsed.unresolved.length && !(resolved && resolved.optOverride)) issues.push('옵션 해석 불가: ' + parsed.unresolved.join(', '));
     if (!resolved || !resolved.mapping) issues.push('상품 미매칭');
     const form = resolved && resolved.form;
     if (form && parsed) {
@@ -607,9 +622,13 @@
         log('line', { i, ok: post.ok, msg: post.msg, tradeJun: post.tradeJun, rows: (post.rows || []).length });
         if (!post.ok) return await fail('skipped', 'line_failed:' + post.msg);
         const rows = post.rows || [];
-        if (rows.length !== res.orderSeqs.length + 1) return await fail('skipped', 'rowcount:' + rows.length);
         const fresh = rows.filter((r) => !res.orderSeqs.includes(r.orderSeq));
-        if (fresh.length !== 1 || fresh[0].code !== ln.master.code) return await fail('skipped', 'newrow:' + (fresh[0] ? fresh[0].code : 'none'));
+        //  POST 는 성공했는데 새 줄이 정확히 하나가 아니거나 코드가 다르면 **어느 줄이 내 것인지 모른다** → 지우지 않고 멈춘다(Terra 4R P1).
+        //  (남의 줄이 직전에 끼어든 경우 — 여기서 skipped 로 넘어가면 내 줄과 남의 줄이 열린 주문장에 남는다)
+        if (rows.length !== res.orderSeqs.length + 1 || fresh.length !== 1 || fresh[0].code !== ln.master.code) {
+          res.lineUnknown = true;
+          return await fail('skipped', 'rowmismatch:rows=' + rows.length + ',fresh=' + fresh.map((r) => r.orderSeq + '/' + r.code).join('|'));
+        }
         res.orderSeqs.push(fresh[0].orderSeq);
         res.idxValues.push(fresh[0].orderSeq + ',' + (fresh[0].tradeJun || post.tradeJun));
         res.tradeJun = post.tradeJun || fresh[0].tradeJun;
@@ -667,7 +686,7 @@
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiSuggestQueries,
-    oiGroupOrders, oiLineIssues,
+    oiGroupOrders, oiApplyMarket, oiLineIssues,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,

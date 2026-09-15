@@ -236,6 +236,17 @@ test('완료된 관리번호의 줄이 전부 내 것이면 done', async () => {
   assert.equal(r.status, 'done');
 });
 
+//  Terra 4R P1 (2026-09-15): 줄 POST 는 성공했는데 응답 행 수가 기대와 다르면(남의 줄이 직전에 끼어듦) 첫 줄은 되돌릴 게 없다고 skipped 로 계속 갔다.
+test('줄 POST 성공인데 새 줄이 둘 이상이면(외부 줄 동시 삽입) 어느 것이 내 줄인지 모르므로 삭제 없이 fatal', async () => {
+  const erp = makeErp();
+  const origPost = erp.postLine.bind(erp);
+  erp.postLine = async (fields) => { erp.srv.rows.push(Object.assign(row('999999', '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); erp.srv.tradeJun = '141236'; return origPost(fields); };
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^line_unverified:/);
+  assert.ok(!names(erp).includes('deleteLines'));
+  assert.equal(rs[1].status, 'blocked');
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음
