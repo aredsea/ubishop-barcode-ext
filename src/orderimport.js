@@ -225,7 +225,7 @@
       + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running ? '' : ' disabled') + '>등록 시작</button>'
       + '<button class="oi-btn" data-act="export-map">매핑표 내보내기</button><label class="oi-btn">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden></label>'
       + '<button class="oi-btn" data-act="export-log">로그 JSON</button></div>'
-      + (nOrd ? '<table class="oi-t"><thead><tr><th></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th>수량</th><th>판매가</th><th>비고</th></tr></thead><tbody>'
+      + (nOrd ? '<table class="oi-t"><thead><tr><th><input type="checkbox" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제"' + (nReady && nChk === nReady ? ' checked' : '') + (nReady && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th>수량</th><th>판매가</th><th>비고</th></tr></thead><tbody>'
         + S.orders.map(orderRow).join('') + '</tbody></table>' : '')
       + (S.results.length ? '<div class="oi-res"><b>결과</b> — 완료 ' + done + ' · 건너뜀/중단 ' + skipped + '<table class="oi-t"><thead><tr><th>주문장</th><th>상태</th><th>사유</th><th>고객</th><th>관리번호</th><th>되돌림</th></tr></thead><tbody>'
         + S.results.map((r) => '<tr><td>' + esc(r.key) + '</td><td class="st-' + esc(r.status) + '">' + esc(r.status) + '</td><td>' + esc(r.reason || '') + '</td><td>' + esc(r.client ? r.client.name + ' #' + r.client.seq + ' (' + r.client.mode + ')' : '') + '</td><td>' + esc((r.junNums || []).map((j) => j.junNum).join(', ')) + '</td><td>' + esc(r.rolledBack || 0) + '</td></tr>').join('')
@@ -274,6 +274,7 @@
     if (el.id === 'ub-oi-mapfile') { const f = el.files && el.files[0]; if (f) await importMap(f); return; }
     const f = el.dataset.f; if (!f) return;
     if (f === 'chk') { const o = S.orders[+el.dataset.o]; o.checked = el.checked && o.ready; render(); return; }
+    if (f === 'chkall') { S.orders.forEach((o) => { o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장은 원래대로 제외
     const o = S.orders[+el.dataset.o]; const l = o.lines[+el.dataset.l];
     if (f === 'pick') {
       if (!el.value) return;
