@@ -1,9 +1,9 @@
 {
-  "version": "4.1.9",
+  "version": "4.2.0",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "c6c0d3f67d05b1d789eee0d6f9d4d6b09316b139a00c0f1ee4b2e5190c9f17b4"
+      "sha256": "8c6d974858c9909221404bede2a0acf40f56db11a1c095f717ae05450c493e2a"
     },
     {
       "path": "src/loader.js",
@@ -19,23 +19,47 @@
     },
     {
       "path": "src/background.js",
-      "sha256": "992a17fb63e59f63b493fe6e7f869976a887ccda9b66f60b38c4fc16b75fc3cf"
+      "sha256": "13e847656b974fd9f48b9a5ebebf413a7703d837b492747f9ad27fb2b875f32c"
     },
     {
       "path": "src/skin.js",
-      "sha256": "7e7a39aa56630687f79837b4150aa88a084b1b4d690d49a7736da1c00f8966b2"
+      "sha256": "a9bddaa7d5137fe8932136a7f22abd19dab9c3b0b0eacf3e3666653f825dd4d1"
     },
     {
       "path": "popup/popup.html",
-      "sha256": "1237d638142d7aa43511a08aef0655f856dd69d32c6be4efc4a4a38e1b5fb9bc"
+      "sha256": "2bb322c9a6eb2a6d56f9af9dbf7b9fba2e4f9f6eeaff49f42d34d262cebe0b8e"
     },
     {
       "path": "popup/popup.js",
-      "sha256": "bc77cc402fc370c552f8a98ecad7b10a4adeb0584ded0ab676b10e4afc0fce2e"
+      "sha256": "3b99dae5d8b360ea6a136476cc9e768b682ac4ac1a4dd53c5eb6ef0cf6e41e96"
     },
     {
       "path": "rules/cache.json",
       "sha256": "bc0688cbcd2cba11ed4a902dcaf551eb91e59e1624d8b13d544c088bdf3bb3cc"
+    },
+    {
+      "path": "src/erp.js",
+      "sha256": "c5db02b69a4f934f137f2156b192d57a9d90b2639edb1a429b0c07a858c4c3bf"
+    },
+    {
+      "path": "src/orderimport-core.js",
+      "sha256": "86e62db8ec4df728b3ea62602b0c56a8f417187760d40d91cf95920cc40a3eb5"
+    },
+    {
+      "path": "src/orderimport-erp.js",
+      "sha256": "a136dae1a36b372bbeeb36fcad431f9539681a5cd88c0a0cfc33c6a579a70ad2"
+    },
+    {
+      "path": "src/orderimport.js",
+      "sha256": "152eaccb1dc4809b3cbecb4b01c5f8796050fe4db5e7571d1b15ca74325cdcff"
+    },
+    {
+      "path": "src/orderimport-xls.js",
+      "sha256": "062cc70c503514f4e368a9ed575064a85a57c63151955920a83b080bb215195f"
+    },
+    {
+      "path": "vendor/xlsx.full.min.js",
+      "sha256": "cc015130aa8521e7f088f88898eba949ccdcbfb38df0bd129b44b7273c3a6f41"
     },
     {
       "path": "icons/icon128.png",

@@ -76,7 +76,9 @@ const ROOT = path.join(__dirname,'..');
 //  build-shell-index.ps1 의 $patterns 와 같은 순서.
 const SHELL_PATTERNS = [
   'manifest.json','src/loader.js','src/localbridge.js','src/fsm.js','src/background.js',
-  'src/skin.js','popup/popup.html','popup/popup.js','rules/cache.json'
+  'src/skin.js','popup/popup.html','popup/popup.js','rules/cache.json',
+  //  4.2.0 판매처 주문 가져오기(SHELL 채널 — content_scripts 로 직접 싣는다)
+  'src/erp.js','src/orderimport-core.js','src/orderimport-erp.js','src/orderimport.js','src/orderimport-xls.js','vendor/xlsx.full.min.js'
 ];
 //  ★icons 는 **목록을 박아 두면 안 된다** — 생성 스크립트가 `icons/*` 전체를 동적으로 담기
 //   때문이다. 박아 두면 아이콘을 새로 넣고 재생성을 잊었을 때, 인덱스도 기대 목록도 옛 3개라
