@@ -397,6 +397,18 @@ test('둘째 줄 응답의 tradeJun 이 바뀌면 코드와 무관하게 삭제 
   assert.ok(!names(erp).includes('deleteLines'));
 });
 
+//  Opus O3 Nit (2026-09-15): 응답에 tradeJun 이 없으면(hidden·idx 뒷토막 둘 다 없음) 명시 사유로 fatal — res.tradeJun 을 '' 로 덮어쓰지 않는다.
+test('줄 응답에 tradeJun 이 없으면 삭제·후속 쓰기 없이 fatal(trade_missing)', async () => {
+  const erp = makeErp();
+  const oPost = erp.postLine.bind(erp);
+  erp.postLine = async (fields) => { const r = await oPost(fields); r.tradeJun = ''; r.rows = r.rows.map((x) => Object.assign({}, x, { tradeJun: '' })); return r; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /line_unverified:trade_missing:line0/);
+  assert.equal(erp.calls.filter((c) => c[0] === 'postLine').length, 1);
+  assert.ok(!names(erp).includes('deleteLines')); assert.ok(!names(erp).includes('postComplete'));
+  assert.equal(C.oiPostRunState(r, 'now').uncheck, true);
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음

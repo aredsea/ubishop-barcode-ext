@@ -699,7 +699,9 @@
         }
         //  둘째 줄부터 응답 tradeJun 이 바뀌면 어디에 붙었는지 모른다 → 코드 대조보다 **먼저** lineUnknown(Opus O2 P2 — 코드 불일치 분기가 먼저 잡으면 미검증 tradeJun 을 채택해 두 전표의 줄을 섞는다).
         const gotTrade = post.tradeJun || fresh[0].tradeJun;
-        if (res.tradeJun && gotTrade && String(gotTrade) !== String(res.tradeJun)) { res.lineUnknown = true; return await fail('skipped', 'trade_switched:' + gotTrade + '≠' + res.tradeJun); }
+        //  응답에 tradeJun 이 아예 없으면 내 줄이 어느 전표에 붙었는지 모른다 → 명시 사유로 lineUnknown(Opus O3 Nit — 이전엔 res.tradeJun 을 '' 로 덮어써 장부 tradeJun 이 사라지고 사유가 'T1≠' 로 남았다).
+        if (!gotTrade) { res.lineUnknown = true; return await fail('skipped', 'trade_missing:line' + i); }
+        if (res.tradeJun && String(gotTrade) !== String(res.tradeJun)) { res.lineUnknown = true; return await fail('skipped', 'trade_switched:' + gotTrade + '≠' + res.tradeJun); }
         //  새 줄이 정확히 하나인데 코드가 다르면 그 줄은 **내가 만든 줄이 확실**(매핑 seq 가 엉뚱한 상품) → 기록해 두고 일반 되돌리기(Terra 10R P1).
         if (fresh[0].code !== ln.master.code) {
           res.orderSeqs.push(fresh[0].orderSeq);
