@@ -2299,6 +2299,8 @@ git commit -m "feat(주문 가져오기): 사이드바 섹션·팝업 스위치�
 
 ### Task 6: 감독 하 라이브 실행 · 되돌리기 실측 · SHELL 배포
 
+> **결과(2026-09-15)**: Step 1 ✅ 실제 당일 주문 10주문장·11줄 등록, 이지어드민과 일치(사장님 확인). Step 2 ⏸ **사장님 결정으로 확장 경로 실측 안 함** — 실제 건이라 취소·되돌리기는 사장님이 직접 확인하며 진행(스펙 §4.2). Step 3 ✅ T3: Terra 15R → Opus 5 O1~O3 → DeepSeek 교차(중단 1회+재시도 0건) → Fable 5.1 F1~F4, 채택 0 으로 종료(원장 #63~#85). Step 4 ✅ `shell-files.json` 4.2.0(18파일) → loader-integrity 통과 → main `e4d0708` 푸시(ExtSync 가 매장 PC 에 20분 내 반영).
+
 **Files:**
 - Modify: `shell-files.json`(재생성), `docs/superpowers/specs/2026-09-14-orderimport-design.md`(§4.2 되돌리기 실측 결과 1줄), `docs/REVIEW-LEDGER.md`(검수 회차)
 
