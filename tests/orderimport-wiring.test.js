@@ -102,6 +102,13 @@ test('UI 배선: 실행 중에는 onClick/onChange/enrich 가 조작을 받지 �
   assert.ok(/async function onClick\(e\) \{[\s\S]{0,200}?if \(S\.running && act !== 'close' && act !== 'export-log' && act !== 'export-map'\) return;/.test(ui), 'onClick 실행 중 게이트');
   assert.ok(/async function onChange\(e\) \{\s*if \(S\.running\) return;/.test(ui), 'onChange 실행 중 게이트');
   assert.ok(/async function enrich\(\) \{\s*if \(S\.running\) return;/.test(ui), 'enrich 실행 중 게이트');
+  //  Fable 5 G1 (2026-09-15): 진입 게이트만으론 파일 로드 직후 진행 중인 enrich 가 실행 시작 뒤에도 요청을 보냈다 → 진행 중 프라미스 대기 + 루프 내 게이트.
+  assert.ok(/S\.enriching = p; render\(\);/.test(ui), 'enrich 가 진행 중 프라미스를 S.enriching 에 잡는다');
+  assert.ok(/if \(S\.enriching\) \{ try \{ await S\.enriching; \} catch \(_\) \{\} \}\s*\/\/[^\n]*\n\s*S\.running = true;/.test(ui), 'run() 은 진행 중 enrich 를 기다린 뒤 running 을 세운다');
+  const body = ui.slice(ui.indexOf('async function enrichBody()'), ui.indexOf('/* ------------------------------------------------------------ 실행 */'));
+  const awaits = (body.match(/await E\./g) || []).length, gates = (body.match(/if \(S\.running\) return;/g) || []).length;
+  assert.equal(awaits, 4, 'enrichBody 의 ERP 요청 수'); assert.equal(gates, 4, 'ERP 요청마다 실행 중 게이트');
+  assert.ok(ui.includes(`data-act="run"' + (nChk && !S.running && !S.enriching && S.enabled ? '' : ' disabled')`), '조회 중엔 실행 버튼 잠금');
   assert.ok(/function lineRow\(o, oi, l, li\) \{\s*const dis = S\.running \? ' disabled' : '';/.test(ui), 'lineRow dis');
   for (const frag of ['data-f="pick" data-o="\' + oi + \'" data-l="\' + li + \'"\' + dis + \'>', 'data-act="unmap" data-o="\' + oi + \'" data-l="\' + li + \'" title="매핑 지우기"\' + dis + \'>',
     'data-act="search" data-o="\' + oi + \'" data-l="\' + li + \'"\' + dis + \'>', 'value="\' + esc(v == null ? \'\' : v) + \'"\' + dis + \'>\'', 'data-act="mkt-apply" data-o="\' + oi + \'"\' + dis + \'>',

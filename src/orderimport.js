@@ -12,7 +12,7 @@
   if (!C || !E) { console.warn('[UB][oi] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const KEY_MAP = 'ubOiMap', KEY_LEDGER = 'ubOiLedger', PANEL_ID = 'ub-oi-panel', STYLE_ID = 'ub-oi-style';
-  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '' };
+  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '' };
 
   /* ------------------------------------------------------------ storage */
   const sget = (q) => new Promise((res) => chrome.storage.local.get(q, res));
@@ -89,20 +89,31 @@
     S.orders.forEach(refreshOrder);
   }
   //  읽기 전용 보강: 마스터 폼(k/색상 옵션·기본값)·고객 판정·추천 후보. 실패해도 검토 표는 뜬다.
+  //  실행 중엔 같은 세션에 GET 을 끼우지 않는다 — 실행기의 sKey GET→POST 사이에 들어가면 안 된다(Fable F2). 진입 게이트만으론 파일 로드 직후
+  //  이미 돌고 있는 enrich 가 [등록 시작] 뒤에도 남은 요청을 보낸다(Fable G1) → 진행 중 프라미스를 S.enriching 에 잡아 run() 이 기다리고,
+  //  루프의 매 요청 앞에서도 다시 본다.
   async function enrich() {
-    if (S.running) return;   // 실행 중엔 같은 세션에 GET 을 끼우지 않는다 — 실행기의 sKey GET→POST 사이에 들어가면 안 된다(Fable F2)
+    if (S.running) return;
+    const p = Promise.resolve(S.enriching).catch(() => {}).then(enrichBody);   // 겹치는 조회는 직렬화 — S.enriching 이 항상 마지막 조회를 가리키게
+    S.enriching = p; render();
+    try { await p; } finally { if (S.enriching === p) { S.enriching = null; render(); } }
+  }
+  async function enrichBody() {
     const seqs = new Set();
     S.orders.forEach((o) => o.lines.forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
     for (const seq of seqs) {
       if (S.masters[seq]) continue;
+      if (S.running) return;
       try { S.masters[seq] = await E.getWriteForm({ tradeJun: '', master: seq, client: '', clientName: '' }); } catch (e) { logLine('-', 'master_form_error', seq + ' ' + e.message); }
     }
     for (const o of S.orders) {
       if (o.customer || !o.market || !o.phone.ok) continue;
+      if (S.running) return;
       try {
         const byName = await E.searchClient('clientName', o.clientName);
         const exact = byName.find((c) => c.name === o.clientName);
         if (exact) { o.customer = { mode: 'reuse', seq: exact.seq }; continue; }
+        if (S.running) return;
         const byPhone = await E.searchClient('phone', o.phone.phone);
         o.customer = { mode: byPhone.some((c) => c.phone === o.phone.phone) ? 'new_nophone' : 'new' };
       } catch (e) { o.customer = { mode: 'unknown', error: e.message }; }
@@ -111,6 +122,7 @@
       if (l.mapping || l.suggest) continue;
       l.suggest = [];
       for (const q of C.oiSuggestQueries(l.productName).slice(0, 3)) {
+        if (S.running) return;
         try { const hits = await E.searchMaster(q); if (hits.length) { l.suggest = hits.slice(0, 10); l.suggestQuery = q; break; } } catch (_) {}
       }
     }
@@ -141,6 +153,7 @@
       const targets = S.orders.filter((o) => o.checked && o.ready);
       if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
       if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
+      if (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
       S.running = true;
     } finally { S.starting = false; }
     if (!S.running) return;
@@ -250,7 +263,7 @@
       + '<div class="oi-bar"><input type="file" id="ub-oi-file" accept=".xls,.xlsx"' + (S.running ? ' disabled' : '') + '> '
       + (nOrd ? '<span>' + esc(S.fileName) + ' · 주문장 ' + nOrd + ' · 줄 ' + nLines + ' · 실행 가능 ' + nReady + ' · 체크 ' + nChk + '</span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가 열 포함)를 선택하세요</span>')
       + '<span style="margin-left:auto"></span>'
-      + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>등록 시작</button>'
+      + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>등록 시작</button>'
       + '<button class="oi-btn" data-act="export-map">매핑표 내보내기</button><label class="oi-btn">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden' + (S.running ? ' disabled' : '') + '></label>'
       + '<button class="oi-btn" data-act="export-log">로그 JSON</button></div>'
       + (nOrd ? '<table class="oi-t"><thead><tr><th><input type="checkbox" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제"' + (nReady && nChk === nReady ? ' checked' : '') + (nReady && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th>수량</th><th>판매가</th><th>비고</th></tr></thead><tbody>'
