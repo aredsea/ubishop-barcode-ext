@@ -137,6 +137,17 @@ test('oiNormPhone: 010/0504/1xx 하이픈 재구성, 그 외 ok:false', () => {
   assert.equal(C.oiNormPhone('123').ok, false);
 });
 
+//  Terra 11R P1 (2026-09-15): 17000.5 가 검토를 통과한 뒤 17,001 로 조용히 반올림돼 화면 값과 쓰기 값이 달라졌다.
+test('oiMoney: 원 단위는 정수만 — 소수·음수·문자는 null(검토 대상)', () => {
+  assert.equal(C.oiMoney('17,000'), 17000); assert.equal(C.oiMoney(17000), 17000); assert.equal(C.oiMoney(' 17000 '), 17000);
+  assert.equal(C.oiMoney('17000.5'), null); assert.equal(C.oiMoney(17000.5), null); assert.equal(C.oiMoney('17000.0'), null);
+  assert.equal(C.oiMoney('0'), null); assert.equal(C.oiMoney('-5'), null); assert.equal(C.oiMoney('abc'), null); assert.equal(C.oiMoney(''), null);
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'], ['쿠팡', '1', 'A', '', 17000.5, 100, '홍길동', '010-1234-5678']];
+  const l = C.oiParseRows(rows).lines[0];
+  assert.equal(l.price, null);
+  assert.ok(C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).includes('판매가 없음'));
+});
+
 test('oiClientName / oiMarket / oiRemark', () => {
   assert.equal(C.oiClientName('아자차', '4492', '쿠'), '아자차4492/쿠');
   assert.equal(C.oiClientName(' 가*나 ', '0399', 'G'), '가*나0399/G');

@@ -67,12 +67,13 @@
   }
 
   //  '17,000' · 17000 · ' 17000 ' → 17000. 비었거나 숫자가 아니거나 0 이하면 null.
+  //  원 단위는 **정수만** — 소수(17000.5)를 받아 반올림하면 화면 값과 서버에 쓰는 값이 달라진다(Terra 11R P1).
   function oiMoney(v) {
     if (v == null) return null;
     const s = String(v).replace(/[,\s원]/g, '');
-    if (!/^\d+(?:\.\d+)?$/.test(s)) return null;
+    if (!/^\d+$/.test(s)) return null;
     const n = Number(s);
-    return n > 0 ? n : null;
+    return n > 0 && Number.isSafeInteger(n) ? n : null;
   }
   function oiComma(n) { return String(Math.round(Number(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 
