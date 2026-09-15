@@ -54,8 +54,8 @@ test('oiParseRows/oiGroupOrders: 주문번호가 빈 행은 검토 대상이 되
   assert.equal(r.lines.length, 3);
   const g = C.oiGroupOrders(r.lines);
   assert.equal(g.length, 3, '주문번호 없는 행끼리 합쳐지면 안 된다');
-  r.lines.slice(0, 2).forEach((l) => assert.ok(C.oiLineIssues(l, { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }).includes('주문번호 없음')));
-  assert.ok(C.oiLineIssues(r.lines[2], { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }).some((s) => s.startsWith('판매처 미등록')));
+  r.lines.slice(0, 2).forEach((l) => assert.ok(C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).includes('주문번호 없음')));
+  assert.ok(C.oiLineIssues(r.lines[2], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).some((s) => s.startsWith('판매처 미등록')));
 });
 
 //  Terra 4R P1 (2026-09-15): 같은 주문번호에 수령자/휴대폰이 다른 행이 첫 행 고객으로 합쳐졌다.
@@ -67,7 +67,7 @@ test('oiGroupOrders: 같은 주문장 안에서 수령자나 휴대폰이 첫 �
     ['쿠팡', 'O1', 'D', '', 4000, 400, '홍길동', '010-9999-0000']];
   const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
   assert.equal(g.length, 1);
-  const iss = (l) => C.oiLineIssues(l, { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') });
+  const iss = (l) => C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
   assert.deepEqual(iss(g[0].lines[0]), []); assert.deepEqual(iss(g[0].lines[1]), []);
   assert.ok(iss(g[0].lines[2]).some((s) => s.startsWith('수령자 불일치')));
   assert.ok(iss(g[0].lines[3]).some((s) => s.startsWith('수령자 불일치')));
@@ -77,8 +77,8 @@ test('oiGroupOrders: 같은 주문장 안에서 수령자나 휴대폰이 첫 �
 test('oiLineIssues: optOverride 면 미해석 토큰 이슈를 내지 않는다', () => {
   const line = C.oiParseRows(ROWS_B).lines[0];
   const parsed = C.oiParseOption('[14K-로즈골드-3푼-45cm]');
-  assert.ok(C.oiLineIssues(line, { mapping: { entry: { code: 'X' } }, parsed }).some((s) => s.startsWith('옵션 해석 불가')));
-  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { code: 'X' } }, parsed, optOverride: true }), []);
+  assert.ok(C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed }).some((s) => s.startsWith('옵션 해석 불가')));
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed, optOverride: true }), []);
 });
 
 //  Terra 4R P2 (2026-09-15): 코드표 밖 판매처를 세션에서 보정할 길이 없었다(스펙 §2.3 약속 항목).
@@ -91,7 +91,7 @@ test('oiApplyMarket: 미등록 판매처에 세션 한정 접미·마켓을 넣�
   assert.deepEqual(g[0].market, { name: '11번가', suffix: '십', clientJob: '12', sessionOnly: true });
   assert.equal(g[0].clientName, '홍길동5678/십');
   assert.equal(g[0].lines[0].market.clientJob, '12');
-  assert.deepEqual(C.oiLineIssues(g[0].lines[0], { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }), []);
+  assert.deepEqual(C.oiLineIssues(g[0].lines[0], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }), []);
   assert.equal(C.oiApplyMarket(g[0], '', '12'), false, '접미가 비면 적용하지 않는다');
 });
 
@@ -198,15 +198,15 @@ test('oiSuggestQueries: 괄호 안 우선 → 범주어 제거·공백 제거 �
 test('oiLineIssues: 미매칭·옵션 미해석·판매처 미등록·판매가 없음', () => {
   const line = C.oiParseRows(ROWS_B).lines[0];
   assert.deepEqual(C.oiLineIssues(line, { mapping: null, parsed: C.oiParseOption(line.optionText) }), ['상품 미매칭']);
-  const ok = C.oiLineIssues(line, { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption(line.optionText) });
+  const ok = C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption(line.optionText) });
   assert.deepEqual(ok, []);
   const bad = Object.assign({}, line, { market: null, price: null });
-  const issues = C.oiLineIssues(bad, { mapping: { entry: {} }, parsed: C.oiParseOption('[3푼]') });
+  const issues = C.oiLineIssues(bad, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('[3푼]') });
   assert.ok(issues.some((s) => s.startsWith('판매처 미등록')));
   assert.ok(issues.includes('판매가 없음'));
   assert.ok(issues.some((s) => s.startsWith('옵션 해석 불가: 3푼')));
   const form = { kOpts: [{ value: '5', text: '925' }], colorOpts: [{ value: 'WG' }], defaults: { color: '' } };
-  const kIssue = C.oiLineIssues(line, { mapping: { entry: { code: 'F-RF-I-WG-PA-00F6' } }, parsed: C.oiParseOption('[14K-옐로우골드-12호]'), form });
+  const kIssue = C.oiLineIssues(line, { mapping: { entry: { seq: '7083', code: 'F-RF-I-WG-PA-00F6' } }, parsed: C.oiParseOption('[14K-옐로우골드-12호]'), form });
   assert.ok(kIssue.some((s) => s.startsWith('품위 옵션 없음: 14')));
   assert.ok(kIssue.some((s) => s.startsWith('색상 없음: YG')));
 });
