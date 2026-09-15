@@ -157,7 +157,7 @@
       jobs = targets.map(toRunOrder);                          // confirm 한 집합을 그대로 실행한다 — 조회 대기 뒤 다시 거르지 않는다(Fable F3 Nit)
       while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
       S.running = true;
-    } finally { S.starting = false; }
+    } finally { S.starting = false; if (!S.running) render(); }   // 조기 return(취소·대상 없음)이면 시작 대기 중 삼킨 체크박스 클릭의 표시를 모델과 다시 맞춘다(Fable F4 Nit)
     if (!S.running) return;
     await runTargets(jobs);
   }
