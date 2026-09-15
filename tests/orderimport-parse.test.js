@@ -107,6 +107,18 @@ test('oiLineIssues: 매핑 항목에 seq·code 가 없으면 매핑 불완전으
   assert.deepEqual(C.oiValidMapEntry({ seq: 7083, code: 'F-RF-I-WG-PA-00F6' }), false, 'seq 는 문자열');
 });
 
+//  Terra 9R P1 (2026-09-15): 주문폼 목록은 기본 pageSize 20 이라 21줄부터 행 수 대조가 깨진다 → 쓰기 전에 막는다.
+test('oiGroupOrders: 20줄을 넘는 주문장은 모든 줄에 "줄 수 초과" 이슈', () => {
+  const hdr = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
+  const mk = (n) => [hdr].concat(Array.from({ length: n }, (_, i) => ['쿠팡', 'BIG', 'P' + i, '', 1000, 100, '홍길동', '010-1234-5678']));
+  const ok = C.oiGroupOrders(C.oiParseRows(mk(20)).lines);
+  assert.deepEqual(C.oiLineIssues(ok[0].lines[19], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }), []);
+  const big = C.oiGroupOrders(C.oiParseRows(mk(21)).lines);
+  assert.equal(big[0].lines.length, 21);
+  big[0].lines.forEach((l) => assert.ok(C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).some((s) => s.startsWith('줄 수 초과'))));
+  assert.equal(C.OI_MAX_LINES, 20);
+});
+
 test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검토 대상)', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰', '수량'],
     ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-0000-5678', '2']];

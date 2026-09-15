@@ -214,8 +214,12 @@
       ln.groupMismatch = !!(o.lines.length && (ln.buyer !== o.buyer || (ln.phone && ln.phone.phone) !== (o.phone && o.phone.phone)));
       o.lines.push(ln);
     });
-    return [...map.values()];
+    const orders = [...map.values()];
+    //  주문폼 하단 목록은 기본 pageSize 20 — 21줄부터 응답 목록이 잘려 행 수 대조가 깨진다(Terra 9R P1). 쓰기 전에 막는다.
+    orders.forEach((o) => { if (o.lines.length > OI_MAX_LINES) o.lines.forEach((l) => { l.tooMany = o.lines.length; }); });
+    return orders;
   }
+  const OI_MAX_LINES = 20;
 
   //  코드표 밖 판매처를 **이 세션에서만** 보정(스펙 §2.3). 표에 저장하지 않는다. 접미가 비면 적용하지 않는다.
   function oiApplyMarket(order, suffix, clientJob) {
@@ -242,6 +246,7 @@
     if (!line.market) issues.push('판매처 미등록: ' + line.seller);
     if (!line.orderNo) issues.push('주문번호 없음');
     if (line.groupMismatch) issues.push('수령자 불일치: 같은 주문번호의 첫 줄과 수령자/휴대폰이 다름');
+    if (line.tooMany) issues.push('줄 수 초과: 주문장 ' + line.tooMany + '줄 (최대 ' + OI_MAX_LINES + ') — 유비샵에서 나눠 넣으세요');
     if (!line.phone || !line.phone.ok) issues.push('휴대폰 형식: ' + (line.phone ? line.phone.raw : ''));
     if (!line.buyer) issues.push('수령자 없음');
     if (line.price == null) issues.push('판매가 없음');
@@ -704,7 +709,7 @@
   }
 
   const api = {
-    MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES,
+    MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiLineIssues,
