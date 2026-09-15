@@ -77,7 +77,7 @@ test('skin.js: 기본값 ubOrderImport:true, 주문 화면 판별, 섹션 버튼
 
 test('erp 어댑터·UI·브리지가 기대한 이름을 노출한다', () => {
   const erp = read('src/orderimport-erp.js');
-  assert.ok(erp.includes('globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums };'));
+  assert.ok(erp.includes('globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums, listJunRows };'));
   const ui = read('src/orderimport.js');
   assert.ok(ui.includes("closest('#ub-oi-open')"), 'UI 는 사이드바 버튼을 문서 위임으로 받는다');
   assert.ok(ui.includes("type: 'ubOiInjectXls'"));

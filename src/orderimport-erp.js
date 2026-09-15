@@ -95,11 +95,15 @@
     const r = await post(url, pairs);
     return C.oiSubmitResult(r.url);
   }
-  async function findJunNums(orderSeqs) {
+  //  주문전표 목록(오늘 기본 범위, 최대 100행). 열 위치는 core 가 헤더 이름으로 찾는다.
+  async function listJunRows() {
     const r = await req('/jun/orderitem/orderItemList.do?tcode=order_item&pageSize=100&searchSortType=seq');
+    return C.oiJunListRows(r.html);
+  }
+  async function findJunNums(orderSeqs) {
     const want = new Set(orderSeqs.map(String));
-    return C.oiJunListRows(r.html).filter((x) => want.has(x.orderSeq));
+    return (await listJunRows()).filter((x) => want.has(x.orderSeq));
   }
 
-  globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums };
+  globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums, listJunRows };
 })();

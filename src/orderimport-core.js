@@ -555,13 +555,9 @@
       //  🔴 완료 POST 가 성공한 뒤의 실패는 되돌리지 않는다 — 이미 주문장이 확정됐으므로 그 줄을 지우면 안 된다.
       //  (Terra 1R P1 2026-09-15: 완료 후 확인 GET 타임아웃이 catch 로 들어와 완료된 줄에 deleteLines 를 걸 뻔했다)
       if (res.completing) { res.status = 'fatal'; res.reason = 'complete_unverified:' + reason; return res; }
-      //  줄 POST 의 결과를 모르는 상태(응답 유실)면 무엇이 들어갔는지 모르므로 지우지 않는다 — 서버를 보고 판단(Terra 2R P1).
-      if (res.lineUnknown) {
-        let st = null;
-        try { st = await erp.state(); } catch (e) { res.status = 'fatal'; res.reason = 'line_unverified:' + reason + ' (state ' + String(e && e.message || e) + ')'; return res; }
-        if (st.tradeJun || st.rows > 0) { res.status = 'fatal'; res.reason = 'line_unverified:' + reason; return res; }
-        res.status = 'skipped'; res.reason = 'line_exception:' + reason; return res;   // 서버에 아무것도 없다 — 되돌릴 것도 없다
-      }
+      //  줄 POST 의 결과를 모르는 상태(응답 유실)면 무엇이 들어갔는지 모르므로 지우지도, 계속하지도 않는다(Terra 2R·3R P1).
+      //  당장 state() 가 비어 보여도 이 ERP 는 느려서 **나중에** 커밋될 수 있고, 그러면 다음 주문장에 섞인다 → 무조건 fatal.
+      if (res.lineUnknown) { res.status = 'fatal'; res.reason = 'line_unverified:' + reason; return res; }
       if (res.idxValues.length) {
         //  되돌리기 통신 자체가 죽어도 결과에 fatal 로 남긴다 — 여기서 던지면 oiRunAll 까지 reject 돼 상태가 사라진다(Terra 1R P1).
         try {
@@ -635,6 +631,16 @@
       const st2 = await erp.state();
       if (st2.tradeJun || st2.rows > 0) { res.status = 'fatal'; res.reason = 'session_not_clear'; return res; }
       try { res.junNums = await erp.findJunNums(res.orderSeqs.slice()); } catch (e) { res.junNums = []; log('junnum_error', String(e && e.message || e)); }
+      //  사후 검출(Terra 3R P1 부분 채택): 최종 대조 ~ 완료 POST 사이에 끼어든 남의 줄은 서버 잠금이 없어 막을 수 없다.
+      //  대신 완료된 관리번호에 내 orderSeq 가 아닌 줄이 있으면 즉시 fatal 로 알린다(사람이 그 전표를 취소·재등록).
+      if (res.junNums.length && typeof erp.listJunRows === 'function') {
+        try {
+          const mine = new Set(res.orderSeqs.map(String));
+          const juns = new Set(res.junNums.map((j) => j.junNum).filter(Boolean));
+          const foreign = (await erp.listJunRows()).filter((r) => juns.has(r.junNum) && !mine.has(String(r.orderSeq)));
+          if (foreign.length) { res.status = 'fatal'; res.reason = 'foreign_line_completed:' + [...juns].join(',') + ' (' + foreign.map((r) => r.orderSeq).join(',') + ')'; log('foreign_line_completed', foreign); return res; }
+        } catch (e) { log('foreign_check_error', String(e && e.message || e)); }
+      }
       res.status = 'done'; return res;
     } catch (e) {
       return await fail('skipped', 'exception:' + String(e && e.message || e));

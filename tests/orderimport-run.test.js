@@ -52,7 +52,8 @@ function makeErp(opts) {
     async getForm10(p) { calls.push(['getForm10', p.tradeJun]); return { values: form10Values({ tradeJun: srv.tradeJun, client: p.client }), missing: [], rows: srv.rows.slice() }; },
     async postComplete(fields) { calls.push(['postComplete', Object.fromEntries(fields)]); if (opts.completeFails) return { ok: false, msg: '완료 실패' }; srv.tradeJun = ''; srv.rows = []; return { ok: true, msg: '' }; },
     async deleteLines(tradeJun, client, clientName, idxValues) { calls.push(['deleteLines', tradeJun, idxValues.slice()]); if (opts.deleteFails) return { ok: false, msg: 'x' }; const seqs = idxValues.map((v) => v.split(',')[0]); srv.rows = srv.rows.filter((r) => !seqs.includes(r.orderSeq)); if (!srv.rows.length) srv.tradeJun = ''; return { ok: true, msg: '' }; },
-    async findJunNums(orderSeqs) { calls.push(['findJunNums', orderSeqs.slice()]); return orderSeqs.map((s) => ({ orderSeq: s, junNum: '0000002YF5', status: '주문완료' })); }
+    async findJunNums(orderSeqs) { calls.push(['findJunNums', orderSeqs.slice()]); return orderSeqs.map((s) => ({ orderSeq: s, junNum: '0000002YF5', status: '주문완료' })); },
+    async listJunRows() { calls.push(['listJunRows']); return []; }   // 기본: 목록에 다른 줄 없음(테스트가 필요하면 덮어쓴다)
   };
 }
 const hooks = { today: () => new Date(2026, 8, 14), log() {} };
@@ -208,12 +209,31 @@ test('postLine 이 던졌는데 서버에 줄이 남아 있으면 삭제 없이 
   assert.equal(rs[1].status, 'blocked');
 });
 
-test('postLine 이 던졌고 서버에 아무것도 없으면 skipped(다음 주문장 계속)', async () => {
+//  Terra 3R P1 (2026-09-15): 응답 유실 직후 state() 가 비어 보여도 서버가 **나중에** 줄을 커밋할 수 있다(느린 ERP) → 줄 POST 예외는 무조건 fatal.
+test('postLine 이 던지면 서버가 비어 보여도 fatal(line_unverified) — 지연 커밋이 다음 주문장에 섞이는 것을 막는다', async () => {
   const erp = makeErp();
-  erp.postLine = async () => { erp.calls.push(['postLine']); throw new Error('connection reset'); };   // 서버에 줄이 안 생김
+  erp.postLine = async () => { erp.calls.push(['postLine']); throw new Error('connection reset'); };   // 당장은 서버에 줄이 안 보임
   const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
-  assert.equal(rs[0].status, 'skipped'); assert.match(rs[0].reason, /^line_exception:/);
-  assert.notEqual(rs[1].status, 'blocked');
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^line_unverified:/);
+  assert.ok(!names(erp).includes('deleteLines'));
+  assert.equal(rs[1].status, 'blocked');
+});
+
+//  Terra 3R P1 부분 채택 (2026-09-15): 최종 대조 ~ 완료 POST 사이에 끼어든 남의 줄은 막을 수 없지만(서버 잠금 없음), 완료 직후 검출해 fatal 로 알린다.
+test('완료된 관리번호에 내 orderSeq 가 아닌 줄이 섞여 있으면 fatal(foreign_line_completed)', async () => {
+  const erp = makeErp();
+  erp.listJunRows = async () => [{ orderSeq: '389461', junNum: '0000002YF5', title: 'mine', status: '주문완료' }, { orderSeq: '389462', junNum: '0000002YF5', title: 'mine', status: '주문완료' }, { orderSeq: '999999', junNum: '0000002YF5', title: 'foreign', status: '주문완료' }];
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^foreign_line_completed:0000002YF5/);
+  assert.deepEqual(rs[0].junNums.map((j) => j.junNum), ['0000002YF5', '0000002YF5'], '관리번호는 그대로 기록(사람이 전표를 취소할 근거)');
+  assert.equal(rs[1].status, 'blocked');
+});
+
+test('완료된 관리번호의 줄이 전부 내 것이면 done', async () => {
+  const erp = makeErp();
+  erp.listJunRows = async () => [{ orderSeq: '389461', junNum: '0000002YF5', title: 'mine', status: '주문완료' }, { orderSeq: '389462', junNum: '0000002YF5', title: 'mine', status: '주문완료' }, { orderSeq: '777', junNum: '0000002YF4', title: 'other order', status: '주문완료' }];
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'done');
 });
 
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {

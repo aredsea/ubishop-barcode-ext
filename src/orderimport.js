@@ -127,6 +127,8 @@
   }
   async function run() {
     if (S.running) return;
+    await loadState();                                       // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다(Terra 3R P2) — 실행 직전에 다시 읽는다
+    if (!S.enabled) { alert('[유비샵 스킨모드]·[주문 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
     const targets = S.orders.filter((o) => o.checked && o.ready);
     if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
     if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
@@ -222,7 +224,7 @@
       + '<div class="oi-bar"><input type="file" id="ub-oi-file" accept=".xls,.xlsx"' + (S.running ? ' disabled' : '') + '> '
       + (nOrd ? '<span>' + esc(S.fileName) + ' · 주문장 ' + nOrd + ' · 줄 ' + nLines + ' · 실행 가능 ' + nReady + ' · 체크 ' + nChk + '</span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가 열 포함)를 선택하세요</span>')
       + '<span style="margin-left:auto"></span>'
-      + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running ? '' : ' disabled') + '>등록 시작</button>'
+      + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>등록 시작</button>'
       + '<button class="oi-btn" data-act="export-map">매핑표 내보내기</button><label class="oi-btn">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden></label>'
       + '<button class="oi-btn" data-act="export-log">로그 JSON</button></div>'
       + (nOrd ? '<table class="oi-t"><thead><tr><th><input type="checkbox" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제"' + (nReady && nChk === nReady ? ' checked' : '') + (nReady && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th>수량</th><th>판매가</th><th>비고</th></tr></thead><tbody>'
@@ -321,7 +323,7 @@
   }, true);
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
-    if (ch.ubSkin || ch.ubOrderImport) loadState();
+    if (ch.ubSkin || ch.ubOrderImport) loadState().then(() => { if (!S.running) render(); });   // 열린 패널의 실행 버튼도 즉시 잠근다
     if (ch[KEY_MAP] && !S.running) { S.map = ch[KEY_MAP].newValue || {}; S.orders.forEach(refreshOrder); render(); }
   });
   loadState();
