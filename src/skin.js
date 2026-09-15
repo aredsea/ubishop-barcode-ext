@@ -1294,6 +1294,16 @@
       return { ok: true };
     } catch (e) { rotLog('반품확인 실패', e); return { ok: false, msg: (e && e.message) || String(e) }; }
   }
+  // 1단계(본사반품확인) 결과 판정 — 순수. 서버가 "가능한 상태가 아닙니다" 로 거절한 건은 이미 본사반품확인이
+  //  됐거나 애초에 대상이 아닌 건이다. 어느 쪽이든 회전입고를 서버가 다시 거른다(사장님 확인 2026-09-15)고 해서
+  //  그 문구 **하나만** 통과시킨다(스펙 §1). 통신·sKey 추출 실패·다른 문구는 지금처럼 중단 — 문구가 바뀌면
+  //  자동화가 예전처럼 멈추는 쪽으로 무너진다(fail-closed).
+  function rotStep1Outcome(res) {
+    if (res && res.ok) return { proceed: true, note: '' };
+    const msg = String((res && res.msg) || '');
+    if (/가능한 상태가 아닙니다/.test(msg)) return { proceed: true, note: '본사반품확인 건너뜀(이미 확인됐거나 대상 아님)' };
+    return { proceed: false, note: msg || '반품 신청된 건인지 확인' };
+  }
   let rotBusy = false;
   async function rotateRun(barcode, shop, setStatus) {
     barcode = (barcode || '').trim();
@@ -1301,9 +1311,9 @@
     if (rotBusy) return; rotBusy = true;
     try {
       setStatus('본사반품확인 처리 중…', 'go');
-      const res = await confirmOpdelivedReturn(barcode);
-      if (!res.ok) { setStatus('본사반품확인 실패: ' + (res.msg || '반품 신청된 건인지 확인'), 'err'); return; }
-      setStatus('회전입고 실행 중…', 'go');
+      const step1 = rotStep1Outcome(await confirmOpdelivedReturn(barcode));
+      if (!step1.proceed) { setStatus('본사반품확인 실패: ' + step1.note, 'err'); return; }
+      setStatus((step1.note ? step1.note + ' → ' : '') + '회전입고 실행 중…', 'go');
       const f = document.forms['form1'];
       if (!f || !f.barcode) { setStatus('회전입고 폼(form1)을 찾지 못함', 'err'); return; }
       if (f.tmpShop) f.tmpShop.value = shop;
