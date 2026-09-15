@@ -95,6 +95,7 @@
       const cell = (k) => (k in hm.idx) ? String(row[hm.idx[k]] == null ? '' : row[hm.idx[k]]).trim() : '';
       const seller = cell('seller'), orderNo = cell('orderNo');
       if (!seller && !orderNo) return;                      // 빈 행·'합계' 행(판매처·주문번호가 없다)
+      //  주문번호만 빈 행은 버리지도 합치지도 않는다 — 검토 표에 '주문번호 없음' 으로 올려 사람이 보게 한다(Terra 2R P2).
       const qtyRaw = cell('qty');
       lines.push({
         row: i + 2,                                          // 엑셀 행 번호(헤더=1)
@@ -195,7 +196,8 @@
   function oiGroupOrders(lines) {
     const map = new Map();
     (lines || []).forEach((ln) => {
-      const key = ln.seller + '|' + ln.orderNo;
+      //  주문번호가 없으면 행마다 따로 묶는다(같은 판매처의 빈 주문번호끼리 한 주문장으로 합쳐지면 안 된다 — Terra 2R P2).
+      const key = ln.orderNo ? ln.seller + '|' + ln.orderNo : ln.seller + '|(row ' + ln.row + ')';
       if (!map.has(key)) {
         map.set(key, {
           key, seller: ln.seller, orderNo: ln.orderNo, market: ln.market, buyer: ln.buyer, phone: ln.phone,
@@ -221,6 +223,7 @@
   function oiLineIssues(line, resolved) {
     const issues = [];
     if (!line.market) issues.push('판매처 미등록: ' + line.seller);
+    if (!line.orderNo) issues.push('주문번호 없음');
     if (!line.phone || !line.phone.ok) issues.push('휴대폰 형식: ' + (line.phone ? line.phone.raw : ''));
     if (!line.buyer) issues.push('수령자 없음');
     if (line.price == null) issues.push('판매가 없음');
@@ -546,12 +549,19 @@
   //  hooks: { today():Date, log(key, step, info) }
   async function oiRunOrder(order, erp, hooks) {
     const log = (step, info) => { try { hooks && hooks.log && hooks.log(order.key, step, info); } catch (_) {} };
-    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0, completed: false };
+    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0, completed: false, completing: false, lineUnknown: false };
     const fail = async (status, reason) => {
       res.reason = reason; log('fail', reason);
       //  🔴 완료 POST 가 성공한 뒤의 실패는 되돌리지 않는다 — 이미 주문장이 확정됐으므로 그 줄을 지우면 안 된다.
       //  (Terra 1R P1 2026-09-15: 완료 후 확인 GET 타임아웃이 catch 로 들어와 완료된 줄에 deleteLines 를 걸 뻔했다)
-      if (res.completed) { res.status = 'fatal'; res.reason = 'complete_unverified:' + reason; return res; }
+      if (res.completing) { res.status = 'fatal'; res.reason = 'complete_unverified:' + reason; return res; }
+      //  줄 POST 의 결과를 모르는 상태(응답 유실)면 무엇이 들어갔는지 모르므로 지우지 않는다 — 서버를 보고 판단(Terra 2R P1).
+      if (res.lineUnknown) {
+        let st = null;
+        try { st = await erp.state(); } catch (e) { res.status = 'fatal'; res.reason = 'line_unverified:' + reason + ' (state ' + String(e && e.message || e) + ')'; return res; }
+        if (st.tradeJun || st.rows > 0) { res.status = 'fatal'; res.reason = 'line_unverified:' + reason; return res; }
+        res.status = 'skipped'; res.reason = 'line_exception:' + reason; return res;   // 서버에 아무것도 없다 — 되돌릴 것도 없다
+      }
       if (res.idxValues.length) {
         //  되돌리기 통신 자체가 죽어도 결과에 fatal 로 남긴다 — 여기서 던지면 oiRunAll 까지 reject 돼 상태가 사라진다(Terra 1R P1).
         try {
@@ -595,7 +605,9 @@
         if (!chk.ok) return await fail('skipped', 'mismatch:' + chk.reason);
         const built = oiLinePayload(form, ln.master, ln.spec);
         if (built.issues.length) return await fail('skipped', 'payload:' + built.issues.join(','));
-        const post = await erp.postLine(built.fields);
+        let post;
+        try { post = await erp.postLine(built.fields); }
+        catch (e) { res.lineUnknown = true; return await fail('skipped', 'line_post_exception:' + String(e && e.message || e)); }
         log('line', { i, ok: post.ok, msg: post.msg, tradeJun: post.tradeJun, rows: (post.rows || []).length });
         if (!post.ok) return await fail('skipped', 'line_failed:' + post.msg);
         const rows = post.rows || [];
@@ -611,9 +623,14 @@
       const fin = oiCheckFinal(f10, { client: res.client.seq, tradeJun: res.tradeJun, orderSeqs: res.orderSeqs, lines: order.lines });
       if (!fin.ok) return await fail('skipped', 'final:' + fin.reason);
       if (f10.missing && f10.missing.length) return await fail('skipped', 'form10 필드 누락: ' + f10.missing.join(','));
-      const done = await erp.postComplete(oiForm10Payload(f10.values, hooks && hooks.today ? hooks.today() : new Date()));
+      //  완료 POST 를 **보내는 순간부터** 결과를 모르는 실패는 전부 '완료 미확인' 이다 — 응답이 유실돼도 서버는 완료했을 수 있다(Terra 2R P1).
+      //  서버가 명시적으로 실패(msg)라고 답한 경우에만 되돌린다.
+      res.completing = true;
+      let done;
+      try { done = await erp.postComplete(oiForm10Payload(f10.values, hooks && hooks.today ? hooks.today() : new Date())); }
+      catch (e) { res.status = 'fatal'; res.reason = 'complete_unverified:exception:' + String(e && e.message || e); log('complete_exception', res.reason); return res; }
       log('complete', done);
-      if (!done.ok) return await fail('skipped', 'complete_failed:' + done.msg);
+      if (!done.ok) { res.completing = false; return await fail('skipped', 'complete_failed:' + done.msg); }
       res.completed = true;                                  // 이 시점부터는 어떤 실패도 되돌리지 않는다(위 fail 참조)
       const st2 = await erp.state();
       if (st2.tradeJun || st2.rows > 0) { res.status = 'fatal'; res.reason = 'session_not_clear'; return res; }

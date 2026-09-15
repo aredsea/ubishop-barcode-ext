@@ -187,6 +187,35 @@ test('oiRunAll: oiRunOrder 가 예외로 죽어도 fatal 결과를 남기고 나
   if (rs[0].status === 'fatal') assert.equal(rs[1].status, 'blocked');
 });
 
+//  Terra 2R P1 (2026-09-15): 완료 POST 가 서버에서는 처리됐는데 응답만 유실(throw)되면 completed 가 안 서서 되돌리기로 들어갔다.
+test('postComplete 가 던지면(응답 유실) 삭제하지 않고 fatal(complete_unverified), 다음 주문장 blocked', async () => {
+  const erp = makeErp();
+  erp.postComplete = async () => { erp.calls.push(['postComplete']); erp.srv.tradeJun = ''; erp.srv.rows = []; throw new Error('timeout'); };   // 서버는 완료됨
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^complete_unverified:/);
+  assert.ok(!names(erp).includes('deleteLines'));
+  assert.equal(rs[1].status, 'blocked');
+});
+
+//  Terra 2R P1 (2026-09-15): 첫 줄 POST 가 서버에 줄을 만든 뒤 응답 유실 → orderSeqs 가 비어 되돌릴 게 없다고 보고 skipped 로 계속 갔다.
+test('postLine 이 던졌는데 서버에 줄이 남아 있으면 삭제 없이 fatal(line_unverified)', async () => {
+  const erp = makeErp();
+  const origPost = erp.postLine.bind(erp);
+  erp.postLine = async (fields) => { await origPost(fields); throw new Error('connection reset'); };   // 줄은 생겼는데 응답이 죽음
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^line_unverified:/);
+  assert.ok(!names(erp).includes('deleteLines'), '무엇이 들어갔는지 모르는 줄은 지우지 않는다');
+  assert.equal(rs[1].status, 'blocked');
+});
+
+test('postLine 이 던졌고 서버에 아무것도 없으면 skipped(다음 주문장 계속)', async () => {
+  const erp = makeErp();
+  erp.postLine = async () => { erp.calls.push(['postLine']); throw new Error('connection reset'); };   // 서버에 줄이 안 생김
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'skipped'); assert.match(rs[0].reason, /^line_exception:/);
+  assert.notEqual(rs[1].status, 'blocked');
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음

@@ -44,6 +44,20 @@ test('oiParseRows: 개선 양식 9줄, 합계·빈 행 제외, 판매가·정산
   assert.deepEqual(C.oiParseRows([]).lines, []);
 });
 
+//  Terra 2R P2 (2026-09-15): 주문번호만 빈 행이 '판매처|' 키로 한 주문장에 합쳐져 실행될 수 있었다.
+test('oiParseRows/oiGroupOrders: 주문번호가 빈 행은 검토 대상이 되고 서로 묶이지 않는다', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['쿠팡', '', 'A', '', 1000, 100, '홍길동', '010-1234-5678'],
+    ['쿠팡', '', 'B', '', 2000, 200, '김철수', '010-2222-3333'],
+    ['', 'X1', 'C', '', 3000, 300, '이영희', '010-3333-4444']];
+  const r = C.oiParseRows(rows);
+  assert.equal(r.lines.length, 3);
+  const g = C.oiGroupOrders(r.lines);
+  assert.equal(g.length, 3, '주문번호 없는 행끼리 합쳐지면 안 된다');
+  r.lines.slice(0, 2).forEach((l) => assert.ok(C.oiLineIssues(l, { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }).includes('주문번호 없음')));
+  assert.ok(C.oiLineIssues(r.lines[2], { mapping: { entry: { code: 'X' } }, parsed: C.oiParseOption('') }).some((s) => s.startsWith('판매처 미등록')));
+});
+
 test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검토 대상)', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰', '수량'],
     ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-0000-5678', '2']];
