@@ -147,6 +147,46 @@ test('페이로드 문제(품위 옵션 없음): POST 없이 skipped', async () 
   assert.ok(!names(erp).includes('postLine'));
 });
 
+//  Terra 1R P1 (2026-09-15): 완료 성공 뒤 확인 GET 이 죽으면 catch 가 fail() 로 들어가 **완료된 주문장의 줄을 지우려 했다**.
+test('완료 성공 뒤 state() 가 던지면 deleteLines 를 부르지 않고 fatal(complete_unverified)', async () => {
+  const erp = makeErp();
+  const origState = erp.state.bind(erp); let n = 0;
+  erp.state = async () => { n++; if (n === 2) throw new Error('timeout'); return origState(); };   // 1=가드, 2=완료 후 확인
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /^complete_unverified:/);
+  assert.ok(!names(erp).includes('deleteLines'), '완료된 주문장에 삭제를 걸면 안 된다');
+  assert.equal(r.orderSeqs.length, 2, '넣은 줄 기록은 남긴다(사람이 전표로 확인)');
+});
+
+//  Terra 1R P1 (2026-09-15): 되돌리기 자체가 던지면 fail() 이 던져 oiRunAll 까지 reject 됐다 — 결과에 fatal 이 남지 않았다.
+test('deleteLines 가 던지면 fatal(rollback_exception) 로 끝나고 oiRunAll 은 다음 주문장을 blocked 로 남긴다', async () => {
+  const erp = makeErp({ completeFails: true });
+  erp.deleteLines = async () => { erp.calls.push(['deleteLines']); throw new Error('network'); };
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^rollback_exception:/);
+  assert.equal(rs[1].status, 'blocked');
+});
+
+test('되돌리기 뒤 확인 GET 이 던져도 fatal 로 남는다', async () => {
+  const erp = makeErp({ completeFails: true });
+  const origGet = erp.getWriteForm.bind(erp); let deleted = false;
+  const origDel = erp.deleteLines.bind(erp);
+  erp.deleteLines = async (...a) => { deleted = true; return origDel(...a); };
+  erp.getWriteForm = async (p) => { if (deleted) throw new Error('timeout'); return origGet(p); };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /^rollback_exception:/);
+});
+
+test('oiRunAll: oiRunOrder 가 예외로 죽어도 fatal 결과를 남기고 나머지를 blocked 로', async () => {
+  const erp = makeErp();
+  erp.state = async () => { throw new Error('boom'); };
+  erp.deleteLines = async () => { throw new Error('boom2'); };
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs.length, 2);
+  assert.ok(rs[0].status === 'fatal' || rs[0].status === 'skipped');
+  if (rs[0].status === 'fatal') assert.equal(rs[1].status, 'blocked');
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음

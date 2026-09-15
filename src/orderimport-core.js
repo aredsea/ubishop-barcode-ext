@@ -546,19 +546,28 @@
   //  hooks: { today():Date, log(key, step, info) }
   async function oiRunOrder(order, erp, hooks) {
     const log = (step, info) => { try { hooks && hooks.log && hooks.log(order.key, step, info); } catch (_) {} };
-    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0 };
+    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0, completed: false };
     const fail = async (status, reason) => {
       res.reason = reason; log('fail', reason);
+      //  🔴 완료 POST 가 성공한 뒤의 실패는 되돌리지 않는다 — 이미 주문장이 확정됐으므로 그 줄을 지우면 안 된다.
+      //  (Terra 1R P1 2026-09-15: 완료 후 확인 GET 타임아웃이 catch 로 들어와 완료된 줄에 deleteLines 를 걸 뻔했다)
+      if (res.completed) { res.status = 'fatal'; res.reason = 'complete_unverified:' + reason; return res; }
       if (res.idxValues.length) {
-        const del = await erp.deleteLines(res.tradeJun, res.client ? res.client.seq : '', res.client ? res.client.name : '', res.idxValues.slice());
-        log('rollback', del);
-        //  되돌린 뒤 서버 목록에서 **내 orderSeq** 가 사라졌는지 확인. 남의 줄이 남아 있으면 세션이 남의 주문장에
-        //  묶인 것이라 다음 주문장도 시작할 수 없다 → fatal(사람이 정리해야 한다).
-        const after = await erp.getWriteForm({ tradeJun: res.tradeJun, master: '', client: res.client ? res.client.seq : '', clientName: res.client ? res.client.name : '' });
-        const remain = (after.rows || []).map((r) => r.orderSeq);
-        if (!del.ok || remain.some((s) => res.orderSeqs.includes(s))) { res.status = 'fatal'; res.reason = 'rollback_failed:' + reason; return res; }
-        res.rolledBack = res.idxValues.length;
-        if (remain.length) { res.status = 'fatal'; res.reason = 'foreign_rows_remain:' + reason; return res; }
+        //  되돌리기 통신 자체가 죽어도 결과에 fatal 로 남긴다 — 여기서 던지면 oiRunAll 까지 reject 돼 상태가 사라진다(Terra 1R P1).
+        try {
+          const del = await erp.deleteLines(res.tradeJun, res.client ? res.client.seq : '', res.client ? res.client.name : '', res.idxValues.slice());
+          log('rollback', del);
+          //  되돌린 뒤 서버 목록에서 **내 orderSeq** 가 사라졌는지 확인. 남의 줄이 남아 있으면 세션이 남의 주문장에
+          //  묶인 것이라 다음 주문장도 시작할 수 없다 → fatal(사람이 정리해야 한다).
+          const after = await erp.getWriteForm({ tradeJun: res.tradeJun, master: '', client: res.client ? res.client.seq : '', clientName: res.client ? res.client.name : '' });
+          const remain = (after.rows || []).map((r) => r.orderSeq);
+          if (!del.ok || remain.some((s) => res.orderSeqs.includes(s))) { res.status = 'fatal'; res.reason = 'rollback_failed:' + reason; return res; }
+          res.rolledBack = res.idxValues.length;
+          if (remain.length) { res.status = 'fatal'; res.reason = 'foreign_rows_remain:' + reason; return res; }
+        } catch (e) {
+          log('rollback_exception', String(e && e.message || e));
+          res.status = 'fatal'; res.reason = 'rollback_exception:' + String(e && e.message || e) + ' (' + reason + ')'; return res;
+        }
       }
       res.status = status; return res;
     };
@@ -605,6 +614,7 @@
       const done = await erp.postComplete(oiForm10Payload(f10.values, hooks && hooks.today ? hooks.today() : new Date()));
       log('complete', done);
       if (!done.ok) return await fail('skipped', 'complete_failed:' + done.msg);
+      res.completed = true;                                  // 이 시점부터는 어떤 실패도 되돌리지 않는다(위 fail 참조)
       const st2 = await erp.state();
       if (st2.tradeJun || st2.rows > 0) { res.status = 'fatal'; res.reason = 'session_not_clear'; return res; }
       try { res.junNums = await erp.findJunNums(res.orderSeqs.slice()); } catch (e) { res.junNums = []; log('junnum_error', String(e && e.message || e)); }
@@ -620,7 +630,9 @@
     let halted = false;
     for (const o of orders) {
       if (halted) { results.push({ key: o.key, status: 'blocked', reason: 'halted' }); continue; }
-      const r = await oiRunOrder(o, erp, hooks);
+      let r;
+      try { r = await oiRunOrder(o, erp, hooks); }
+      catch (e) { r = { key: o.key, status: 'fatal', reason: 'runner_exception:' + String(e && e.message || e), client: null, tradeJun: '', orderSeqs: [], idxValues: [], junNums: [], rolledBack: 0, completed: false }; }
       results.push(r);
       try { hooks && hooks.onOrder && hooks.onOrder(r); } catch (_) {}
       if (r.status === 'fatal') halted = true;
