@@ -287,6 +287,40 @@ test('되돌리기 직전 세션의 열린 주문장이 내 tradeJun 이 아니�
   assert.ok(!names(erp).includes('deleteLines'));
 });
 
+//  Terra 10R P1 (2026-09-15): 새 줄이 정확히 하나인데 코드만 다르면(매핑 seq 가 엉뚱한 상품) 그 줄은 내 것이 확실하다 → 되돌리고 skipped.
+test('새 줄이 하나인데 코드만 다르면(잘못된 매핑) 그 줄을 되돌리고 skipped, 다음 주문장 계속', async () => {
+  const erp = makeErp();
+  const o = order([{ master: { seq: '7083', code: 'WRONG-CODE', name: 'x' }, spec: { k: '925', color: null, itemSize: '17', qty: 1, price: 17000, remark: '' } }]);
+  const rs = await C.oiRunAll([o, Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'skipped'); assert.match(rs[0].reason, /^code_mismatch:/);
+  const del = erp.calls.find((c) => c[0] === 'deleteLines');
+  assert.ok(del && del[2].length === 1, '그 한 줄을 삭제한다');
+  assert.equal(rs[0].rolledBack, 1);
+  assert.equal(rs[1].status, 'done');
+});
+
+//  Terra 10R P2 (2026-09-15): 되돌린 뒤 명시 GET 만 보고 plain state 를 안 봐서, 빈 tradeJun 이 세션에 남아도 skipped 로 넘어갔다.
+test('되돌린 뒤 세션에 tradeJun 이 남아 있으면 fatal(rollback_incomplete)', async () => {
+  const erp = makeErp({ lineFailsAt: 1 });
+  const origDel = erp.deleteLines.bind(erp);
+  erp.deleteLines = async (...a) => { const r = await origDel(...a); erp.srv.tradeJun = '141236'; return r; };   // 줄은 지워졌는데 주문장이 안 닫힘
+  const rs = await C.oiRunAll([order(), Object.assign(order(), { key: 'B' })], erp, hooks);
+  assert.equal(rs[0].status, 'fatal'); assert.match(rs[0].reason, /^rollback_incomplete:/);
+  assert.equal(rs[1].status, 'blocked');
+});
+
+//  Terra 10R P2 (2026-09-15): 전표 조회가 비거나 던지면 done 으로만 표시돼 관리번호 미확인이 묻혔다.
+test('전표 조회가 비거나 던지면 done 이지만 reason 에 전표 미확인 경고', async () => {
+  const erp = makeErp();
+  erp.findJunNums = async () => [];
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'done'); assert.match(r.reason, /전표 미확인/);
+  const erp2 = makeErp();
+  erp2.findJunNums = async () => { throw new Error('timeout'); };
+  const r2 = await C.oiRunOrder(order(), erp2, hooks);
+  assert.equal(r2.status, 'done'); assert.match(r2.reason, /전표 미확인/);
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음

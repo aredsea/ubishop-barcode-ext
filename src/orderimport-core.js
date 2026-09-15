@@ -610,6 +610,9 @@
           if (!del.ok || remain.some((s) => res.orderSeqs.includes(s))) { res.status = 'fatal'; res.reason = 'rollback_failed:' + reason; return res; }
           res.rolledBack = res.idxValues.length;
           if (remain.length) { res.status = 'fatal'; res.reason = 'foreign_rows_remain:' + reason; return res; }
+          //  내 줄이 사라졌어도 세션에 빈 주문장이 남아 있으면 다음 주문장을 시작할 수 없다 — 조용히 skipped 로 넘기지 않는다(Terra 10R P2).
+          const st = await erp.state();
+          if (st.tradeJun || st.rows > 0) { res.status = 'fatal'; res.reason = 'rollback_incomplete:trade ' + (st.tradeJun || '') + ' rows ' + st.rows + ' (' + reason + ')'; return res; }
         } catch (e) {
           log('rollback_exception', String(e && e.message || e));
           res.status = 'fatal'; res.reason = 'rollback_exception:' + String(e && e.message || e) + ' (' + reason + ')'; return res;
@@ -648,11 +651,18 @@
         if (!post.ok) return await fail('skipped', 'line_failed:' + post.msg);
         const rows = post.rows || [];
         const fresh = rows.filter((r) => !res.orderSeqs.includes(r.orderSeq));
-        //  POST 는 성공했는데 새 줄이 정확히 하나가 아니거나 코드가 다르면 **어느 줄이 내 것인지 모른다** → 지우지 않고 멈춘다(Terra 4R P1).
+        //  POST 는 성공했는데 새 줄이 정확히 하나가 아니면 **어느 줄이 내 것인지 모른다** → 지우지 않고 멈춘다(Terra 4R P1).
         //  (남의 줄이 직전에 끼어든 경우 — 여기서 skipped 로 넘어가면 내 줄과 남의 줄이 열린 주문장에 남는다)
-        if (rows.length !== res.orderSeqs.length + 1 || fresh.length !== 1 || fresh[0].code !== ln.master.code) {
+        if (rows.length !== res.orderSeqs.length + 1 || fresh.length !== 1) {
           res.lineUnknown = true;
           return await fail('skipped', 'rowmismatch:rows=' + rows.length + ',fresh=' + fresh.map((r) => r.orderSeq + '/' + r.code).join('|'));
+        }
+        //  새 줄이 정확히 하나인데 코드가 다르면 그 줄은 **내가 만든 줄이 확실**(매핑 seq 가 엉뚱한 상품) → 기록해 두고 일반 되돌리기(Terra 10R P1).
+        if (fresh[0].code !== ln.master.code) {
+          res.orderSeqs.push(fresh[0].orderSeq);
+          res.idxValues.push(fresh[0].orderSeq + ',' + (fresh[0].tradeJun || post.tradeJun));
+          res.tradeJun = post.tradeJun || fresh[0].tradeJun;
+          return await fail('skipped', 'code_mismatch:' + fresh[0].code + '≠' + ln.master.code);
         }
         res.orderSeqs.push(fresh[0].orderSeq);
         res.rowSnaps.push(Object.assign({}, fresh[0]));       // 등록 응답의 행 그대로 — 완료 직전 대조 기준(Terra 6R)
@@ -675,7 +685,9 @@
       res.completed = true;                                  // 이 시점부터는 어떤 실패도 되돌리지 않는다(위 fail 참조)
       const st2 = await erp.state();
       if (st2.tradeJun || st2.rows > 0) { res.status = 'fatal'; res.reason = 'session_not_clear'; return res; }
+      //  관리번호 조회 실패/0건은 '완료는 됐지만 전표 미확인' 으로 남긴다 — done 으로만 보이면 사람이 확인할 계기가 없다(Terra 10R P2).
       try { res.junNums = await erp.findJunNums(res.orderSeqs.slice()); } catch (e) { res.junNums = []; log('junnum_error', String(e && e.message || e)); }
+      if (!res.junNums.length) res.reason = '완료 응답 성공, 전표 미확인(관리번호 조회 실패) — 주문전표에서 직접 확인하세요';
       //  사후 검출(Terra 3R P1 부분 채택): 최종 대조 ~ 완료 POST 사이에 끼어든 남의 줄은 서버 잠금이 없어 막을 수 없다.
       //  대신 완료된 관리번호에 내 orderSeq 가 아닌 줄이 있으면 즉시 fatal 로 알린다(사람이 그 전표를 취소·재등록).
       if (res.junNums.length && typeof erp.listJunRows === 'function') {
