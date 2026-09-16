@@ -78,7 +78,7 @@ test('ccClassifyChecked: 제외 사유 매핑 — 발주주문 입고완료·출
   ]);
   assert.deepEqual(r.targets, []);
   assert.deepEqual(r.excluded.map(x => x.reason), [
-    '입고완료(발주주문) — 배정 팝업이 없어 수동', '입고완료(발주주문) — 배정 팝업이 없어 수동', '입고완료(발주주문) — 배정 팝업이 없어 수동',
+    '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동', '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동', '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동',
     '출고확인(매장재고) — 매장이 입고 확인한 건, 수동', '취소 불가 상태(출고오확인)', '취소 불가 상태(판매완료)', '취소 불가 상태(발주완료)',
     '상태 불명', '상태 불명'
   ]);
@@ -190,7 +190,7 @@ test('ccNextStep: OS- 는 standby-off(sKey 필수)', () => {
 });
 test('ccNextStep: I-- 는 링크 바코드 == 상태 셀 바코드 일 때만 unassign, 링크 없으면 발주주문', () => {
   assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: CS('101', '2608ET') })), { kind: 'write', step: 'unassign', label: '선택취소(2608ET)', want: 'OS-', barcode: '2608ET' });
-  assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: '<tr><td>입고완료 (2608ET)</td></tr>' })), { kind: 'fail', reason: '입고완료(발주주문) — 배정 팝업이 없어 수동' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: '<tr><td>입고완료 (2608ET)</td></tr>' })), { kind: 'fail', reason: '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동' });
   assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: CS('101', '2608EU') })), { kind: 'fail', reason: '배정 바코드 불일치(링크 2608EU / 상태 2608ET)' });
   assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '', rowHtml: CS('101', '') })), { kind: 'fail', reason: '배정 바코드 불일치(링크 없음 / 상태 없음)' });
   assert.equal(ccNextStep(ROW({ code: 'I--', sKey: null, assignedBarcode: '2608ET', rowHtml: CS('101', '2608ET') })).kind, 'write', '선택취소는 sKey 가 없어도 된다(팝업 GET 계약)');

@@ -6413,7 +6413,7 @@
       const code = r ? r.code : undefined;
       if (ccTargetStatus(code)) {
         if (code === 'I--' && !(r.cs && r.cs.has && r.cs.barcode)) {
-          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '입고완료(발주주문) — 배정 팝업이 없어 수동' });
+          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동' });
           continue;
         }
         targets.push(r); continue;
@@ -6447,7 +6447,7 @@
     }
     if (code === 'I--') {
       const args = ccRowCurrentSetting(row.rowHtml);
-      if (!args) return fail('입고완료(발주주문) — 배정 팝업이 없어 수동');
+      if (!args) return fail('입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동');
       const bc = String(row.assignedBarcode == null ? '' : row.assignedBarcode);
       if (!bc || args.barcode !== bc) return fail('배정 바코드 불일치(링크 ' + (args.barcode || '없음') + ' / 상태 ' + (bc || '없음') + ')');
       return { kind: 'write', step: 'unassign', label: '선택취소(' + bc + ')', want: 'OS-', barcode: bc };

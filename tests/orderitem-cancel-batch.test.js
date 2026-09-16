@@ -693,7 +693,7 @@ test('사슬 실패: 출고 건을 특정 못 하면 삭제 없이 failed(사유
 test('사슬 실패: 발주주문 입고완료(링크 없음)는 쓰기 없이 failed', async () => {
   const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'I--', assignedBarcode: '2609AY', link: false }] }) });
   const r = await build(deps).ccRunCancelBatch([{ orderSeq: '101', code: 'I--', orderDate: '20260916' }], () => {}, () => false);
-  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '입고완료(발주주문) — 배정 팝업이 없어 수동' }]);
+  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동' }]);
   assert.equal(deps.fetch.calls.length, 0); assert.deepEqual(deps.updates, [{ seq: '101', code: 'I--' }]);
 });
 test('사슬 실패: 링크 바코드와 상태 셀 바코드가 다르면 선택취소를 보내지 않는다', async () => {
