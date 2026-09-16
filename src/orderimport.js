@@ -100,6 +100,7 @@
   async function enrich() {
     if (S.running || S.starting) return;
     const p = Promise.resolve(S.enriching).catch(() => {}).then(enrichBody);   // 겹치는 조회는 직렬화 — S.enriching 이 항상 마지막 조회를 가리키게
+    if (!S.enriching) progInit(C.oiEnrichTotal(S.orders, S.masters));   // 시작 직후 스트립이 이전 실행의 카운터를 보이지 않게(GLM 1R P3)
     S.phase = 'enriching'; S.enriching = p; render();
     try { await p; } finally { if (S.enriching === p) { S.enriching = null; if (S.phase === 'enriching') S.phase = 'idle'; render(); } }
   }
@@ -107,7 +108,7 @@
   function progInit(tot) { S.progress = { done: 0, total: tot.total, m: [0, tot.masters], c: [0, tot.customers], s: [0, tot.suggests], key: '', label: '' }; }
   function progStep(cat) { const pr = S.progress; pr.done++; pr[cat][0]++; renderSoft(); }
   async function enrichBody() {
-    progInit(C.oiEnrichTotal(S.orders, S.masters));
+    progInit(C.oiEnrichTotal(S.orders, S.masters)); renderSoft();
     const seqs = new Set();
     S.orders.forEach((o) => o.lines.forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
     for (const seq of seqs) {
