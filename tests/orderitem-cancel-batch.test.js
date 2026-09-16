@@ -341,7 +341,7 @@ function fakeDom() {
   return { getElementById: () => null, createElement: mk, body, mk };
 }
 function buildDialog(deps) {
-  const names = ['ccShowApprovalDialog'];
+  const names = ['ccChainLabel', 'ccShowApprovalDialog'];
   // eslint-disable-next-line no-new-func
   const factory = new Function('deps',
     'let cBatchBusy = false; const CC_MODAL_ID = "ub-cc-modal";\n' +
@@ -723,4 +723,23 @@ test('사슬 중 재조회 실패(found=false): 확인 재조회가 죽으면 �
 test('단계 상한: 루프는 CC_MAX_STEPS(6) 로 막혀 있다(정상 전이로는 5회 안에 끝나 도달 불가 — 방어 상수 핀)', () => {
   const src = extractFn(SRC, 'ccRunCancelBatch');
   assert.ok(/step < CC_MAX_STEPS/.test(src) && /const CC_MAX_STEPS = 6;/.test(SRC), '상한 상수와 루프 조건');
+});
+
+// ── 승인창: 행별 사슬 표시·경고 (스펙 2026-09-16 §4.2) ───────────────────────
+test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계" 를 보여주고, 출고장 삭제·재고 반환 경고를 명시한다', () => {
+  const document = fakeDom();
+  const sb = buildDialog({ document, ccRunCancelBatch: async () => ({ success: 0, failed: [], uncertain: [], processed: 0, total: 0 }) });
+  sb.ccShowApprovalDialog({ targets: [
+      { orderSeq: '1', code: 'T--', orderDate: '20260916', cs: { has: false, barcode: '250HHL' } },
+      { orderSeq: '2', code: 'I--', orderDate: '20260916', cs: { has: true, barcode: '2608ET' } },
+      { orderSeq: '3', code: 'O--', orderDate: '20260916' }
+    ], excluded: [{ orderSeq: '4', code: 'TS-', reason: '출고확인(매장재고) — 매장이 입고 확인한 건, 수동' }], duplicate: false });
+  const card = document.body.children[0].children[0];
+  const html = card.innerHTML;
+  assert.ok(/1 — 출고완료 \(250HHL\) → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소/.test(html), html);
+  assert.ok(/2 — 입고완료 \(2608ET\) → 선택취소 · 본사확인취소 · 취소/.test(html));
+  assert.ok(/3 — 주문완료 → 취소/.test(html));
+  assert.ok(/4 — 출고확인\(매장재고\)/.test(html), '제외 사유');
+  assert.ok(/출고완료 건은 출고장 삭제, 입고완료 건은 재고 반환\(선택취소\)이 함께 실행됩니다\. 되돌릴 수 없습니다\./.test(html));
+  assert.ok(/취소된 주문서는 복구되지 않습니다\./.test(html), 'ERP 원문 경고는 그대로');
 });

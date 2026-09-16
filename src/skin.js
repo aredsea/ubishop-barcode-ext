@@ -6771,13 +6771,19 @@
       } else {
         bodyHtml = '<div class="ub-hq-sum">총 ' + total + '건 중 대상 <b>' + targets.length +
                    '건</b> / 제외 ' + excluded.length + '건</div>';
+        if (targets.length) {
+          //  행마다 현재 상태와 거칠 단계(표시 전용 — 쓰기 근거는 실행 중 재조회다, 스펙 2026-09-16 §4.2)
+          const items = targets.map(t => '<li>' + esc(t.orderSeq) + ' — ' + esc(ccChainLabel(t.code, t.cs) || t.code) + '</li>').join('');
+          bodyHtml += '<div class="ub-hq-ex"><ul>' + items + '</ul></div>';
+        }
         if (excluded.length) {
           const items = excluded.map(x => '<li>' + esc(x.orderSeq) + ' — ' + esc(x.reason) +
                         (x.code ? ' (' + esc(x.code) + ')' : '') + '</li>').join('');
           bodyHtml += '<div class="ub-hq-ex"><ul>' + items + '</ul></div>';
         }
         if (targets.length) {
-          bodyHtml += '<div class="ub-hq-warn" style="margin-top:10px">취소된 주문서는 복구되지 않습니다.</div>';
+          bodyHtml += '<div class="ub-hq-warn" style="margin-top:10px">취소된 주문서는 복구되지 않습니다.</div>' +
+                      '<div class="ub-hq-note">출고완료 건은 출고장 삭제, 입고완료 건은 재고 반환(선택취소)이 함께 실행됩니다. 되돌릴 수 없습니다.</div>';
         }
       }
       card.innerHTML =
