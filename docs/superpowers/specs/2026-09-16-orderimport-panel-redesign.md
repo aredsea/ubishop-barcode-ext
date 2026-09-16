@@ -75,13 +75,30 @@
 
 제거 후 `grep -n "ub-dark\|ubDark"` 가 `src/`·`popup/` 에서 0건이어야 한다(테스트로 고정).
 
+## 5b. 중복 주문장 사전 경고 (사장님 추가 요청 2026-09-16)
+
+"완전히 같은 주문번호와 제품이 있으면 사전에 경고해서 포함시킬지 말지 결정하게" — 지금은 장부에 있는 주문장이 '이전에 넣음' 글자만 달고 **체크된 채** 들어간다.
+
+| 항목 | 내용 |
+|---|---|
+| 상품 서명 | `oiOrderSig(order)`(core, 순수): 줄마다 `norm(상품명)\|norm(옵션)\|수량`(norm = 공백 하나로·trim·소문자)을 만들어 정렬해 `
+` 으로 이은 문자열 |
+| 판정 | `oiDupCheck(order, entry)`(core, 순수) → `{dup, kind, entry}`: 장부 항목 없음 → `dup:false` · 항목에 `sig` 가 있고 같음 → `dup:true, kind:'same'` · 다름 → `dup:false, kind:'diff'`(주문번호는 같지만 상품이 다름 — 사은품 추가처럼 정상 재등록 가능, 기존 '이전에 넣음' 안내만) · 옛 항목(`sig` 없음) → `dup:true, kind:'legacy'`(보수적) |
+| 장부 | `toRunOrder` 가 `sig` 를 실행 주문에 싣고, `oiRunOrder` 결과 `res.sig` → `oiPostRunState` 의 장부 항목(`done`·`unverified` 둘 다)에 `sig` 저장. 옛 항목은 그대로 |
+| 기본 체크 | `refreshOrder`: 처음 판정할 때(`o.checked == null`) `o.checked = o.ready && !dup`. 이후엔 사용자의 체크가 우선(실행 불가면 해제) |
+| 표시 | 중복 주문장 행에 빨간 칩 `이미 등록 2026-09-15 · 관리번호 0000002YF5 · 상품 동일`(미확인 항목이면 `이전 시도 미확인 · 사유`, legacy 면 `이미 등록(상품 대조 불가)`), 표 위 배너 "이미 등록된 것과 같은 주문장 N개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요." |
+| 일괄 체크 | 머리글 전체 체크는 **중복 주문장을 건너뛴다**(개별 체크로만 포함). 머리글 체크 상태도 중복을 뺀 실행 가능 주문장 기준 |
+| 최종 확인 | [등록 시작] 확인창에 `⚠ 이미 등록된 것과 같은 주문장 N개가 포함돼 있습니다(중복 등록).` 한 줄 추가(N>0 일 때) |
+| 범위 밖 | 서버 쪽 중복 조회(주문전표 검색) — 장부는 PC 로컬이라 다른 PC 에서 넣은 것은 모른다(기존 설계 Q7 그대로) |
+
 ## 6. 테스트
 
 - `tests/orderimport-wiring.test.js` 에 추가: 패널 CSS 에 `font: inherit` 규칙(input/select/button) · 패널 마크업 문자열에 이모지 없음(`/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u` 0건) · `@media (prefers-reduced-motion: reduce)` 규칙 · 진행 스트립이 `S.phase` 별로 렌더되는 문자열 대조 · `render()` 가 여전히 실행 중 컨트롤 `disabled` 문자열을 유지(기존 테스트 그대로 통과).
 - `tests/orderimport-progress.test.js`(신규, 순수): 진행 문구 매핑 함수 `oiStepLabel(step, info)`(core 로 뺀다) 와 enrich total 계산 `oiEnrichTotal(orders, masters)` — 스텁 데이터로 4~5 케이스.
 - 다크모드 제거: `tests/phase5-switch-ui.test.js` 또는 신규 `tests/no-darkmode.test.js` — `src/*.js`·`popup/*` 에 `ub-dark|ubDark` 0건, popup 에 `id="dark"` 없음.
+- 중복 경고(§5b): core 테스트 `oiOrderSig`(순서·공백·대소문자 무관, 수량 반영)·`oiDupCheck`(없음/same/diff/legacy) · `oiPostRunState` 가 `r.sig` 를 장부에 싣는다 · UI 배선: `refreshOrder` 의 기본 체크 규칙, 전체 체크가 중복을 건너뜀, 확인창 문구.
 - 렌더 확인(§28 게이트): 정적 목업 스크린샷(사장님 승인) → 구현 후 실제 xls 로 라이브 패널 스크린샷(데스크톱 1920 · 1366 두 폭).
-- 검수 등급 **T1** — 런타임 표시 전용, 쓰기 경로·게이트 무변경, 되돌리기 쉬움(push 로 원복). 외부 1명(Luna) 최대 2라운드, Opus 5 생략.
+- 검수 등급 **T2** — 표시가 대부분이지만 §5b 가 **어떤 주문장이 실행 집합에 들어가는지**(기본 체크·전체 체크·확인창)를 바꾼다(안전한 쪽으로지만 주문 도메인). 외부 1명(GLM, 최대 3라운드) + Opus 5 + 완료 직전 교차 1회. Fable 없음.
 
 ## 7. 범위 밖
 
