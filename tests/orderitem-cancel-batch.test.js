@@ -32,6 +32,7 @@ function extractFn(src, name) {
 
 const NAMES = ['ccTargetStatus', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome', 'ccRowCancelSeq',
                'ccRequeryReason', 'ccRowCurrentSetting', 'parseCurrentSettingArgs', 'ccNextStep', 'ccStepOutcome',
+               'ccCellBarcode', 'ccRowIsBalju', 'ccPickDelivIdx', 'dcmSearchParams', 'dcmHidden',
                'ccBuildUnassignUrl', 'cBuildStandbyUrl', 'ccDoCancel', 'ccDoStandbyOff', 'ccDoUnassign', 'ccDoDelivDelete', 'ccDoStep',
                'ccRunCancelBatch'];
 
@@ -41,17 +42,19 @@ function build(deps) {
   // eslint-disable-next-line no-new-func
   const factory = new Function('deps',
     'const state = deps.state;\n' +
-    'const ASG_FETCH_MS = 8000; const ASG_VERIFY_MS = deps.verifyMs;\n' +
+    'const ASG_FETCH_MS = deps.fetchMs || 8000; const ASG_VERIFY_MS = deps.verifyMs;\n' +
     'let cBatchBusy = !!deps.busy;\n' +
     'const fetch = deps.fetch; const fetchOrderRow = deps.fetchOrderRow; const cFetchSKey = deps.cFetchSKey;\n' +
     'const cReadSearchFields = deps.cReadSearchFields; const cUpdateRow = deps.cUpdateRow;\n' +
-    'const ccFindDelivRow = deps.ccFindDelivRow; const dcmDelete = deps.dcmDelete; const dcmAppendLog = deps.dcmAppendLog;\n' +
+    'const ccFindDelivRow = deps.ccFindDelivRow; const dcmDelete = deps.dcmDelete; const dcmAppendLog = deps.dcmAppendLog; const dcmPostRaw = deps.dcmPostRaw;\n' +
+    'const dateParams = () => ({ syear: "2000", smonth: "01", sday: "01", eyear: "2026", emonth: "09", eday: "16" });\n' +
     'const CC_MAX_STEPS = 6;\n' +
     'const ccLog = () => {};\n' +
     'const setTimeout = (fn, ms) => globalThis.setTimeout(fn, ms === 1500 ? 0 : ms);\n' +
     'const clearTimeout = (id) => globalThis.clearTimeout(id);\n' +
     NAMES.map(n => extractFn(SRC, n)).join('\n') + '\n' +
-    'return { ccRunCancelBatch, ccDoCancel, ccDoStep, ccDoStandbyOff, ccDoUnassign, ccDoDelivDelete, busy: () => cBatchBusy };'
+    extractFn(SRC, 'ccFindDelivRow').replace('async function ccFindDelivRow(', 'async function ccFindDelivRowReal(') + '\n' +
+    'return { ccRunCancelBatch, ccDoCancel, ccDoStep, ccDoStandbyOff, ccDoUnassign, ccDoDelivDelete, ccFindDelivRowReal, busy: () => cBatchBusy };'
   );
   return factory(deps);
 }
@@ -70,12 +73,15 @@ function makeRequery(script) {
     const sKey = '2609111512' + String(++requerySeq).padStart(5, '0');
     // 서버처럼: O-- 행엔 [취소] 링크 del('<seq>')(2026-09-11 실측: 332/332, 취소된 행엔 없음), I--/OS- 행엔 배정 팝업 링크
     //  currentSetting(...)(바코드 = r.assignedBarcode; r.link===false 면 발주주문처럼 링크 없음), T-- 는 링크 없음(2026-09-16 실측).
-    let rowHtml = '<tr><td>' + (r ? r.code : '') + '</td></tr>';
-    if (r && r.code === 'O--') rowHtml = '<tr><td>' + r.code + '</td><td><a href="javascript:del(\'' + orderSeq + '\');">취소</a></td></tr>';
-    else if (r && (r.code === 'I--' || r.code === 'OS-') && r.link !== false) rowHtml = '<tr><td>' + r.code + '</td><td><a href="javascript:currentSetting(\'7043\',\'' + orderSeq + '\',\'' + (r.assignedBarcode || '') + '\',\'NU\',\'1\',\'20260915\')">x</a></td></tr>';
+    //  유형 셀(재고주문/발주주문 — r.balju) + 상태 셀(괄호 바코드) 을 서버처럼 싣는다. text 는 fetchOrderRow 처럼 공백 제거 상태 셀.
+    const type = '<td>' + (r && r.balju ? '고객(메인석)발주주문' : '고객(상품)재고주문') + '</td>';
+    const cell = (r ? r.code : '') + (r && r.assignedBarcode ? '(' + r.assignedBarcode + ')' : '');
+    let rowHtml = '<tr>' + type + '<td>' + cell + '</td></tr>';
+    if (r && r.code === 'O--') rowHtml = '<tr>' + type + '<td>' + cell + '</td><td><a href="javascript:del(\'' + orderSeq + '\');">취소</a></td></tr>';
+    else if (r && (r.code === 'I--' || r.code === 'OS-') && r.link !== false) rowHtml = '<tr>' + type + '<td>' + cell + '</td><td><a href="javascript:currentSetting(\'7043\',\'' + orderSeq + '\',\'' + (r.assignedBarcode || '') + '\',\'NU\',\'1\',\'20260915\')">x</a></td></tr>';
     const ret = !r
       ? { found: false, orderSeq, code: null, text: '', assignedBarcode: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml: '', sKey }
-      : Object.assign({ found: true, orderSeq, text: r.code, assignedBarcode: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml, sKey }, r);
+      : Object.assign({ found: true, orderSeq, text: cell, assignedBarcode: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml, sKey }, r);
     calls.push({ orderSeq, orderDate, ret });
     return ret;
   };
@@ -103,6 +109,7 @@ function baseDeps(over) {
     ccFindDelivRow: async () => ({ ok: false, reason: '스텁: 출고 건 없음' }),
     dcmDelete: async () => ({ ok: true, msg: '' }),
     dcmAppendLog: () => true,
+    dcmPostRaw: async () => { throw new Error('dcmPostRaw 스텁 미설정'); },
     updates
   }, over || {});
 }
@@ -569,7 +576,8 @@ test('승인창: 배치가 도는 동안 배경 클릭으로 닫히지 않고, �
 test('cReadCheckedRows: 행마다 배정 팝업 링크 여부와 바코드(cs)를 읽는다(소스 핀 — DOM 함수)', () => {
   const src = extractFn(SRC, 'cReadCheckedRows');
   assert.ok(/a\[href\*="currentSetting"\]/.test(src) && /parseCurrentSettingArgs\(/.test(src), '링크 인자를 파싱한다');
-  assert.ok(/cs:\s*cs/.test(src) && /cs = \{ has: true, barcode: String\(args\.barcode \|\| ''\) \}/.test(src), 'cs 필드');
+  assert.ok(/cs:\s*cs/.test(src) && /cs\.has = true; cs\.barcode = String\(args\.barcode \|\| ''\);/.test(src), 'cs 필드');
+  assert.ok(/cs\.balju = \/발주주문\/\.test\(tr\.textContent \|\| ''\);/.test(src), '유형 셀 발주주문 여부(Opus 1R P2)');
   assert.ok(/\\\(\(\[\^\(\)\]\+\)\\\)\\s\*\$/.test(src), '링크가 없으면 상태 셀 괄호값(출고완료 (250HHL))을 바코드로');
 });
 
@@ -697,7 +705,8 @@ test('사슬 실패: 발주주문 입고완료(링크 없음)는 쓰기 없이 f
   assert.equal(deps.fetch.calls.length, 0); assert.deepEqual(deps.updates, [{ seq: '101', code: 'I--' }]);
 });
 test('사슬 실패: 링크 바코드와 상태 셀 바코드가 다르면 선택취소를 보내지 않는다', async () => {
-  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'I--', assignedBarcode: '2608ET', rowHtml: '<a href="javascript:currentSetting(\'1\',\'101\',\'2608EU\',\'NU\',\'1\',\'20260915\')">x</a>' }] }) });
+  //  Opus 1R P1: 프로덕션처럼 assignedBarcode 도 링크 값(2608EU)이고, 상태 셀 괄호(text)만 2608ET 인 행
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'I--', assignedBarcode: '2608EU', text: 'I--(2608ET)', rowHtml: '<tr><td>고객(상품)재고주문</td><td>I--(2608ET)</td><td><a href="javascript:currentSetting(\'1\',\'101\',\'2608EU\',\'NU\',\'1\',\'20260915\')">x</a></td></tr>' }] }) });
   const r = await build(deps).ccRunCancelBatch([{ orderSeq: '101', code: 'I--', orderDate: '20260916' }], () => {}, () => false);
   assert.match(r.failed[0].reason, /배정 바코드 불일치/); assert.equal(deps.fetch.calls.length, 0);
 });
@@ -742,4 +751,52 @@ test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계"
   assert.ok(/4 — 출고확인\(매장재고\)/.test(html), '제외 사유');
   assert.ok(/출고완료 건은 출고장 삭제, 입고완료 건은 재고 반환\(선택취소\)이 함께 실행됩니다\. 되돌릴 수 없습니다\./.test(html));
   assert.ok(/취소된 주문서는 복구되지 않습니다\./.test(html), 'ERP 원문 경고는 그대로');
+});
+
+// ── 1R 반영: 발주주문 T-- 사전 차단 · 타임아웃 · 중단 시 화면 갱신 ──────────
+test('사슬 실패: 출고완료 발주주문은 출고장 삭제 전에 failed(첫 쓰기 없음)', async () => {
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'T--', assignedBarcode: '2609AY', balju: true }] }) });
+  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => false);
+  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '출고완료(발주주문) — 출고장을 지워도 배정 팝업이 없어 수동' }]);
+  assert.deepEqual(deps.dels, []); assert.deepEqual(deps.logs, []); assert.equal(deps.fetch.calls.length, 0);
+});
+test('사슬 중 중단: 이미 쓴 건은 서버 상태로 화면을 갱신한다(Opus 1R Nit)', async () => {
+  let n = 0;
+  const deps = chainDeps();
+  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => (++n > 2));
+  assert.equal(r.uncertain.length, 1);
+  assert.deepEqual(deps.updates, [{ seq: '101', code: 'I--' }], '출고장 삭제까지 확인한 I-- 행으로 갱신');
+});
+test('ccFindDelivRow: 출고전표 POST 에 ASG_FETCH_MS abort — 정체하면 실패로 돌아온다(배치가 busy 로 남지 않는다)', async () => {
+  const deps = baseDeps({ fetchMs: 30, dcmPostRaw: (action, params, signal) => new Promise((resolve, reject) => {
+    //  abort 가 안 걸리면 1.5초 뒤 빈 응답으로 풀린다 — 그때는 사유가 '출고 건이 없음' 이라 아래 deepEqual 이 깨진다(변이 그물)
+    const late = globalThis.setTimeout(() => resolve({ html: '', url: '', doc: { querySelectorAll: () => [] } }), 1500);
+    if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', () => { globalThis.clearTimeout(late); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+  }) });
+  const sb = build(deps);
+  const t0 = Date.now();
+  const r = await sb.ccFindDelivRowReal('250HHL', '101');
+  assert.deepEqual(r, { ok: false, reason: '출고전표 조회 실패(네트워크/타임아웃)' });
+  assert.ok(Date.now() - t0 < 2000, '타임아웃 안에 돌아온다');
+});
+test('ccFindDelivRow: 정상 응답 — idx 특정·sKey·상태 셀 출고완료·열 값', async () => {
+  const mkDoc = (rows) => ({ querySelectorAll: (sel) => sel === 'input[name=idx]' ? rows.map((r) => ({ value: r.idx, closest: () => ({ cells: r.cells.map((t) => ({ textContent: t })) }) })) : [] });
+  const cells = (status) => { const c = new Array(15).fill(''); c[2] = '000000010HR'; c[4] = '26-09-15'; c[8] = 'FASHION 925 0 g'; c[14] = status; return c; };
+  const html = '<input type="hidden" name="sKey" value="DK1">';
+  const deps = baseDeps({ dcmPostRaw: async (action, params, signal) => { assert.ok(signal); assert.equal(params.get('searchBarcode'), '250HHL'); assert.equal(params.get('searchSortType'), 'seq'); return { html, url: '', doc: mkDoc([{ idx: '426106,250HHL,47295,101', cells: cells('출고완료') }, { idx: '1,250HHL,2,0', cells: cells('출고완료') }]) }; } });
+  const r = await build(deps).ccFindDelivRowReal('250HHL', '101');
+  assert.deepEqual(r, { ok: true, idx: '426106,250HHL,47295,101', sKey: 'DK1', junNum: '000000010HR', delivDate: '26-09-15', shop: 'FASHION 925 0 g', status: '출고완료' });
+  const d2 = baseDeps({ dcmPostRaw: async () => ({ html, url: '', doc: mkDoc([{ idx: '426106,250HHL,47295,101', cells: cells('출고확인') }]) }) });
+  assert.deepEqual(await build(d2).ccFindDelivRowReal('250HHL', '101'), { ok: false, reason: '출고 건 상태가 출고완료가 아님(출고확인)' });
+  const d3 = baseDeps({ dcmPostRaw: async () => ({ html: '', url: '', doc: mkDoc([{ idx: '426106,250HHL,47295,101', cells: cells('출고완료') }]) }) });
+  assert.deepEqual(await build(d3).ccFindDelivRowReal('250HHL', '101'), { ok: false, reason: '출고전표 sKey 추출 실패' });
+  const d4 = baseDeps({ dcmPostRaw: async () => ({ html, url: '', doc: mkDoc([{ idx: '1,250HHL,2,0', cells: cells('출고완료') }]) }) });
+  assert.match((await build(d4).ccFindDelivRowReal('250HHL', '101')).reason, /출고 건이 없음/);
+});
+test('ccDoDelivDelete: 삭제 POST 에 abort signal 을 넘긴다', async () => {
+  const found = { ok: true, idx: '426106,250HHL,47295,101', sKey: 'DK', junNum: '000000010HR', delivDate: '26-09-15', shop: 'FASHION', status: '출고완료' };
+  let seen = null;
+  const deps = baseDeps({ ccFindDelivRow: async () => found, dcmDelete: async (t, bc, signal) => { seen = signal; return { ok: true, msg: '' }; } });
+  await build(deps).ccDoDelivDelete('250HHL', '101');
+  assert.ok(seen && typeof seen.addEventListener === 'function', 'AbortSignal 전달');
 });
