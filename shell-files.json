@@ -1,9 +1,9 @@
 {
-  "version": "4.2.2",
+  "version": "4.2.3",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "9be8dbd8f30c41c37b54f6e8040a11d9e059b18164f87aea4af19c2f3b794328"
+      "sha256": "94cae9cc6e243883659946f6498ccefb3aa10ff8258b180d3a558c2a7d56fc90"
     },
     {
       "path": "src/loader.js",
@@ -23,15 +23,15 @@
     },
     {
       "path": "src/skin.js",
-      "sha256": "b965e8ce7e783af075ff2e74371673286455682e97ae2b25aac6ed518a32b5c1"
+      "sha256": "163cac5dba6f9e47cd496f98ccde4377eaded677e01a4d098fe07597260f4bab"
     },
     {
       "path": "popup/popup.html",
-      "sha256": "2bb322c9a6eb2a6d56f9af9dbf7b9fba2e4f9f6eeaff49f42d34d262cebe0b8e"
+      "sha256": "a39fb216dc3ee659e4bb39477fdb5c747c12637bd11e56438ef139217e70f031"
     },
     {
       "path": "popup/popup.js",
-      "sha256": "3b99dae5d8b360ea6a136476cc9e768b682ac4ac1a4dd53c5eb6ef0cf6e41e96"
+      "sha256": "2a3a2aafdf72f1fd2f9c383658959010f887e7914810a77042b5b43e56e04d93"
     },
     {
       "path": "rules/cache.json",
@@ -43,7 +43,7 @@
     },
     {
       "path": "src/orderimport-core.js",
-      "sha256": "86e62db8ec4df728b3ea62602b0c56a8f417187760d40d91cf95920cc40a3eb5"
+      "sha256": "ab463406cc56464cedb007766e7c65a21b47d14aa653ad03391030f5cbe4c147"
     },
     {
       "path": "src/orderimport-erp.js",
@@ -51,7 +51,7 @@
     },
     {
       "path": "src/orderimport.js",
-      "sha256": "761cac2d594b59eaf46ed96ac7cba7e49989a49eac0631e07c8a899fae5a72e3"
+      "sha256": "86913ee59a39a52042a642b4a1ad1b6e203a0b6c48b839f2360eaf91a03c44d3"
     },
     {
       "path": "src/orderimport-xls.js",

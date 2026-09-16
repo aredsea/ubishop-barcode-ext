@@ -348,3 +348,19 @@ test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
   assert.deepStrictEqual(C.oiEnrichTotal(orders, {}), { masters: 1, customers: 1, suggests: 1, total: 3 });
   assert.deepStrictEqual(C.oiEnrichTotal(orders, { 7: {} }), { masters: 0, customers: 1, suggests: 1, total: 2 });
 });
+
+//  사장님 요청(2026-09-16): 사은품이라 표기된 항목은 판매가가 비어 있거나 0 이어도 주문이 되게(유비샵도 판매가 0 주문 가능).
+test('사은품 줄: 판매가가 비었거나 0 이면 0 으로 읽고 검토를 통과한다 — 일반 상품은 그대로 차단', () => {
+  const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
+  const rows = [H, ['GS샵', '1', '[사은품] 쥬얼리 박스', '', '', 0, '홍길동', '010-1234-5678'], ['GS샵', '1', '(사은품) 파우치', '', '0', 0, '홍길동', '010-1234-5678'],
+    ['GS샵', '1', '14K 반지', '', '', 100, '홍길동', '010-1234-5678'], ['GS샵', '1', '[사은품] 박스', '', 'abc', 0, '홍길동', '010-1234-5678']];
+  const ls = C.oiParseRows(rows).lines;
+  assert.equal(ls[0].gift, true); assert.equal(ls[0].price, 0);
+  assert.equal(ls[1].gift, true); assert.equal(ls[1].price, 0);
+  assert.equal(ls[2].gift, false); assert.equal(ls[2].price, null);
+  assert.equal(ls[3].gift, true); assert.equal(ls[3].price, null, '문자는 사은품이라도 null(검토)');
+  const issues = (l) => C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
+  assert.ok(!issues(ls[0]).includes('판매가 없음')); assert.ok(!issues(ls[1]).includes('판매가 없음'));
+  assert.ok(issues(ls[2]).includes('판매가 없음')); assert.ok(issues(ls[3]).includes('판매가 없음'));
+  assert.equal(C.oiMoney0('0'), 0); assert.equal(C.oiMoney0(''), null);
+});

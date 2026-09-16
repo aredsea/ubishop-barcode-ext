@@ -12,7 +12,9 @@
   if (!C || !E) { console.warn('[UB][oi] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const KEY_MAP = 'ubOiMap', KEY_LEDGER = 'ubOiLedger', PANEL_ID = 'ub-oi-panel', STYLE_ID = 'ub-oi-style';
-  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '' };
+  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '',
+    //  진행 표시(스펙 2026-09-16 §3): phase 는 idle|reading|enriching|running, progress 는 스트립이 읽는 카운터·문구.
+    phase: 'idle', progress: { done: 0, total: 0, m: [0, 0], c: [0, 0], s: [0, 0], key: '', label: '' } };
 
   /* ------------------------------------------------------------ storage */
   const sget = (q) => new Promise((res) => chrome.storage.local.get(q, res));
@@ -79,8 +81,11 @@
   function refreshOrder(o) {
     o.lines.forEach(refreshLine);
     o.ready = o.lines.every((l) => !l.issues.length) && !!o.market && o.phone.ok;
-    if (o.checked == null || !o.ready) o.checked = o.ready;
     o.prev = S.ledger[o.key] || null;
+    //  장부와 주문번호·상품이 완전히 같으면 기본 체크를 풀어 두고 사람이 정하게 한다(스펙 2026-09-16 §5b). 첫 판정 때만 — 그 뒤는 사용자의 체크가 우선.
+    o.dup = C.oiDupCheck(o, o.prev);
+    if (o.checked == null) o.checked = o.ready && !o.dup.dup;
+    else if (!o.ready) o.checked = false;
   }
   function buildOrders(parsed) {
     const pr = C.oiParseRows(parsed.rows, { numericPhoneRows: parsed.numericPhoneRows });
@@ -95,16 +100,21 @@
   async function enrich() {
     if (S.running || S.starting) return;
     const p = Promise.resolve(S.enriching).catch(() => {}).then(enrichBody);   // 겹치는 조회는 직렬화 — S.enriching 이 항상 마지막 조회를 가리키게
-    S.enriching = p; render();
-    try { await p; } finally { if (S.enriching === p) { S.enriching = null; render(); } }
+    S.phase = 'enriching'; S.enriching = p; render();
+    try { await p; } finally { if (S.enriching === p) { S.enriching = null; if (S.phase === 'enriching') S.phase = 'idle'; render(); } }
   }
+  //  진행 카운터: 요청 하나 끝날 때마다 +1. 표는 사람이 입력 중이 아닐 때만 다시 그린다(입력 중 포커스를 뺏지 않게) — 스트립은 항상 갱신.
+  function progInit(tot) { S.progress = { done: 0, total: tot.total, m: [0, tot.masters], c: [0, tot.customers], s: [0, tot.suggests], key: '', label: '' }; }
+  function progStep(cat) { const pr = S.progress; pr.done++; pr[cat][0]++; renderSoft(); }
   async function enrichBody() {
+    progInit(C.oiEnrichTotal(S.orders, S.masters));
     const seqs = new Set();
     S.orders.forEach((o) => o.lines.forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
     for (const seq of seqs) {
       if (S.masters[seq]) continue;
       if (S.running) return;
       try { S.masters[seq] = await E.getWriteForm({ tradeJun: '', master: seq, client: '', clientName: '' }); } catch (e) { logLine('-', 'master_form_error', seq + ' ' + e.message); }
+      progStep('m');
     }
     for (const o of S.orders) {
       if (o.customer || !o.market || !o.phone.ok) continue;
@@ -112,11 +122,12 @@
       try {
         const byName = await E.searchClient('clientName', o.clientName);
         const exact = byName.find((c) => c.name === o.clientName);
-        if (exact) { o.customer = { mode: 'reuse', seq: exact.seq }; continue; }
+        if (exact) { o.customer = { mode: 'reuse', seq: exact.seq }; progStep('c'); continue; }
         if (S.running) return;
         const byPhone = await E.searchClient('phone', o.phone.phone);
         o.customer = { mode: byPhone.some((c) => c.phone === o.phone.phone) ? 'new_nophone' : 'new' };
       } catch (e) { o.customer = { mode: 'unknown', error: e.message }; }
+      progStep('c');
     }
     for (const o of S.orders) for (const l of o.lines) {
       if (l.mapping || l.suggest) continue;
@@ -125,6 +136,7 @@
         if (S.running) return;
         try { const hits = await E.searchMaster(q); if (hits.length) { l.suggest = hits.slice(0, 10); l.suggestQuery = q; break; } } catch (_) {}
       }
+      progStep('s');
     }
     S.orders.forEach(refreshOrder);
   }
@@ -137,9 +149,10 @@
   function toRunOrder(o) {
     return {
       key: o.key, seller: o.seller, orderNo: o.orderNo, market: o.market, buyer: o.buyer, phone: o.phone, clientName: o.clientName,
+      sig: C.oiOrderSig(o),                                     // 장부에 남겨 다음 파일에서 "완전히 같은 주문장" 을 가린다(스펙 §5b)
       lines: o.lines.map((l) => ({
         master: { seq: l.mapping.entry.seq, code: l.mapping.entry.code, name: l.mapping.entry.name, colorFallback: l.mapping.entry.colorFallback || '' },
-        spec: { k: l.spec.k || null, color: l.spec.color || null, itemSize: l.spec.itemSize == null ? '' : String(l.spec.itemSize), qty: Number(l.spec.qty), price: Number(l.spec.price), remark: l.spec.remark || '' }
+        spec: { k: l.spec.k || null, color: l.spec.color || null, itemSize: l.spec.itemSize == null ? '' : String(l.spec.itemSize), qty: Number(l.spec.qty), price: Number(l.spec.price), gift: !!l.gift, remark: l.spec.remark || '' }
       }))
     };
   }
@@ -153,7 +166,10 @@
       if (!S.enabled) { alert('[유비샵 스킨모드]·[주문 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
       const targets = S.orders.filter((o) => o.checked && o.ready);
       if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
-      if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
+      const nDup = targets.filter((o) => o.dup && o.dup.dup).length;
+      if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.'
+        + (nDup ? '\n※ 이미 등록된 것과 같은 주문장 ' + nDup + '개가 포함돼 있습니다(중복 등록).' : '')
+        + '\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
       jobs = targets.map(toRunOrder);                          // confirm 한 집합을 그대로 실행한다 — 조회 대기 뒤 다시 거르지 않는다(Fable F3 Nit)
       while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
       S.running = true;
@@ -164,13 +180,17 @@
   async function runTargets(jobs) {
     S.results = [];
     window.addEventListener('beforeunload', onUnload);
+    S.phase = 'running'; S.progress = { done: 0, total: jobs.length, m: [0, 0], c: [0, 0], s: [0, 0], key: jobs.length ? jobs[0].key : '', label: '시작' };
     render();
     try {
       const results = await C.oiRunAll(jobs, E, {
         today: () => new Date(),
-        log: logLine,
+        log: (key, step, info) => {   // 진행 스트립 문구는 실행기 log 에서 온다(스펙 §3) — 표는 다시 그리지 않고 스트립만 갱신
+          logLine(key, step, info);
+          S.progress.key = key; S.progress.label = C.oiStepLabel(step, info, S.progress.label); progPatch();
+        },
         onOrder: (r) => {
-          S.results.push(r);
+          S.results.push(r); S.progress.done++;
           //  체크 해제·장부 기록 판정은 core 의 순수 함수(Opus 5 P1 — 완료됐을 수 있는 fatal 이 체크된 채 남아 재클릭 때 중복 주문장이 생겼다)
           const ps = C.oiPostRunState(r, new Date().toISOString());
           if (ps.ledgerEntry) { S.ledger[r.key] = ps.ledgerEntry; saveLedger(); }
@@ -180,7 +200,7 @@
       });
       S.results = results;
     } catch (e) { logLine('-', 'run_exception', String(e && e.message || e)); alert('실행 중 오류: ' + (e && e.message || e)); }
-    S.running = false;
+    S.running = false; S.phase = 'idle';
     window.removeEventListener('beforeunload', onUnload);
     S.orders.forEach(refreshOrder);
     render();
@@ -190,89 +210,245 @@
   /* ------------------------------------------------------------ UI */
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
   const CSS = `
-#${PANEL_ID}{position:fixed;inset:24px;z-index:2147483647;background:#fff;border:1px solid #cfd6dd;border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.28);display:flex;flex-direction:column;font:13px/1.45 Pretendard,"Malgun Gothic",sans-serif;color:#222}
+#${PANEL_ID}{--ub-bg:#ffffff;--ub-bg2:#f7f9fc;--ub-fg:#1b1b1b;--ub-sub:#6b7280;--ub-line:#e5e7eb;--ub-soft:#f9fafb;--ub-on:#35C5F0;--ub-on-hover:#2bb5e0;--ub-on-soft:#e0f4fc;--oi-ok:#12995a;--oi-warn:#c77a12;--oi-err:#e0483f;--oi-warn-bg:#fff7e6;--oi-err-bg:#fdecec;--oi-ok-bg:#e7f6ee;
+  position:fixed;inset:24px;z-index:2147483647;display:flex;flex-direction:column;overflow:hidden;background:var(--ub-bg);color:var(--ub-fg);border:1px solid var(--ub-line);border-radius:12px;box-shadow:0 8px 24px rgba(15,20,25,.12),0 24px 64px rgba(15,20,25,.18);font:13px/1.45 'Pretendard','Malgun Gothic',sans-serif;-webkit-font-smoothing:antialiased}
 #${PANEL_ID} *{box-sizing:border-box}
-#${PANEL_ID} .oi-h{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #e6eaef;background:#f7f9fb;border-radius:10px 10px 0 0}
-#${PANEL_ID} .oi-h b{font-size:15px}
-#${PANEL_ID} .oi-h .oi-x{margin-left:auto;border:0;background:none;font-size:20px;cursor:pointer;color:#666}
-#${PANEL_ID} .oi-b{flex:1;overflow:auto;padding:12px 14px}
-#${PANEL_ID} .oi-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-#${PANEL_ID} .oi-btn{border:1px solid #b8c2cc;background:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px}
-#${PANEL_ID} .oi-btn.pri{background:#4abcc7;border-color:#4abcc7;color:#fff;font-weight:700}
-#${PANEL_ID} .oi-btn:disabled{opacity:.45;cursor:default}
-#${PANEL_ID} .oi-lock{background:#fff4e5;border:1px solid #f0c36d;color:#7a4b00;padding:8px 12px;border-radius:6px;font-weight:700;margin-bottom:10px}
-#${PANEL_ID} table.oi-t{width:100%;border-collapse:collapse;font-size:12px}
-#${PANEL_ID} table.oi-t th,#${PANEL_ID} table.oi-t td{border:1px solid #e3e8ee;padding:4px 6px;vertical-align:top;text-align:left}
-#${PANEL_ID} table.oi-t th{background:#f3f6f9;font-weight:600;white-space:nowrap}
-#${PANEL_ID} tr.oi-o td{background:#eef7f8;font-weight:600}
-#${PANEL_ID} tr.oi-o.bad td{background:#fdecec}
-#${PANEL_ID} .oi-issue{color:#b42318;font-weight:600}
-#${PANEL_ID} .oi-warn{background:#fff8e1}
-#${PANEL_ID} input.oi-in{width:100%;border:1px solid #c9d2dc;border-radius:4px;padding:3px 5px;font-size:12px}
-#${PANEL_ID} input.oi-in.sm{width:64px}
-#${PANEL_ID} select.oi-in{width:100%;border:1px solid #c9d2dc;border-radius:4px;padding:3px;font-size:12px}
-#${PANEL_ID} .oi-muted{color:#777}
-#${PANEL_ID} .oi-res{margin-top:12px}
-#${PANEL_ID} .st-done{color:#087a3f;font-weight:700}.st-skipped{color:#b45309;font-weight:700}.st-fatal,.st-blocked{color:#b42318;font-weight:700}
-#ub-oi-veil{position:fixed;inset:0;z-index:2147483646;background:rgba(20,30,40,.35)}
+#${PANEL_ID} input,#${PANEL_ID} select,#${PANEL_ID} button,#${PANEL_ID} label{font:inherit;color:inherit}
+#${PANEL_ID} svg.oi-ico{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+#${PANEL_ID} .oi-h{display:flex;align-items:center;gap:16px;padding:12px 16px;background:var(--ub-bg2);border-bottom:1px solid var(--ub-line)}
+#${PANEL_ID} .oi-title{font-size:15px;font-weight:700;letter-spacing:-.01em}
+#${PANEL_ID} .oi-steps{display:flex;align-items:center;gap:8px;color:var(--ub-sub);font-size:12px}
+#${PANEL_ID} .oi-step{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid transparent}
+#${PANEL_ID} .oi-step .n{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--ub-line);color:var(--ub-fg);font-size:11px;font-weight:700}
+#${PANEL_ID} .oi-step.on{color:var(--ub-fg);font-weight:600;background:var(--ub-on-soft);border-color:#b9e6f5}
+#${PANEL_ID} .oi-step.on .n{background:var(--ub-on);color:#fff}
+#${PANEL_ID} .oi-step.done .n{background:var(--oi-ok);color:#fff}
+#${PANEL_ID} .oi-step.done .n svg{width:11px;height:11px;stroke-width:2.5}
+#${PANEL_ID} .oi-steps .sep{color:#c5cbd3}
+#${PANEL_ID} .oi-x{margin-left:auto;width:32px;height:32px;border:0;background:none;border-radius:8px;color:var(--ub-sub);cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+#${PANEL_ID} .oi-x:hover{background:var(--ub-line);color:var(--ub-fg)}
+#${PANEL_ID} .oi-bar{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--ub-line);background:var(--ub-bg);flex-wrap:wrap}
+#${PANEL_ID} .oi-count{display:inline-flex;gap:6px;align-items:center;margin-left:4px;color:var(--ub-sub)}
+#${PANEL_ID} .oi-count b{color:var(--ub-fg);font-weight:600;font-variant-numeric:tabular-nums}
+#${PANEL_ID} .oi-count i{font-style:normal;color:#c5cbd3}
+#${PANEL_ID} .oi-spacer{margin-left:auto}
+#${PANEL_ID} .oi-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;border:1px solid var(--ub-line);background:var(--ub-bg);border-radius:8px;font-size:12px;font-weight:600;color:var(--ub-fg);cursor:pointer;white-space:nowrap;transition:background-color .12s ease,border-color .12s ease,color .12s ease,transform .08s ease;user-select:none}
+#${PANEL_ID} .oi-btn:hover{border-color:var(--ub-on);color:var(--ub-on);background:var(--ub-on-soft)}
+#${PANEL_ID} .oi-btn:active{transform:translateY(1px)}
+#${PANEL_ID} .oi-btn.pri{background:var(--ub-on);border-color:var(--ub-on);color:#fff;font-weight:700;padding:0 16px}
+#${PANEL_ID} .oi-btn.pri:hover{background:var(--ub-on-hover);border-color:var(--ub-on-hover);color:#fff}
+#${PANEL_ID} .oi-btn.quiet{border-color:transparent;color:var(--ub-sub);font-weight:500}
+#${PANEL_ID} .oi-btn.quiet:hover{color:var(--ub-on);background:var(--ub-on-soft);border-color:transparent}
+#${PANEL_ID} .oi-btn.sm{height:28px;padding:0 10px}
+#${PANEL_ID} .oi-btn.icon{width:28px;padding:0}
+#${PANEL_ID} .oi-btn:disabled{opacity:.45;cursor:default;transform:none}
+#${PANEL_ID} .oi-btn:disabled:hover{border-color:var(--ub-line);color:var(--ub-fg);background:var(--ub-bg)}
+#${PANEL_ID} .oi-btn.pri:disabled:hover{background:var(--ub-on);border-color:var(--ub-on);color:#fff}
+#${PANEL_ID} :focus-visible{outline:2px solid var(--ub-on);outline-offset:2px}
+#${PANEL_ID} .oi-prog{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--ub-on-soft);border-bottom:1px solid #b9e6f5;color:var(--ub-fg)}
+#${PANEL_ID} .oi-prog.run{background:var(--oi-warn-bg);border-bottom-color:#f0c36d}
+#${PANEL_ID} .oi-prog .oi-spin{color:var(--ub-on)}
+#${PANEL_ID} .oi-prog.run .oi-spin{color:var(--oi-warn)}
+#${PANEL_ID} .oi-prog .txt{font-weight:600}
+#${PANEL_ID} .oi-prog .sub{color:var(--ub-sub);font-weight:500}
+#${PANEL_ID} .oi-prog .warn{color:#7a4b00;font-weight:700;margin-left:4px}
+#${PANEL_ID} .oi-prog .bar{position:relative;flex:1;max-width:320px;height:6px;border-radius:999px;background:rgba(15,20,25,.08);overflow:hidden}
+#${PANEL_ID} .oi-prog .bar>i{position:absolute;inset:0 auto 0 0;width:0;background:var(--ub-on);border-radius:999px;transition:width .25s ease}
+#${PANEL_ID} .oi-prog.run .bar>i{background:var(--oi-warn)}
+#${PANEL_ID} .oi-prog .bar.indet>i{width:35%;animation:oiIndet 1.1s ease-in-out infinite}
+#${PANEL_ID} .oi-prog .cnt{font-variant-numeric:tabular-nums;color:var(--ub-sub);min-width:48px;text-align:right}
+@keyframes oiSpin{to{transform:rotate(360deg)}}
+@keyframes oiIndet{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+@keyframes oiShimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+#${PANEL_ID} .oi-spin{animation:oiSpin .9s linear infinite}
+#${PANEL_ID} .oi-b{flex:1;overflow:auto;padding:0 16px 16px}
+#${PANEL_ID} .oi-empty{padding:48px 16px;text-align:center;color:var(--ub-sub)}
+#${PANEL_ID} .oi-banner{display:flex;align-items:center;gap:8px;margin-top:12px;padding:8px 12px;border-radius:8px;background:var(--oi-err-bg);color:#9f1d17;font-weight:600}
+#${PANEL_ID} table.oi-t{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px;margin-top:12px}
+#${PANEL_ID} table.oi-t th{position:sticky;top:0;z-index:1;background:var(--ub-bg2);color:var(--ub-sub);font-weight:600;font-size:12px;text-align:left;padding:8px 8px;border-bottom:1px solid var(--ub-line);white-space:nowrap}
+#${PANEL_ID} table.oi-t td{padding:8px 8px;border-bottom:1px solid var(--ub-line);vertical-align:top}
+#${PANEL_ID} table.oi-t th.num,#${PANEL_ID} table.oi-t td.num{text-align:right;font-variant-numeric:tabular-nums}
+#${PANEL_ID} col.c-chk{width:36px}#${PANEL_ID} col.c-k{width:64px}#${PANEL_ID} col.c-color{width:72px}#${PANEL_ID} col.c-size{width:64px}#${PANEL_ID} col.c-qty{width:56px}#${PANEL_ID} col.c-price{width:96px}#${PANEL_ID} col.c-remark{width:180px}#${PANEL_ID} col.c-prod{width:34%}
+#${PANEL_ID} tr.oi-o td{background:var(--ub-bg2);padding-top:10px;padding-bottom:10px}
+#${PANEL_ID} tr.oi-o td:first-child{box-shadow:inset 3px 0 0 var(--ub-on)}
+#${PANEL_ID} tr.oi-o.bad td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
+#${PANEL_ID} tr.oi-o.dup td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
+#${PANEL_ID} tr.oi-o.res-done td:first-child{box-shadow:inset 3px 0 0 var(--oi-ok)}
+#${PANEL_ID} tr.oi-o.res-bad td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
+#${PANEL_ID} .oi-key{font-weight:700}
+#${PANEL_ID} .oi-key .seller{display:inline-block;padding:1px 6px;margin-right:6px;border-radius:4px;background:var(--ub-bg);border:1px solid var(--ub-line);font-size:11px;font-weight:600;color:var(--ub-sub);vertical-align:1px}
+#${PANEL_ID} .oi-cust{font-weight:600}
+#${PANEL_ID} .oi-cust .oi-muted{font-weight:400;font-variant-numeric:tabular-nums}
+#${PANEL_ID} tr.oi-l td:first-child{box-shadow:inset 3px 0 0 transparent}
+#${PANEL_ID} tr.oi-l.oi-warn td:first-child{box-shadow:inset 3px 0 0 #f0c36d}
+#${PANEL_ID} tr.oi-l.oi-cur td{background:#fffbf1}
+#${PANEL_ID} .oi-name{font-weight:500}
+#${PANEL_ID} .oi-opt{color:var(--ub-sub);font-size:12px;margin-top:1px}
+#${PANEL_ID} .oi-issue{display:inline-flex;align-items:center;gap:4px;color:var(--oi-err);font-weight:600;font-size:12px;margin-top:3px}
+#${PANEL_ID} .oi-issue svg.oi-ico{width:13px;height:13px}
+#${PANEL_ID} .oi-muted{color:var(--ub-sub)}
+#${PANEL_ID} .oi-note{color:var(--ub-sub);font-size:12px;margin-top:4px}
+#${PANEL_ID} .oi-in{width:100%;height:28px;padding:0 8px;border:1px solid var(--ub-line);border-radius:6px;background:var(--ub-bg);color:var(--ub-fg);font-size:12.5px;transition:border-color .12s ease,box-shadow .12s ease}
+#${PANEL_ID} .oi-in::placeholder{color:#9aa3ad}
+#${PANEL_ID} .oi-in:focus{outline:none;border-color:var(--ub-on);box-shadow:0 0 0 3px rgba(53,197,240,.18)}
+#${PANEL_ID} .oi-in.num{text-align:right;font-variant-numeric:tabular-nums}
+#${PANEL_ID} .oi-in.sm{width:100%}
+#${PANEL_ID} .oi-in:disabled{background:var(--ub-soft);color:var(--ub-sub)}
+#${PANEL_ID} select.oi-in{padding-right:24px;appearance:none;background:var(--ub-bg) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") no-repeat right 8px center}
+#${PANEL_ID} .oi-prod{display:flex;gap:6px;align-items:center}
+#${PANEL_ID} .oi-prod .oi-in{flex:1;min-width:0}
+#${PANEL_ID} .oi-prod .q{flex:0 0 150px}
+#${PANEL_ID} .oi-mapped{display:flex;align-items:center;gap:6px}
+#${PANEL_ID} .oi-mapped .nm{font-weight:600}
+#${PANEL_ID} .oi-mapped .cd{color:var(--ub-sub);font-variant-numeric:tabular-nums}
+#${PANEL_ID} .oi-sub-in{margin-top:6px}
+#${PANEL_ID} .oi-mkt{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#${PANEL_ID} .oi-mkt .oi-in{width:auto}
+#${PANEL_ID} .oi-chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11.5px;font-weight:600;line-height:1;white-space:nowrap;vertical-align:middle}
+#${PANEL_ID} .oi-chip svg.oi-ico{width:12px;height:12px}
+#${PANEL_ID} .oi-chip.reuse{background:var(--ub-on-soft);color:#0b7ea6}
+#${PANEL_ID} .oi-chip.new{background:var(--ub-line);color:#374151}
+#${PANEL_ID} .oi-chip.nophone{background:var(--oi-warn-bg);color:#7a4b00}
+#${PANEL_ID} .oi-chip.fail,#${PANEL_ID} .oi-chip.fatal,#${PANEL_ID} .oi-chip.blocked,#${PANEL_ID} .oi-chip.dup{background:var(--oi-err-bg);color:#9f1d17}
+#${PANEL_ID} .oi-chip.done{background:var(--oi-ok-bg);color:#0b6b3f}
+#${PANEL_ID} .oi-chip.skipped,#${PANEL_ID} .oi-chip.prev{background:var(--oi-warn-bg);color:#7a4b00}
+#${PANEL_ID} .oi-chip.busy{background:var(--ub-on-soft);color:#0b7ea6}
+#${PANEL_ID} .oi-skel{position:relative;display:inline-block;height:14px;border-radius:4px;background:#e9edf1;overflow:hidden;vertical-align:middle}
+#${PANEL_ID} .oi-skel::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.7),transparent);animation:oiShimmer 1.2s ease-in-out infinite}
+#${PANEL_ID} .oi-skel.w1{width:88px}#${PANEL_ID} .oi-skel.w2{width:100%;height:28px;border-radius:6px}
+#${PANEL_ID} .oi-chk{width:16px;height:16px;margin:0;accent-color:var(--ub-on);cursor:pointer}
+#${PANEL_ID} .oi-res{margin-top:16px}
+#${PANEL_ID} .oi-res h3{font-size:13px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+#${PANEL_ID} .oi-res h3 .oi-muted{font-weight:500}
+@media (prefers-reduced-motion: reduce){#${PANEL_ID} .oi-spin,#${PANEL_ID} .oi-skel::after,#${PANEL_ID} .oi-prog .bar.indet>i{animation:none}}
+#ub-oi-veil{position:fixed;inset:0;z-index:2147483646;background:rgba(15,20,25,.45)}
 `;
   function ensureStyle() { if (!document.getElementById(STYLE_ID)) { const s = document.createElement('style'); s.id = STYLE_ID; s.textContent = CSS; document.head.appendChild(s); } }
+  //  아이콘은 인라인 SVG 심볼(이모지 금지 — 확장 디자인 지침). id 는 페이지와 안 겹치게 접두.
+  const ICON_DEFS = '<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>'
+    + '<symbol id="ub-oi-i-spin" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/></symbol>'
+    + '<symbol id="ub-oi-i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>'
+    + '<symbol id="ub-oi-i-warn" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>'
+    + '<symbol id="ub-oi-i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>'
+    + '<symbol id="ub-oi-i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></symbol>'
+    + '<symbol id="ub-oi-i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>'
+    + '</defs></svg>';
+  const ico = (n, cls) => '<svg class="oi-ico' + (cls ? ' ' + cls : '') + '" aria-hidden="true"><use href="#ub-oi-i-' + n + '"/></svg>';
+  const chip = (cls, text, icon) => '<span class="oi-chip ' + cls + '">' + (icon ? ico(icon, icon === 'spin' ? 'oi-spin' : '') : '') + esc(text) + '</span>';
+  const fmtAt = (at) => esc(String(at || '').slice(0, 16).replace('T', ' '));
 
   //  코드표 밖 판매처: 이 세션에서만 접미·마켓을 정한다(스펙 §2.3, Terra 4R P2). 표에는 저장하지 않는다.
-  const MARKET_OPTS = [['2', 'SSG'], ['3', 'CJ몰'], ['4', 'H몰'], ['5', '스마트스토어'], ['6', '카페24'], ['7', 'GS샵'], ['8', '쿠팡'], ['9', '위메프'], ['10', '롯데ON'], ['11', '카카오'], ['12', '11번가'], ['13', 'G마켓'], ['14', '옥션'], ['15', '더리본샵'], ['16', 'AK몰'], ['17', '지그재그'], ['18', '아몬즈'], ['19', '지인소개'], ['20', '퀸잇'], ['21', '에이블리'], ['22', '오늘룩']];
+  const MARKET_OPTS = [['2', 'SSG'], ['3', 'CJ몰'], ['4', 'H몰'], ['5', '스마트스토어'], ['6', '카페24'], ['7', 'GS샵'], ['8', '쿠팡'], ['9', '위메프'], ['10', '롯데ON'], ['11', '카카오'], ['12', '11번가'], ['13', 'G마켓'], ['14', '옥션'], ['15', '더리본샵'], ['16', 'AK몰'], ['17', '지그재그'], ['18', '아몬즈'], ['19', '지인소개'], ['20', '퀸잇'], ['21', '에이블리']];
   function marketPick(o, oi) {
     const dis = S.running ? ' disabled' : '';
-    return '<span class="oi-issue">판매처 미등록(' + esc(o.seller) + ')</span> 접미 <input class="oi-in sm" data-f="mkt-suffix" data-o="' + oi + '" placeholder="예: 십" maxlength="4"' + dis + '> 마켓 <select class="oi-in" style="width:auto" data-f="mkt-job" data-o="' + oi + '"' + dis + '><option value="">— 선택 —</option>'
-      + MARKET_OPTS.map(([v, t]) => '<option value="' + v + '">' + esc(t) + '</option>').join('') + '</select> <button class="oi-btn" data-act="mkt-apply" data-o="' + oi + '"' + dis + '>적용</button>';
+    return '<div class="oi-mkt"><span class="oi-issue">' + ico('warn') + '판매처 미등록(' + esc(o.seller) + ')</span> <span class="oi-muted">접미</span> <input class="oi-in sm" data-f="mkt-suffix" data-o="' + oi + '" placeholder="예: 십" maxlength="4" style="width:64px"' + dis + '> <span class="oi-muted">마켓</span> <select class="oi-in" style="width:auto" data-f="mkt-job" data-o="' + oi + '"' + dis + '><option value="">— 선택 —</option>'
+      + MARKET_OPTS.map(([v, t]) => '<option value="' + v + '">' + esc(t) + '</option>').join('') + '</select> <button class="oi-btn sm" data-act="mkt-apply" data-o="' + oi + '"' + dis + '>적용</button></div>';
   }
-  function custText(o) {
-    if (!o.customer) return '<span class="oi-muted">조회 전</span>';
+  //  고객 처리 칩. 조회 전(enrich 중)은 스켈레톤 — 조회 대상이 아니면(마켓 없음·휴대폰 불량) 안내만.
+  function custChip(o) {
+    if (!o.customer) return (S.phase === 'enriching' && o.market && o.phone.ok) ? '<span class="oi-skel w1"></span>' : '<span class="oi-muted">조회 전</span>';
     const m = o.customer.mode;
-    if (m === 'reuse') return '재사용 #' + esc(o.customer.seq);
-    if (m === 'new') return '신규 등록';
-    if (m === 'new_nophone') return '신규 등록 <b>(휴대폰 비움 — 다른 고객이 사용 중)</b>';
-    return '<span class="oi-issue">조회 실패</span>';
+    if (m === 'reuse') return chip('reuse', '재사용 #' + o.customer.seq);
+    if (m === 'new') return chip('new', '신규 등록');
+    if (m === 'new_nophone') return chip('nophone', '신규 등록 · 휴대폰 비움(다른 고객이 사용 중)');
+    return chip('fail', '조회 실패', 'warn');
   }
   function lineRow(o, oi, l, li) {
     const dis = S.running ? ' disabled' : '';   // 실행 중엔 줄 컨트롤 전부 잠금(Fable F2)
     const e = l.mapping ? l.mapping.entry : null;
+    const pending = !e && l.suggest == null && S.phase === 'enriching';   // 추천 조회 전 → 스켈레톤
     const prod = e
-      ? esc(e.name) + ' <span class="oi-muted">' + esc(e.code) + '</span> <button class="oi-btn" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="매핑 지우기"' + dis + '>✕</button>'
-        + '<div style="margin-top:3px"><input class="oi-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"' + dis + '></div>'
-      : '<select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"' + dis + '><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
+      ? '<div class="oi-mapped"><span class="nm">' + esc(e.name) + '</span><span class="cd">' + esc(e.code) + '</span><button class="oi-btn sm icon quiet" aria-label="매핑 지우기" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="매핑 지우기"' + dis + '>' + ico('x') + '</button></div>'
+        + '<input class="oi-in oi-sub-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"' + dis + '>'
+      : pending ? '<span class="oi-skel w2"></span>'
+      : '<div class="oi-prod"><select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"' + dis + '><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
         + (l.suggest || []).map((s) => '<option value="' + esc(s.seq + '|' + s.code + '|' + s.name) + '">' + esc(s.name) + ' · ' + esc(s.code) + '</option>').join('')
-        + '</select><div style="display:flex;gap:4px;margin-top:3px"><input class="oi-in" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '><button class="oi-btn" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>검색</button></div>';
+        + '</select><input class="oi-in q" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '><button class="oi-btn sm icon" aria-label="검색" title="검색" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>' + ico('search') + '</button></div>';
     const inp = (f, v, cls) => '<input class="oi-in ' + (cls || 'sm') + '" data-f="' + f + '" data-o="' + oi + '" data-l="' + li + '" value="' + esc(v == null ? '' : v) + '"' + dis + '>';
-    const issues = l.issues.length ? '<div class="oi-issue">' + l.issues.map(esc).join('<br>') + '</div>' : '';
-    const note = (!e && l.searchNote) ? '<div class="oi-muted">' + esc(l.searchNote) + '</div>' : '';
-    return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + '"><td></td><td colspan="2">' + esc(l.productName) + '<br><span class="oi-muted">' + esc(l.optionText || '(옵션 없음)') + '</span>' + issues + '</td>'
+    const issues = l.issues.length ? '<div class="oi-issue">' + ico('warn') + l.issues.map(esc).join(' · ') + '</div>' : '';
+    const note = (!e && l.searchNote) ? '<div class="oi-note">' + esc(l.searchNote) + '</div>' : '';
+    const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
+    return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-name">' + esc(l.productName) + '</div><div class="oi-opt">' + esc(l.optionText || '(옵션 없음)') + '</div>' + issues + '</td>'
       + '<td>' + prod + note + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
-      + '<td>' + inp('qty', l.spec.qty) + '</td><td>' + inp('price', l.spec.price) + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
+      + '<td>' + inp('qty', l.spec.qty, 'sm num') + '</td><td>' + inp('price', Number.isInteger(l.spec.price) ? C.oiComma(l.spec.price) : l.spec.price, 'sm num') + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
+  }
+  function resultChip(r) {
+    if (!r) return '';
+    const juns = [...new Set((r.junNums || []).map((j) => j.junNum).filter(Boolean))];
+    if (r.status === 'done') return chip('done', '완료' + (juns.length ? ' · 관리번호 ' + juns.join(',') : ''), 'check');
+    return chip(r.status === 'skipped' ? 'skipped' : 'fatal', (r.status === 'skipped' ? '건너뜀' : r.status === 'blocked' ? '중단(앞 주문장 fatal)' : '중단') + (r.reason ? ' · ' + r.reason : ''), 'warn');
+  }
+  //  중복/이전 등록 칩(스펙 §5b): 완전 중복은 빨강, 주문번호만 같은 것은 주황 안내.
+  function prevChip(o) {
+    const d = o.dup; if (!d || !d.entry) return '';
+    const e = d.entry;
+    const when = fmtAt(e.at) + (e.junNums && e.junNums.length ? ' · 관리번호 ' + esc([...new Set(e.junNums)].join(',')) : '');
+    if (e.unverified) return chip('dup', '이전 시도 미확인 ' + when + (e.reason ? ' · ' + e.reason : '') + ' — 주문전표에서 확인', 'warn');
+    if (d.kind === 'same') return chip('dup', '이미 등록 ' + when + ' · 상품 동일', 'warn');
+    if (d.kind === 'legacy') return chip('dup', '이미 등록 ' + when + ' (상품 대조 불가)', 'warn');
+    return chip('prev', '이전에 넣음 ' + when + ' · 상품은 다름');
   }
   function orderRow(o, oi) {
-    const st = o.result ? '<span class="st-' + esc(o.result.status) + '">' + esc(o.result.status) + '</span> ' + esc(o.result.reason || '') + (o.result.junNums && o.result.junNums.length ? ' · 관리번호 ' + o.result.junNums.map((j) => esc(j.junNum)).join(',') : '') : '';
-    const prev = o.prev ? '<div class="oi-issue">이전에 넣음 ' + esc(String(o.prev.at).slice(0, 16).replace('T', ' ')) + (o.prev.junNums && o.prev.junNums.length ? ' · ' + esc(o.prev.junNums.join(',')) : '') + (o.prev.unverified ? ' (미확인: ' + esc(o.prev.reason || '') + ' — 주문전표에서 확인)' : '') + '</div>' : '';
-    return '<tr class="oi-o' + (o.ready ? '' : ' bad') + '"><td><input type="checkbox" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
-      + '<td>' + esc(o.seller) + ' ' + esc(o.orderNo) + prev + '</td><td>' + (o.clientName ? esc(o.clientName) : '(' + esc(o.seller) + ' 미등록)') + '<br><span class="oi-muted">' + esc(o.phone.phone || o.phone.raw) + '</span></td>'
-      + '<td colspan="7">' + (o.market ? custText(o) : marketPick(o, oi)) + (st ? ' · ' + st : '') + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
+    const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
+    //  이번 실행의 결과가 있으면 그 칩만 — 방금 등록한 주문장이 장부에 오르며 '이미 등록' 으로도 보이는 중복 표시를 막는다.
+    const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : prevChip(o)) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
+    return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.dup && o.dup.dup ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
+      + '<td><span class="oi-key"><span class="seller">' + esc(o.seller) + '</span>' + esc(o.orderNo) + '</span></td><td><span class="oi-cust">' + (o.clientName ? esc(o.clientName) : '<span class="oi-muted">(' + esc(o.seller) + ' 미등록)</span>') + '<br><span class="oi-muted">' + esc(o.phone.phone || o.phone.raw) + '</span></span></td>'
+      + '<td colspan="7">' + chips + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
+  }
+  //  진행 스트립(스펙 §3). 세 단계에서만 그려지고, 실행 중엔 log 훅이 progPatch 로 문구만 갱신한다.
+  function progStrip() {
+    const pr = S.progress;
+    const bar = (done, total) => '<span class="bar"><i style="width:' + (total ? Math.round(done / total * 100) : 0) + '%"></i></span><span class="cnt">' + done + '/' + total + '</span>';
+    if (S.phase === 'reading') return '<div class="oi-prog" role="status" aria-live="polite">' + ico('spin', 'oi-spin') + '<span class="txt">xls 읽는 중…</span><span class="bar indet"><i></i></span></div>';
+    if (S.phase === 'enriching') return '<div class="oi-prog" role="status" aria-live="polite">' + ico('spin', 'oi-spin') + '<span class="txt">유비샵 조회 중</span><span class="sub">— 상품 ' + pr.m[0] + '/' + pr.m[1] + ' · 고객 ' + pr.c[0] + '/' + pr.c[1] + ' · 추천 ' + pr.s[0] + '/' + pr.s[1] + '</span>' + bar(pr.done, pr.total) + '</div>';
+    if (S.phase === 'running') return '<div class="oi-prog run" role="status" aria-live="polite">' + ico('spin', 'oi-spin') + '<span class="txt">등록 중 ' + Math.min(pr.done + 1, pr.total) + '/' + pr.total + '</span><span class="sub">— ' + esc(String(pr.key).replace('|', ' ')) + (pr.label ? ' · ' + esc(pr.label) : '') + '</span>' + bar(pr.done, pr.total) + '<span class="warn">이 창과 유비샵 주문 화면을 조작하지 마세요</span></div>';
+    return '';
+  }
+  //  스트립 텍스트만 갱신(표 재렌더 없음 — 입력 중 값 소실·깜빡임 방지).
+  function progPatch() {
+    const p = document.getElementById(PANEL_ID); if (!p) return;
+    const el = p.querySelector('.oi-prog'); if (!el) return;
+    const tmp = document.createElement('div'); tmp.innerHTML = progStrip();
+    if (tmp.firstChild) el.replaceWith(tmp.firstChild);
+    const b = p.querySelector('.oi-chip.busy');   // 현재 주문장 행의 칩 문구도 따라간다(표 재렌더 없이 텍스트 노드만)
+    if (b && b.lastChild && b.lastChild.nodeType === 3) b.lastChild.textContent = '등록 중 · ' + (S.progress.label || '');
+  }
+  //  사람이 패널 안 입력칸에 있으면 표를 다시 그리지 않는다(포커스·입력 보호). 스트립은 갱신.
+  function renderSoft() {
+    const a = document.activeElement;
+    const p = document.getElementById(PANEL_ID);
+    if (p && a && p.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'SELECT') && a.type !== 'checkbox' && a.type !== 'file') { progPatch(); return; }
+    render();
+  }
+  function stepsHtml() {
+    const hasFile = S.orders.length > 0, running = S.phase === 'running' || S.results.length > 0;
+    const st = (n, label, state) => '<span class="oi-step' + (state ? ' ' + state : '') + '"><span class="n">' + (state === 'done' ? ico('check') : n) + '</span>' + label + '</span>';
+    return '<div class="oi-steps">' + st(1, '파일', hasFile ? 'done' : 'on') + '<span class="sep">›</span>' + st(2, '검토', running ? 'done' : hasFile ? 'on' : '') + '<span class="sep">›</span>' + st(3, '등록', running ? 'on' : '') + '</div>';
   }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
     const nOrd = S.orders.length, nReady = S.orders.filter((o) => o.ready).length, nChk = S.orders.filter((o) => o.checked && o.ready).length;
+    const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.result).length, nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length;
     const nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
     const done = S.results.filter((r) => r.status === 'done').length, skipped = S.results.filter((r) => r.status !== 'done').length;
+    const lock = S.running ? ' disabled' : '';
+    p.querySelector('.oi-steps-slot').innerHTML = stepsHtml();
+    p.querySelector('.oi-top').innerHTML =
+      '<div class="oi-bar"><label class="oi-btn">' + ico('file') + 'xls 선택<input type="file" id="ub-oi-file" accept=".xls,.xlsx" hidden' + lock + '></label>'
+      + (nOrd ? '<span class="oi-file">' + esc(S.fileName) + '</span><span class="oi-count">주문장 <b>' + nOrd + '</b> <i>·</i> 줄 <b>' + nLines + '</b> <i>·</i> 실행 가능 <b>' + nReady + '</b> <i>·</i> 체크 <b>' + nChk + '</b></span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가 열 포함)를 선택하세요</span>')
+      + '<span class="oi-spacer"></span>'
+      + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '등록 중…' : '등록 시작') + '</button>'
+      + '<button class="oi-btn quiet" data-act="export-map">매핑표 내보내기</button><label class="oi-btn quiet">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden' + (S.running ? ' disabled' : '') + '></label>'
+      + '<button class="oi-btn quiet" data-act="export-log">로그 JSON</button></div>'
+      + progStrip();
     p.querySelector('.oi-b').innerHTML =
-      (S.running ? '<div class="oi-lock">⏳ 실행 중 — 이 창과 유비샵 주문 화면을 조작하지 마세요 (' + S.results.length + '/' + nChk + ')</div>' : '')
-      + '<div class="oi-bar"><input type="file" id="ub-oi-file" accept=".xls,.xlsx"' + (S.running ? ' disabled' : '') + '> '
-      + (nOrd ? '<span>' + esc(S.fileName) + ' · 주문장 ' + nOrd + ' · 줄 ' + nLines + ' · 실행 가능 ' + nReady + ' · 체크 ' + nChk + '</span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가 열 포함)를 선택하세요</span>')
-      + '<span style="margin-left:auto"></span>'
-      + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>등록 시작</button>'
-      + '<button class="oi-btn" data-act="export-map">매핑표 내보내기</button><label class="oi-btn">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden' + (S.running ? ' disabled' : '') + '></label>'
-      + '<button class="oi-btn" data-act="export-log">로그 JSON</button></div>'
-      + (nOrd ? '<table class="oi-t"><thead><tr><th><input type="checkbox" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제"' + (nReady && nChk === nReady ? ' checked' : '') + (nReady && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th>수량</th><th>판매가</th><th>비고</th></tr></thead><tbody>'
-        + S.orders.map(orderRow).join('') + '</tbody></table>' : '')
-      + (S.results.length ? '<div class="oi-res"><b>결과</b> — 완료 ' + done + ' · 건너뜀/중단 ' + skipped + '<table class="oi-t"><thead><tr><th>주문장</th><th>상태</th><th>사유</th><th>고객</th><th>관리번호</th><th>되돌림</th></tr></thead><tbody>'
-        + S.results.map((r) => '<tr><td>' + esc(r.key) + '</td><td class="st-' + esc(r.status) + '">' + esc(r.status) + '</td><td>' + esc(r.reason || '') + '</td><td>' + esc(r.client ? r.client.name + ' #' + r.client.seq + ' (' + r.client.mode + ')' : '') + '</td><td>' + esc((r.junNums || []).map((j) => j.junNum).join(', ')) + '</td><td>' + esc(r.rolledBack || 0) + '</td></tr>').join('')
+      (nDup ? '<div class="oi-banner">' + ico('warn') + '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.</div>' : '')
+      + (nOrd ? '<table class="oi-t"><colgroup><col class="c-chk"><col><col><col class="c-prod"><col class="c-k"><col class="c-color"><col class="c-size"><col class="c-qty"><col class="c-price"><col class="c-remark"></colgroup>'
+        + '<thead><tr><th><input type="checkbox" class="oi-chk" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제(중복 제외)"' + (nAll && nChk === nAll ? ' checked' : '') + (nAll && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th class="num">수량</th><th class="num">판매가</th><th>비고</th></tr></thead><tbody>'
+        + S.orders.map(orderRow).join('') + '</tbody></table>' : (S.phase === 'reading' ? '' : '<div class="oi-empty">파일을 선택하면 주문장 검토 표가 여기에 뜹니다.</div>'))
+      + (S.results.length ? '<div class="oi-res"><h3>결과 <span class="oi-muted">— 완료 ' + done + ' · 건너뜀/중단 ' + skipped + '</span></h3><table class="oi-t" style="margin-top:6px"><thead><tr><th>주문장</th><th>상태</th><th>사유</th><th>고객</th><th>관리번호</th><th class="num">되돌림</th></tr></thead><tbody>'
+        + S.results.map((r) => '<tr><td>' + esc(r.key) + '</td><td>' + resultChip(Object.assign({}, r, { reason: '' })) + '</td><td>' + esc(r.reason || '') + '</td><td>' + esc(r.client ? r.client.name + ' #' + r.client.seq + ' (' + r.client.mode + ')' : '') + '</td><td>' + esc([...new Set((r.junNums || []).map((j) => j.junNum))].join(', ')) + '</td><td class="num">' + esc(r.rolledBack || 0) + '</td></tr>').join('')
         + '</tbody></table></div>' : '');
   }
   function openPanel() {
@@ -280,7 +456,7 @@
     if (document.getElementById(PANEL_ID)) return;
     const veil = document.createElement('div'); veil.id = 'ub-oi-veil'; document.body.appendChild(veil);
     const p = document.createElement('div'); p.id = PANEL_ID;
-    p.innerHTML = '<div class="oi-h"><b>주문 가져오기</b><span class="oi-muted">이지어드민 xls → 고객·줄 등록 → 주문장 완료</span><button class="oi-x" data-act="close" title="닫기">×</button></div><div class="oi-b"></div>';
+    p.innerHTML = ICON_DEFS + '<div class="oi-h"><span class="oi-title">주문 가져오기</span><span class="oi-steps-slot"></span><button class="oi-x" data-act="close" title="닫기" aria-label="닫기">' + ico('x') + '</button></div><div class="oi-top"></div><div class="oi-b"></div>';
     document.body.appendChild(p);
     p.addEventListener('click', onClick);
     p.addEventListener('change', onChange);
@@ -352,7 +528,7 @@
     if (el.id === 'ub-oi-mapfile') { const f = el.files && el.files[0]; if (f) await importMap(f); return; }
     const f = el.dataset.f; if (!f) return;
     if (f === 'chk') { const o = S.orders[+el.dataset.o]; o.checked = el.checked && o.ready; render(); return; }
-    if (f === 'chkall') { S.orders.forEach((o) => { o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장은 원래대로 제외
+    if (f === 'chkall') { S.orders.forEach((o) => { o.checked = el.checked && o.ready && !o.dup.dup; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장과 중복 주문장(§5b, 개별 체크로만)은 제외
     const o = S.orders[+el.dataset.o]; const l = o.lines[+el.dataset.l];
     if (f === 'q') { l.q = el.value; return; }   // 검색어는 줄에만 남기고 다시 그리지 않는다 — 그리면 글자가 사라진다
     if (f === 'pick') {
@@ -376,7 +552,7 @@
     }
     else if (f === 'itemSize') { l.spec.itemSize = el.value.trim(); l.spec.optOverride = true; }
     else if (f === 'qty') l.spec.qty = C.oiMoney(el.value);
-    else if (f === 'price') l.spec.price = C.oiMoney(el.value);
+    else if (f === 'price') l.spec.price = l.gift ? C.oiMoney0(el.value) : C.oiMoney(el.value);   // 사은품은 0 허용
     else if (f === 'remark') { l.spec.remark = el.value; l.spec.remarkAuto = false; }
     else if (f === 'suffix') {                                 // 비고 접미 — 이 상품의 매핑 항목에 저장(스펙 §2.4, Terra 12R P2)
       if (!l.mapping) return;
@@ -393,14 +569,15 @@
     const gen = ++S.fileGen;
     try {
       S.fileName = file.name; S.results = []; S.orders = [];
+      S.phase = 'reading'; render();
       const parsed = await readXls(file);
       if (gen !== S.fileGen) return;
       buildOrders(parsed);
-      render();
+      S.phase = 'idle'; render();
       await enrich();
       if (gen !== S.fileGen) return;
       render();
-    } catch (err) { if (gen !== S.fileGen) return; alert('파일을 읽지 못했습니다: ' + (err && err.message || err)); S.orders = []; render(); }
+    } catch (err) { if (gen !== S.fileGen) return; S.phase = 'idle'; alert('파일을 읽지 못했습니다: ' + (err && err.message || err)); S.orders = []; render(); }
   }
   async function importMap(file) {
     try {

@@ -198,6 +198,26 @@ test('searchLine 경합: 응답 순서가 뒤집혀도 마지막 검색어의 �
   assert.equal(line.suggestQuery, 'BBB', '비운 뒤 온 옛 응답이 목록을 바꾸면 안 된다');
 });
 
+//  2026-09-16 리디자인(스펙 2026-09-16-orderimport-panel-redesign): 사이드바 토큰·font inherit·이모지 0·진행 스트립·중복 경고.
+test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-motion · 진행 스트립 · 중복 기본 해제/전체 체크 제외/확인창 경고', () => {
+  const ui = read('src/orderimport.js');
+  const c0 = ui.indexOf('const CSS = `'); const css = ui.slice(c0, ui.indexOf('`;', c0));
+  assert.ok(/#\$\{PANEL_ID\} input,#\$\{PANEL_ID\} select,#\$\{PANEL_ID\} button,#\$\{PANEL_ID\} label\{font:inherit/.test(css), 'font: inherit');
+  assert.ok(/--ub-on:#35C5F0/.test(css) && /@keyframes oiSpin/.test(css) && /@media \(prefers-reduced-motion: reduce\)/.test(css), '사이드바 토큰·스피너·reduced-motion');
+  assert.ok(!/transition:\s*all/.test(css), 'transition: all 금지');
+  assert.equal((ui.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B50}\u{23F3}]/gu) || []).length, 0, '이모지 0(SVG 만)');
+  assert.ok(/function progStrip\(\)/.test(ui) && /S\.phase === 'reading'/.test(ui) && /S\.phase === 'enriching'/.test(ui) && /S\.phase === 'running'/.test(ui), '진행 스트립 3단계');
+  assert.ok(/role="status" aria-live="polite"/.test(ui), '진행 스트립 aria');
+  assert.ok(/S\.progress\.key = key; S\.progress\.label = C\.oiStepLabel\(step, info, S\.progress\.label\); progPatch\(\);/.test(ui), '실행기 log → 스트립 문구');
+  assert.ok(/o\.dup = C\.oiDupCheck\(o, o\.prev\);/.test(ui) && /if \(o\.checked == null\) o\.checked = o\.ready && !o\.dup\.dup;/.test(ui), '중복은 첫 판정 때 체크 해제');
+  assert.ok(/else if \(!o\.ready\) o\.checked = false;/.test(ui), '실행 불가면 해제, 그 외엔 사용자 체크 유지');
+  assert.ok(/o\.checked = el\.checked && o\.ready && !o\.dup\.dup;/.test(ui), '전체 체크는 중복을 건너뛴다');
+  assert.ok(/이미 등록된 것과 같은 주문장 ' \+ nDup \+ '개가 포함돼 있습니다\(중복 등록\)/.test(ui), '확인창 경고');
+  assert.ok(/sig: C\.oiOrderSig\(o\),/.test(ui), 'toRunOrder 가 서명을 싣는다');
+  assert.ok(/이미 등록된 것과 같은 주문장 ' \+ nDup \+ '개는 체크를 풀어 두었습니다/.test(ui), '표 위 배너');
+  assert.ok(/function renderSoft\(\)/.test(ui) && /progStep\('m'\)/.test(ui) && /progStep\('c'\)/.test(ui) && /progStep\('s'\)/.test(ui), '조회 진행 카운터');
+});
+
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
   const core = read('src/orderimport-core.js');
   assert.ok(core.includes('globalThis.ubOi = api;'));
