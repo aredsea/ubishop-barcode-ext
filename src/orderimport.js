@@ -86,7 +86,7 @@
     const wasDup = !!(o.dup && o.dup.dup);
     o.dup = C.oiDupCheck(o, o.prev);
     //  첫 판정, 또는 판정 뒤에 새로 중복이 된 순간(다른 탭이 그 사이 등록 — 그때의 체크는 중복을 모르고 한 것)에만 기본값을 적용한다(Opus O1 P2-5).
-    if (o.checked == null || (o.dup.dup && !wasDup && !o.result)) o.checked = o.ready && !o.dup.dup;
+    if (o.checked == null || (o.dup.dup && !wasDup && !o.ledgered)) o.checked = o.ready && !o.dup.dup;
     else if (!o.ready) o.checked = false;
   }
   function buildOrders(parsed) {
@@ -104,7 +104,7 @@
     const p = Promise.resolve(S.enriching).catch(() => {}).then(enrichBody);   // 겹치는 조회는 직렬화 — S.enriching 이 항상 마지막 조회를 가리키게
     if (!S.enriching) progInit(C.oiEnrichTotal(S.orders, S.masters));   // 시작 직후 스트립이 이전 실행의 카운터를 보이지 않게(GLM 1R P3)
     S.phase = 'enriching'; S.enriching = p; render();
-    try { await p; } finally { if (S.enriching === p) { S.enriching = null; if (S.phase === 'enriching') S.phase = 'idle'; renderWhenIdle(); } }
+    try { await p; } finally { if (S.enriching === p) { S.enriching = null; if (S.phase === 'enriching') S.phase = 'idle'; render(); } }
   }
   //  진행 카운터: 요청 하나 끝날 때마다 +1. 표는 사람이 입력 중이 아닐 때만 다시 그린다(입력 중 포커스를 뺏지 않게) — 스트립은 항상 갱신.
   function progInit(tot) { S.progress = { done: 0, total: tot.total, m: [0, tot.masters], c: [0, tot.customers], s: [0, tot.suggests], key: '', label: '' }; }
@@ -197,7 +197,7 @@
           //  체크 해제·장부 기록 판정은 core 의 순수 함수(Opus 5 P1 — 완료됐을 수 있는 fatal 이 체크된 채 남아 재클릭 때 중복 주문장이 생겼다)
           const ps = C.oiPostRunState(r, new Date().toISOString());
           if (ps.ledgerEntry) { S.ledger[r.key] = ps.ledgerEntry; saveLedger(); }
-          const o = S.orders.find((x) => x.key === r.key); if (o) { o.result = r; if (ps.uncheck) o.checked = false; }
+          const o = S.orders.find((x) => x.key === r.key); if (o) { o.result = r; o.ledgered = !!ps.ledgerEntry; if (ps.uncheck) o.checked = false; }
           render();
         }
       });
@@ -394,7 +394,7 @@
   function orderRow(o, oi) {
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
     //  이번 실행의 결과가 있으면 그 칩만 — 방금 등록한 주문장이 장부에 오르며 '이미 등록' 으로도 보이는 중복 표시를 막는다.
-    const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : prevChip(o)) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
+    const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : '') + (o.ledgered ? '' : ' ' + prevChip(o)) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
     return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.dup && o.dup.dup ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
       + '<td><span class="oi-key"><span class="seller">' + esc(o.seller) + '</span>' + esc(o.orderNo) + '</span></td><td><span class="oi-cust">' + (o.clientName ? esc(o.clientName) : '<span class="oi-muted">(' + esc(o.seller) + ' 미등록)</span>') + '<br><span class="oi-muted">' + esc(o.phone.phone || o.phone.raw) + '</span></span></td>'
       + '<td colspan="7">' + chips + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
@@ -420,25 +420,17 @@
   //  사람이 패널 안 입력칸에 있으면 표를 다시 그리지 않는다(포커스·입력 보호). 스트립은 갱신.
   //  진행 중(조회) 갱신: 툴바(.oi-bar — 파일 input 포함)는 건드리지 않는다(Opus O1 P2 — 열려 있던 파일 선택창의 input 이 떨어져 나갔다).
   //  사람이 패널 안 입력칸에 있으면 표도 다시 그리지 않고 스트립만 갱신(포커스·입력 보호). 아니면 표만 다시 그린다.
+  //  포커스가 표 영역(.oi-b) 안 어디든(입력칸·셀렉트·체크박스·버튼) 있으면 표를 다시 그리지 않는다 — mousedown~mouseup 사이에 표가 교체되면
+  //  클릭이 사라지고 마켓 픽커 값이 지워진다(Opus O2 P2-B). 조회가 끝나는 전체 렌더는 종전대로 무조건 그린다(입력 중 값 1회 소실은 감수 — O2 P2-A 로 지연 렌더 철회).
   function renderSoft() {
-    if (focusInPanelInput()) { progPatch(); return; }
+    if (focusInTable()) { progPatch(); return; }
     renderBody(); progPatch();
   }
-  function focusInPanelInput() {
+  function focusInTable() {
     const a = document.activeElement;
     const p = document.getElementById(PANEL_ID);
-    return !!(p && a && p.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'SELECT') && a.type !== 'checkbox' && a.type !== 'file');
-  }
-  //  단계가 끝났을 때의 전체 렌더 — 입력 중이면 그 칸을 떠난 뒤(focusout) 한 번 그린다(Opus O1 Nit: 조회 끝 렌더가 입력 중 값을 날렸다).
-  let renderPendingBlur = false;
-  function renderWhenIdle() {
-    if (!focusInPanelInput()) { render(); return; }
-    progPatch();
-    if (renderPendingBlur) return;
-    renderPendingBlur = true;
-    const p = document.getElementById(PANEL_ID);
-    const once = () => { renderPendingBlur = false; if (p) p.removeEventListener('focusout', once, true); setTimeout(render, 0); };
-    if (p) p.addEventListener('focusout', once, true); else renderPendingBlur = false;
+    const b = p && p.querySelector('.oi-b');
+    return !!(b && a && b.contains(a));
   }
   function stepsHtml() {
     const hasFile = S.orders.length > 0, running = S.phase === 'running' || S.results.length > 0;
@@ -447,9 +439,11 @@
   }
   function counts() {
     const nOrd = S.orders.length, nReady = S.orders.filter((o) => o.ready).length, nChk = S.orders.filter((o) => o.checked && o.ready).length;
-    const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.result).length, nDupUnchecked = S.orders.filter((o) => o.dup && o.dup.dup && !o.result && !o.checked).length;
-    const nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length, nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
-    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nAll, nLines };
+    const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.ledgered).length, nDupUnchecked = S.orders.filter((o) => o.dup && o.dup.dup && !o.ledgered && !o.checked).length;
+    //  머리글 체크 상태는 '중복 아닌 실행 가능' 주문장만 센다 — 손으로 켠 중복이 섞이면 양방향으로 틀린다(Opus O2 Nit-C).
+    const nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length, nChkAll = S.orders.filter((o) => o.checked && o.ready && !(o.dup && o.dup.dup)).length;
+    const nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
+    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nAll, nChkAll, nLines };
   }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
@@ -469,7 +463,7 @@
   //  표·결과만 다시 그린다(툴바 제외). 배너 문구는 실제 체크 상태를 말한다(Opus O1 P2-5 — 체크된 채 남은 중복이 있으면 "풀어 두었다" 고 하지 않는다).
   function renderBody() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
-    const { nOrd, nChk, nDup, nDupUnchecked, nAll } = counts();
+    const { nOrd, nDup, nDupUnchecked, nAll, nChkAll } = counts();
     const done = S.results.filter((r) => r.status === 'done').length, skipped = S.results.filter((r) => r.status !== 'done').length;
     const banner = !nDup ? '' : (nDupUnchecked === nDup
       ? '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.'
@@ -477,7 +471,7 @@
     p.querySelector('.oi-b').innerHTML =
       (banner ? '<div class="oi-banner">' + ico('warn') + banner + '</div>' : '')
       + (nOrd ? '<table class="oi-t"><colgroup><col class="c-chk"><col><col><col class="c-prod"><col class="c-k"><col class="c-color"><col class="c-size"><col class="c-qty"><col class="c-price"><col class="c-remark"></colgroup>'
-        + '<thead><tr><th><input type="checkbox" class="oi-chk" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제(중복 제외)"' + (nAll && nChk === nAll ? ' checked' : '') + (nAll && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th class="num">수량</th><th class="num">판매가</th><th>비고</th></tr></thead><tbody>'
+        + '<thead><tr><th><input type="checkbox" class="oi-chk" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제(중복 제외)"' + (nAll && nChkAll === nAll ? ' checked' : '') + (nAll && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th class="num">수량</th><th class="num">판매가</th><th>비고</th></tr></thead><tbody>'
         + S.orders.map(orderRow).join('') + '</tbody></table>' : (S.phase === 'reading' ? '' : '<div class="oi-empty">파일을 선택하면 주문장 검토 표가 여기에 뜹니다.</div>'))
       + (S.results.length ? '<div class="oi-res"><h3>결과 <span class="oi-muted">— 완료 ' + done + ' · 건너뜀/중단 ' + skipped + '</span></h3><table class="oi-t" style="margin-top:6px"><thead><tr><th>주문장</th><th>상태</th><th>사유</th><th>고객</th><th>관리번호</th><th class="num">되돌림</th></tr></thead><tbody>'
         + S.results.map((r) => '<tr><td>' + esc(r.key) + '</td><td>' + resultChip(Object.assign({}, r, { reason: '' })) + '</td><td>' + esc(r.reason || '') + '</td><td>' + esc(r.client ? r.client.name + ' #' + r.client.seq + ' (' + r.client.mode + ')' : '') + '</td><td>' + esc([...new Set((r.junNums || []).map((j) => j.junNum))].join(', ')) + '</td><td class="num">' + esc(r.rolledBack || 0) + '</td></tr>').join('')

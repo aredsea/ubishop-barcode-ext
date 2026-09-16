@@ -50,7 +50,7 @@
 
 - 단계 문구는 `runTargets` 의 `log` 훅(`logLine(key, step, info)`)에서 온다: `guard/client/register → '고객 확인'`, `line → '줄 i/n 등록'`, `complete → '완료 요청'`, `junlist/findJun → '전표 조회'`, `fail/rollback → '되돌리는 중'`. 매핑에 없는 step 은 마지막 문구 유지.
 - 스피너·shimmer·불확정 바는 CSS `@keyframes`(transform/opacity 만). `@media (prefers-reduced-motion: reduce)` 면 애니메이션 정지(정적 표시).
-- 조회 중 갱신(`renderSoft`)은 **표(.oi-b)만** 다시 그리고 툴바(파일 input 포함)는 건드리지 않는다(열려 있던 파일 선택창의 input 이 떨어져 나가지 않게, Opus O1 P2-2). 단계가 끝난 전체 렌더는 입력 중이면 그 칸을 떠난 뒤(focusout) 한 번 그린다.
+- 조회 중 갱신(`renderSoft`)은 **표(.oi-b)만** 다시 그리고 툴바(파일 input 포함)는 건드리지 않는다(열려 있던 파일 선택창의 input 이 떨어져 나가지 않게, Opus O1 P2-2). 포커스가 표 안 어디든(입력·셀렉트·체크박스·버튼) 있으면 표도 그리지 않고 스트립만 갱신한다(mousedown~mouseup 사이 표 교체로 클릭이 사라지지 않게, Opus O2 P2-B). 단계가 끝난 전체 렌더는 즉시 그린다 — 입력 중 값 1회 소실은 감수(지연 렌더는 focusout 꼬리 회귀로 철회, O2 P2-A).
 - 진행 스트립은 `render()` 가 그린다(별도 DOM 아님). `S.running` 중 `render()` 호출 빈도는 지금과 같다(onOrder 마다) + 진행 문구 갱신을 위해 `log` 훅에서 스트립 요소만 `textContent` 로 갱신(표 재렌더 없음 — 입력 중 값 소실·깜빡임 방지).
 
 ## 4. 스타일 규격
