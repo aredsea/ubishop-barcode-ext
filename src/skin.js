@@ -5828,10 +5828,10 @@
           } catch (_) {}
         }
         //  cs = 배정 팝업 링크 유무·바코드(일괄취소 사슬의 승인창 판정용 — 쓰기 근거는 재조회다). 링크가 없으면(출고완료) 상태 셀 괄호값.
-        let cs = { has: false, barcode: '', balju: false };
+        let cs = { has: false, barcode: '', jaego: false };
         if (tr) {
           try {
-            cs.balju = /발주주문/.test(tr.textContent || '');   // 유형 셀 `고객(…)발주주문` — 선택취소 경로가 없는 주문
+            cs.jaego = /재고주문/.test(tr.textContent || '');   // 유형 셀 `고객(…)재고주문` — 출고완료 사슬은 재고주문만(발주주문·13열 매장 목록은 fail-closed)
             const a = tr.querySelector('a[href*="currentSetting"]');
             const args = a ? parseCurrentSettingArgs(a.getAttribute('href')) : null;
             if (args) { cs.has = true; cs.barcode = String(args.barcode || ''); }
@@ -6418,9 +6418,9 @@
           excluded.push({ orderSeq: r.orderSeq, code: code, reason: '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동' });
           continue;
         }
-        //  출고완료 발주주문은 출고장만 지워지고 선택취소에서 막힌다 — 첫 쓰기(되돌릴 수 없음) 전에 승인 단계에서 거른다(Opus 1R P2).
-        if (code === 'T--' && r.cs && r.cs.balju) {
-          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '출고완료(발주주문) — 출고장을 지워도 배정 팝업이 없어 수동' });
+        //  출고완료는 재고주문일 때만 — 발주주문은 출고장만 지워지고 선택취소에서 막힌다. 첫 쓰기(되돌릴 수 없음) 전에 승인 단계에서 거른다(Opus 1R P2, 양성 판정 O2 Nit).
+        if (code === 'T--' && !(r.cs && r.cs.jaego)) {
+          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '출고완료 — 재고주문이 아님(발주주문 등), 출고장을 지워도 배정 팝업이 없어 수동' });
           continue;
         }
         if (code === 'T--' && !(r.cs && r.cs.barcode)) {
@@ -6445,10 +6445,11 @@
     const m = String(text == null ? '' : text).replace(/\s+/g, '').match(/\(([^()]+)\)$/);
     return m ? m[1] : '';
   }
-  //  행이 발주주문(공장 발주→입고)인가 — 유형 셀 `고객(…)발주주문`. 발주주문은 배정 팝업이 없어 선택취소 경로가 없다(실측 2026-09-16).
-  //  출고완료 발주주문은 출고장만 지워지고 막히므로 첫 쓰기 전에 걸러야 한다(Opus 1R P2).
-  function ccRowIsBalju(rowHtml) {
-    return /발주주문/.test(String(rowHtml == null ? '' : rowHtml).replace(/<[^>]*>/g, ''));
+  //  행이 재고주문인가 — 본사 계정 목록(14열)의 유형 셀 `고객(…)재고주문`/`고객(…)발주주문`. 발주주문(공장 발주→입고)은 배정 팝업이 없어
+  //  선택취소 경로가 없고, 출고완료 발주주문은 출고장만 지워지고 막힌다(Opus 1R P2) → 첫 쓰기 전에 걸러야 한다.
+  //  양성 판정(재고주문 요구)이다 — 모르는 유형 라벨·유형 없는 13열 목록(매장 계정)은 fail-closed(Opus O2 Nit).
+  function ccRowIsJaego(rowHtml) {
+    return /재고주문/.test(String(rowHtml == null ? '' : rowHtml).replace(/<[^>]*>/g, ''));
   }
   //  재조회 행(fetchOrderRow 결과) → 다음 쓰기 하나. 스펙 2026-09-16 §4.5 표. 전부 fail-closed — 조건이 하나라도 안 맞으면 write 를 내지 않는다.
   //   반환 {kind:'done'} | {kind:'fail', reason} | {kind:'write', step, label, want[, barcode]}; want = 목표 상태(재조회로 확인할 코드).
@@ -6478,7 +6479,7 @@
       return { kind: 'write', step: 'unassign', label: '선택취소(' + cellBc + ')', want: 'OS-', barcode: cellBc };
     }
     if (code === 'T--') {
-      if (ccRowIsBalju(row.rowHtml)) return fail('출고완료(발주주문) — 출고장을 지워도 배정 팝업이 없어 수동');
+      if (!ccRowIsJaego(row.rowHtml)) return fail('출고완료 — 재고주문이 아님(발주주문 등), 출고장을 지워도 배정 팝업이 없어 수동');
       const bc = ccCellBarcode(row.text);
       if (!bc) return fail('출고 바코드를 읽지 못함');
       return { kind: 'write', step: 'deliv-delete', label: '출고장 삭제(' + bc + ')', want: 'I--', barcode: bc };

@@ -32,7 +32,7 @@ function extractFn(src, name) {
 
 const NAMES = ['ccTargetStatus', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome', 'ccRowCancelSeq',
                'ccRequeryReason', 'ccRowCurrentSetting', 'parseCurrentSettingArgs', 'ccNextStep', 'ccStepOutcome',
-               'ccCellBarcode', 'ccRowIsBalju', 'ccPickDelivIdx', 'dcmSearchParams', 'dcmHidden',
+               'ccCellBarcode', 'ccRowIsJaego', 'ccPickDelivIdx', 'dcmSearchParams', 'dcmHidden',
                'ccBuildUnassignUrl', 'cBuildStandbyUrl', 'ccDoCancel', 'ccDoStandbyOff', 'ccDoUnassign', 'ccDoDelivDelete', 'ccDoStep',
                'ccRunCancelBatch'];
 
@@ -78,7 +78,7 @@ function makeRequery(script) {
     const sKey = '2609111512' + String(++requerySeq).padStart(5, '0');
     // 서버처럼: O-- 행엔 [취소] 링크 del('<seq>')(2026-09-11 실측: 332/332, 취소된 행엔 없음), I--/OS- 행엔 배정 팝업 링크
     //  currentSetting(...)(바코드 = r.assignedBarcode; r.link===false 면 발주주문처럼 링크 없음), T-- 는 링크 없음(2026-09-16 실측).
-    //  유형 셀(재고주문/발주주문 — r.balju) + 상태 셀(괄호 바코드) 을 서버처럼 싣는다. text 는 fetchOrderRow 처럼 공백 제거 상태 셀.
+    //  유형 셀(재고주문/발주주문 — r.balju) + 상태 셀(괄호 바코드) 을 본사 계정 14열 목록처럼 싣는다. text 는 fetchOrderRow 처럼 공백 제거 상태 셀.
     const type = '<td>' + (r && r.balju ? '고객(메인석)발주주문' : '고객(상품)재고주문') + '</td>';
     const cell = (r ? r.code : '') + (r && r.assignedBarcode ? '(' + r.assignedBarcode + ')' : '');
     let rowHtml = '<tr>' + type + '<td>' + cell + '</td></tr>';
@@ -582,7 +582,7 @@ test('cReadCheckedRows: 행마다 배정 팝업 링크 여부와 바코드(cs)�
   const src = extractFn(SRC, 'cReadCheckedRows');
   assert.ok(/a\[href\*="currentSetting"\]/.test(src) && /parseCurrentSettingArgs\(/.test(src), '링크 인자를 파싱한다');
   assert.ok(/cs:\s*cs/.test(src) && /cs\.has = true; cs\.barcode = String\(args\.barcode \|\| ''\);/.test(src), 'cs 필드');
-  assert.ok(/cs\.balju = \/발주주문\/\.test\(tr\.textContent \|\| ''\);/.test(src), '유형 셀 발주주문 여부(Opus 1R P2)');
+  assert.ok(/cs\.jaego = \/재고주문\/\.test\(tr\.textContent \|\| ''\);/.test(src), '유형 셀 재고주문 여부 — 양성 판정(Opus 1R P2 · O2 Nit)');
   assert.ok(/\\\(\(\[\^\(\)\]\+\)\\\)\\s\*\$/.test(src), '링크가 없으면 상태 셀 괄호값(출고완료 (250HHL))을 바코드로');
 });
 
@@ -762,7 +762,7 @@ test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계"
 test('사슬 실패: 출고완료 발주주문은 출고장 삭제 전에 failed(첫 쓰기 없음)', async () => {
   const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'T--', assignedBarcode: '2609AY', balju: true }] }) });
   const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => false);
-  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '출고완료(발주주문) — 출고장을 지워도 배정 팝업이 없어 수동' }]);
+  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '출고완료 — 재고주문이 아님(발주주문 등), 출고장을 지워도 배정 팝업이 없어 수동' }]);
   assert.deepEqual(deps.dels, []); assert.deepEqual(deps.logs, []); assert.equal(deps.fetch.calls.length, 0);
 });
 test('사슬 중 중단: 이미 쓴 건은 서버 상태로 화면을 갱신한다(Opus 1R Nit)', async () => {
