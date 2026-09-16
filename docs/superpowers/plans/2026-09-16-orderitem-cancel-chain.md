@@ -127,14 +127,15 @@ Expected: FAIL — `ccChainLabel 선언을 찾지 못했습니다` (추출 즉�
     return code === 'O--' || code === 'OS-' || code === 'I--' || code === 'T--';
   }
   //  승인창 표시 문구(판정에 쓰지 않는다). cs = { has: currentSetting 링크 유무, barcode: 링크 3번째 인자 또는 상태 셀 괄호값 }.
-  const CC_CHAIN = {
-    'O--': '주문완료 → 취소',
-    'OS-': '본사확인 → 본사확인취소 · 취소',
-    'I--': '입고완료%s → 선택취소 · 본사확인취소 · 취소',
-    'T--': '출고완료%s → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소'
-  };
+  //  표는 함수 안에 둔다 — 테스트 하네스가 함수 하나만 추출한다.
   function ccChainLabel(code, cs) {
-    const s = CC_CHAIN[code];
+    const CHAIN = {
+      'O--': '주문완료 → 취소',
+      'OS-': '본사확인 → 본사확인취소 · 취소',
+      'I--': '입고완료%s → 선택취소 · 본사확인취소 · 취소',
+      'T--': '출고완료%s → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소'
+    };
+    const s = CHAIN[code];
     if (!s) return '';
     const bc = cs && cs.barcode ? ' (' + cs.barcode + ')' : '';
     return s.replace('%s', bc);
@@ -265,7 +266,7 @@ test('ccPickDelivIdx: 2번째=바코드 && 4번째=orderSeq 인 값 정확히 1�
   assert.deepEqual(ccPickDelivIdx(vals, '250HHL', '389513'), { idx: '426106,250HHL,47295,389513' });
   assert.deepEqual(ccPickDelivIdx(vals, '250hhl', ' 389513 '), { idx: '426106,250HHL,47295,389513' }, '바코드 대소문자·공백 무시');
   assert.equal(ccPickDelivIdx(vals, '250HHL', '389514'), null, '바코드만 맞고 주문이 다르면 없음');
-  assert.equal(ccPickDelivIdx(vals, '250HHL', '0'), null === null ? ccPickDelivIdx(vals, '250HHL', '0') && null : null, 'orderSeq 0 은 주문 없는 출고 — 호출부가 0 을 넘길 일이 없지만 값 자체는 특정된다');
+  assert.deepEqual(ccPickDelivIdx(vals, '250HHL', '0'), { idx: '426105,250HHL,47290,0' }, 'orderSeq 0(주문 없는 출고)도 값으로는 특정된다 — 호출부가 0 을 넘길 일은 없다');
   assert.deepEqual(ccPickDelivIdx(vals.concat(['999,250HHL,1,389513']), '250HHL', '389513'), { ambiguous: 2 });
   assert.equal(ccPickDelivIdx(vals, '', '389513'), null); assert.equal(ccPickDelivIdx(vals, '250HHL', ''), null);
   assert.equal(ccPickDelivIdx(['bad', '1,250HHL', null], '250HHL', '389513'), null, '토큰 4개 미만은 무시');
@@ -282,8 +283,6 @@ test('ccBuildUnassignUrl: 팝업 cancelForm 과 같은 모양 — tcode·barcode
   assert.equal(ccBuildUnassignUrl(' 2608ET ', 389520, null), '/jun/orderitem/orderItemPopCurrentSettingCancel.do?tcode=order_item&barcode=2608ET&orderSeq=389520');
 });
 ```
-
-⚠ `ccPickDelivIdx(vals, '250HHL', '0')` 줄은 헷갈린다 — 그냥 이렇게 써라: `assert.equal(ccPickDelivIdx(vals, '250HHL', '0'), null === null ? null : null);` 대신 **`assert.deepEqual(ccPickDelivIdx(vals, '250HHL', '0'), { idx: '426105,250HHL,47290,0' }, 'orderSeq 0 도 값으로는 특정된다(호출부가 0 을 넘길 일은 없다)');`** 로 적는다.
 
 - [ ] **Step 2: 실패 확인**
 
@@ -626,7 +625,8 @@ test('ccDoStep: 단계별로 알맞은 쓰기 함수 하나만 부른다, 모르
       if (pick.ambiguous) return { ok: false, reason: '출고 건이 ' + pick.ambiguous + '건이라 특정 불가' };
       const sKey = dcmHidden(html, 'sKey');
       if (!sKey) return { ok: false, reason: '출고전표 sKey 추출 실패' };
-      const tr = (boxes.find((b) => (b.value || '') === pick.idx) || {}).closest ? boxes.find((b) => (b.value || '') === pick.idx).closest('tr') : null;
+      const box = boxes.find((b) => (b.value || '') === pick.idx);
+      const tr = box && box.closest ? box.closest('tr') : null;
       const c = tr ? [...tr.cells].map((x) => (x.textContent || '').replace(/\s+/g, ' ').trim()) : [];
       const status = c[14] || '';
       if (status !== '출고완료') return { ok: false, reason: '출고 건 상태가 출고완료가 아님(' + (status || '불명') + ')' };
@@ -665,12 +665,6 @@ test('ccDoStep: 단계별로 알맞은 쓰기 함수 하나만 부른다, 모르
   }
 ```
 
-⚠ `ccFindDelivRow` 의 `tr` 줄은 읽기 어렵다 — 이렇게 써라:
-```js
-      const box = boxes.find((b) => (b.value || '') === pick.idx);
-      const tr = box && box.closest ? box.closest('tr') : null;
-```
-
 - [ ] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 새 테스트 PASS, 기존 테스트도 PASS(ccRunCancelBatch 는 아직 옛 본문 — 추출만 늘어남).
 
 - [ ] **Step 5: 커밋**
@@ -706,7 +700,13 @@ git commit -m "feat(일괄취소): 쓰기 4종 디스패치 — 본사확인취�
       : Object.assign({ found: true, orderSeq, text: r.code, assignedBarcode: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml, sKey }, r);
 ```
 
-기존 테스트 2개를 새 계약으로 바꾼다:
+기존 테스트 3개를 새 계약으로 바꾼다. 먼저 '미확정: dispatch 후 재조회가 계속 O-- 이면 …' 의 단언 한 줄:
+
+```js
+  assert.match(r.uncertain[0].reason, /^취소 처리 미확정 — 현재 상태: O-- · 수동 확인 필요 · 서버: 취소 불가$/);   // 문구에 단계·현재 상태가 들어간다(스펙 §4.3)
+```
+
+그리고 아래 두 개:
 
 ```js
 test('재조회 OS-(본사확인): 이제 대상 — 본사확인취소 POST → O-- → 취소 GET → OC- (쓰기 2회, 각 sKey 는 직전 응답의 것)', async () => {
@@ -796,7 +796,8 @@ test('사슬 실패: 링크 바코드와 상태 셀 바코드가 다르면 선�
 test('사슬 중 중단: 한 단계 쓴 뒤 [중단] 이면 uncertain("중단 — 현재 상태") 로 남고 processed 는 줄지 않는다', async () => {
   let n = 0;
   const deps = chainDeps();
-  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => (++n > 6));   // 첫 쓰기(출고장 삭제)까지 진행되게 몇 번은 false
+  // isAborted 호출: ① 건 시작 ② 첫 쓰기(출고장 삭제) 직전 ③ 두 번째 쓰기(선택취소) 직전 → ③ 에서 true
+  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => (++n > 2));
   assert.equal(r.processed, 1);
   assert.equal(r.uncertain.length, 1); assert.match(r.uncertain[0].reason, /^중단 — 현재 상태: /);
   assert.ok(deps.dels.length === 1, '첫 쓰기는 나갔다');
@@ -807,15 +808,16 @@ test('사슬 중 재조회 실패(found=false): 이미 쓴 단계 수를 문구�
   const inner = deps.fetchOrderRow; let k = 0;
   deps.fetchOrderRow = async (s, d) => { const r = await inner(s, d); k++; return k >= 3 ? Object.assign({}, r, { found: false, code: null }) : r; };
   const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => false);
-  assert.equal(r.uncertain.length + r.failed.length, 1);
+  // 출고장 삭제 확인(k=2, I--)은 성공이고 그 응답이 곧 다음 근거라 판정용 재조회는 없다 → 선택취소 GET 뒤 확인 재조회(k≥3)가 found=false → 미확정
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.uncertain.length, 1); assert.match(r.uncertain[0].reason, /^선택취소\(250HHL\) 미확정 — 현재 상태: 불명/);
+  assert.equal(deps.fetch.calls.length, 1);
 });
 test('단계 상한: 루프는 CC_MAX_STEPS(6) 로 막혀 있다(정상 전이로는 5회 안에 끝나 도달 불가 — 방어 상수 핀)', () => {
   const src = extractFn(SRC, 'ccRunCancelBatch');
   assert.ok(/step < CC_MAX_STEPS/.test(src) && /const CC_MAX_STEPS = 6;/.test(SRC), '상한 상수와 루프 조건');
 });
 ```
-
-⚠ 마지막에서 두 번째 테스트("사슬 중 재조회 실패")는 판정이 느슨하다(`uncertain + failed === 1`). 이유: 출고장 삭제 뒤 확인 재조회(k=2, I--)는 성공이고, 그 다음 판정용 재조회는 없다(확인 응답이 곧 근거) → 선택취소 GET 뒤 확인 재조회(k≥3)가 found=false → **uncertain** 이 정답이다. 그러니 이렇게 정확히 써라: `assert.equal(r.uncertain.length, 1); assert.match(r.uncertain[0].reason, /^선택취소\(250HHL\) 미확정 — 현재 상태: 불명/);`
 
 - [ ] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 사슬 테스트들 FAIL(옛 루프는 T--/I--/OS- 를 '상태 부적합' 으로 실패시킨다).
 
@@ -933,7 +935,7 @@ git commit -m "feat(일괄취소): 건별 루프를 상태 사슬로 — 재조�
 **Interfaces:**
 - Consumes: `ccChainLabel(code, cs)`.
 
-- [ ] **Step 1: 테스트 (RED)** — `buildDialog` 의 `names` 를 `['ccChainLabel', 'ccShowApprovalDialog']` 로 바꾸고(`CC_CHAIN` 상수는 ccChainLabel 안에서 참조하므로 팩토리 문자열에 `'const CC_CHAIN = ' + JSON.stringify({...}) + ';\n'` 을 넣는 대신, **ccChainLabel 이 상수를 함수 안에 두도록 Task 1 에서 구현했는지 확인** — 아니면 하네스에 상수를 넣는다) 다음을 추가:
+- [ ] **Step 1: 테스트 (RED)** — `buildDialog` 의 `names` 를 `['ccChainLabel', 'ccShowApprovalDialog']` 로 바꾸고(ccChainLabel 은 표를 함수 안에 둬서 단독 추출된다 — Task 1) 다음을 추가:
 
 ```js
 test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계" 를 보여주고, 출고장 삭제·재고 반환 경고를 명시한다', () => {
@@ -979,8 +981,6 @@ test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계"
         }
       }
 ```
-
-`ccChainLabel` 이 모듈 상수 `CC_CHAIN` 을 쓰면 `buildDialog` 하네스에서 `CC_CHAIN` 이 없어 죽는다 — **Task 1 구현을 고쳐 상수를 함수 안으로 옮긴다**(`function ccChainLabel(code, cs) { const CC_CHAIN = {...}; ... }`). Task 1 테스트는 그대로 통과한다.
 
 - [ ] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js tests/orderitem-cancel.test.js` → PASS.
 
