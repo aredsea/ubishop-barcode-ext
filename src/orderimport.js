@@ -325,9 +325,9 @@
   //  (2026-09-16 사장님 제보: 검색칸 change 가 표 전체를 다시 그려 글자가 사라지고 클릭이 떨어져 나간 옛 버튼에 붙어 아무 반응이 없었다)
   async function searchLine(oi, li, inputEl) {
     const o = S.orders[oi]; const l = o && o.lines[li]; if (!l) return;
-    const q = String((inputEl && inputEl.value) || l.q || '').trim();
+    const q = String(inputEl ? inputEl.value : (l.q || '')).trim();   // 입력칸이 있으면 그 값만 — 비웠으면 빈 것(이전 검색어 재사용 금지, Luna 1R)
     l.q = q;
-    if (!q) return;
+    if (!q) { l.searchNote = ''; render(); return; }
     l.searchNote = '검색 중…'; render();
     try {
       const hits = await E.searchMaster(q.replace(/\s+/g, ''));

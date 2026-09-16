@@ -134,6 +134,45 @@ test('UI 배선: 직접 검색 — 검색칸 change 는 재렌더하지 않고, 
   assert.ok(/const note = \(!e && l\.searchNote\)/.test(ui) && ui.includes("'<td>' + prod + note + '</td><td>'"), '안내가 상품 셀에 렌더된다');
 });
 
+//  Luna 1R(2026-09-16): 소스 대조만으론 "빈 칸 + Enter 가 이전 검색어로 재검색" 같은 동작 회귀를 못 잡는다 → searchLine 을 잘라 실제로 돌린다.
+function extractFn(src, name) {
+  const kw = src.indexOf('function ' + name + '(');
+  assert.ok(kw >= 0, 'orderimport.js 에서 ' + name + ' 선언을 찾지 못했습니다');
+  const start = (src.slice(kw - 6, kw) === 'async ') ? kw - 6 : kw;
+  const open = src.indexOf('{', kw);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start, i + 1); }
+  }
+  throw new Error(name + ' 본문의 중괄호 균형을 찾지 못했습니다');
+}
+test('searchLine 동작: 공백 제거해 검색·검색어 보존·0건 안내, 빈 칸이면 이전 검색어로 재검색하지 않는다', async () => {
+  const ui = read('src/orderimport.js');
+  const calls = []; let renders = 0;
+  const E = { async searchMaster(q) { calls.push(q); return q === 'abc' ? [{ seq: '1', code: 'C', name: 'N' }] : []; } };
+  const line = { q: '', suggest: null, suggestQuery: '', searchNote: '' };
+  const S = { orders: [{ lines: [line] }], running: false, starting: false };
+  const searchLine = new Function('S', 'E', 'render', extractFn(ui, 'searchLine') + '\nreturn searchLine;')(S, E, () => { renders++; });
+  await searchLine(0, 0, { value: ' a bc ' });
+  assert.deepStrictEqual(calls, ['abc'], '공백을 지워 보낸다');
+  assert.equal(line.q, 'a bc', '친 검색어(trim)가 줄에 남는다');
+  assert.equal(line.suggest.length, 1); assert.equal(line.suggestQuery, 'a bc');
+  assert.ok(/1건/.test(line.searchNote));
+  await searchLine(0, 0, { value: 'zzz' });
+  assert.ok(/0건/.test(line.searchNote), '0건도 안내한다');
+  const before = calls.length;
+  await searchLine(0, 0, { value: '' });                      // 검색 뒤 칸을 비우고 Enter
+  assert.equal(calls.length, before, '빈 칸이면 검색하지 않는다(이전 검색어 재사용 금지)');
+  assert.equal(line.q, ''); assert.equal(line.searchNote, '');
+  await searchLine(0, 0, null);                                // 입력칸 없이 호출(줄에 남은 검색어 사용) — q 가 비어 있으니 역시 검색 없음
+  assert.equal(calls.length, before);
+  E.searchMaster = async () => { throw new Error('boom'); };
+  await searchLine(0, 0, { value: 'x' });
+  assert.ok(/검색 실패: boom/.test(line.searchNote), '실패도 안내한다');
+  assert.ok(renders >= 4, '검색 중·결과마다 다시 그린다');
+});
+
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
   const core = read('src/orderimport-core.js');
   assert.ok(core.includes('globalThis.ubOi = api;'));
