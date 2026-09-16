@@ -1,5 +1,7 @@
 # 주문 가져오기 패널 리디자인 · 중복 경고 · 다크모드 제거 Implementation Plan
 
+> **결과(2026-09-16)**: Task 1~4 완료 — main `1ec14be`(SHELL 4.2.4) 푸시. 사은품 0원(§5c)은 도중에 4.2.3 으로 먼저 배포. 검수 GLM 1R + Opus O1~O3(원장 #96~#101), 교차는 사장님 지시로 생략. 렌더는 하네스(`scratchpad/mock/harness.js`)로 확인. 라이브 화면 확인은 사장님 실제 xls 로.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 주문 가져오기 패널을 사이드바 디자인 언어(시안 #35C5F0·Pretendard·8/12px·SVG)로 통일하고, 파일 읽기/유비샵 조회/등록 세 단계의 진행을 스트립·스켈레톤·칩으로 보여주며, 장부와 주문번호·상품이 완전히 같은 주문장은 기본 체크 해제 + 경고로 사전 결정하게 한다. 확장 전체에서 다크모드를 걷어낸다.
@@ -27,7 +29,7 @@
 **Interfaces:**
 - Produces: `oiOrderSig(order:{lines:[{productName,optionText,qty}]}) → string` · `oiDupCheck(order, entry) → {dup:boolean, kind:'none'|'same'|'diff'|'legacy', entry}` · `oiStepLabel(step, info, last) → string` · `oiEnrichTotal(orders, masters) → {masters, customers, suggests, total}` · 장부 항목 `{at, tradeJun, junNums, lines, sig, unverified?, reason?}`
 
-- [ ] **Step 1: 테스트(RED)** — `tests/orderimport-parse.test.js` 끝에:
+- [x] **Step 1: 테스트(RED)** — `tests/orderimport-parse.test.js` 끝에:
 
 ```js
 test('oiOrderSig: 상품명·옵션·수량으로 만든 서명은 순서·공백·대소문자와 무관하다', () => {
@@ -70,9 +72,9 @@ test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
 });
 ```
 
-- [ ] **Step 2: 실패 확인** — `node --test tests/orderimport-parse.test.js` → `C.oiOrderSig is not a function` 류로 실패.
+- [x] **Step 2: 실패 확인** — `node --test tests/orderimport-parse.test.js` → `C.oiOrderSig is not a function` 류로 실패.
 
-- [ ] **Step 3: 구현** — `src/orderimport-core.js` `oiPostRunState` 앞에 추가:
+- [x] **Step 3: 구현** — `src/orderimport-core.js` `oiPostRunState` 앞에 추가:
 
 ```js
   //  주문장의 '상품 서명' — 줄마다 상품명|옵션|수량(공백 하나로·소문자)을 정렬해 잇는다. 장부 항목과 대조해 "완전히 같은 주문번호+상품" 을 가린다(스펙 §5b).
@@ -104,8 +106,8 @@ test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
 
 `oiRunOrder` 의 `res` 초기화에 `sig: order.sig || ''` 추가. `oiPostRunState` 의 두 `ledgerEntry` 에 `sig: r.sig || ''` 추가. `log('line', …)` 호출에 `n: order.lines.length` 가 있는지 확인하고 없으면 추가. api 객체에 `oiOrderSig, oiDupCheck, oiStepLabel, oiEnrichTotal` 노출.
 
-- [ ] **Step 4: 통과** — `node --test tests/orderimport-*.test.js` 전부 fail 0.
-- [ ] **Step 5: 커밋** — `feat(주문 가져오기): core — 상품 서명·중복 판정·진행 문구·조회 총량, 장부에 서명 저장`
+- [x] **Step 4: 통과** — `node --test tests/orderimport-*.test.js` 전부 fail 0.
+- [x] **Step 5: 커밋** — `feat(주문 가져오기): core — 상품 서명·중복 판정·진행 문구·조회 총량, 장부에 서명 저장`
 
 ---
 
@@ -113,7 +115,7 @@ test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
 
 **Files:** `popup/popup.html`(다크 행·"디자인" 그룹 제목), `popup/popup.js`(ubDark 5곳), `src/skin.js`(머리말 5행·DEFAULTS·DARK_STYLE_ID/DARK_CSS/ensureDarkStyle/applyDark·init 의 `applyDark()`·사이드바 `html.ub-dark .ub-sidebar` 블록·라이브필터 dark 규칙 6줄+주석·HQ 앵커 dark 규칙) · Test: `tests/no-darkmode.test.js`(신규)
 
-- [ ] **Step 1: 테스트(RED)**:
+- [x] **Step 1: 테스트(RED)**:
 
 ```js
 const test = require('node:test'); const assert = require('node:assert'); const fs = require('node:fs'); const path = require('node:path');
@@ -126,9 +128,9 @@ test('다크모드는 걷어냈다 — src/·popup/ 에 ub-dark/ubDark 0건, 팝
 });
 ```
 
-- [ ] **Step 2: 제거** — 스펙 §5 표대로 삭제. `popup.js` 의 `[dark, autoSync, …].forEach` 목록에서 `dark` 만 뺀다. 라이브필터 CSS 배열의 dark 줄 6개와 그 위 `// ── 다크모드 🔴` 주석 제거; `html.ub-dark a.${HQ_STANDBY_CLS}` 셀렉터는 그 규칙에서 지우고 라이트 셀렉터만 남긴다.
-- [ ] **Step 3: 통과** — `node --test tests/no-darkmode.test.js tests/phase5-switch-ui.test.js tests/orderitem-c.test.js tests/orderitem-c2a.test.js tests/orderitem-c2b.test.js tests/orderitem-assign.test.js tests/stock-recent.test.js tests/rotate-flow.test.js` fail 0. `node -e "new Function(require('fs').readFileSync('src/skin.js','utf8'))"` 통과.
-- [ ] **Step 4: 커밋** — `refactor(다크모드 제거): 팝업 스위치·페이지 강제 다크 CSS·사이드바/라이브필터/본사확인 dark 규칙 삭제`
+- [x] **Step 2: 제거** — 스펙 §5 표대로 삭제. `popup.js` 의 `[dark, autoSync, …].forEach` 목록에서 `dark` 만 뺀다. 라이브필터 CSS 배열의 dark 줄 6개와 그 위 `// ── 다크모드 🔴` 주석 제거; `html.ub-dark a.${HQ_STANDBY_CLS}` 셀렉터는 그 규칙에서 지우고 라이트 셀렉터만 남긴다.
+- [x] **Step 3: 통과** — `node --test tests/no-darkmode.test.js tests/phase5-switch-ui.test.js tests/orderitem-c.test.js tests/orderitem-c2a.test.js tests/orderitem-c2b.test.js tests/orderitem-assign.test.js tests/stock-recent.test.js tests/rotate-flow.test.js` fail 0. `node -e "new Function(require('fs').readFileSync('src/skin.js','utf8'))"` 통과.
+- [x] **Step 4: 커밋** — `refactor(다크모드 제거): 팝업 스위치·페이지 강제 다크 CSS·사이드바/라이브필터/본사확인 dark 규칙 삭제`
 
 ---
 
@@ -138,7 +140,7 @@ test('다크모드는 걷어냈다 — src/·popup/ 에 ub-dark/ubDark 0건, 팝
 
 **Interfaces:** Consumes Task 1 의 `C.oiOrderSig/oiDupCheck/oiStepLabel/oiEnrichTotal`.
 
-- [ ] **Step 1: 테스트(RED)** — `tests/orderimport-wiring.test.js` 에:
+- [x] **Step 1: 테스트(RED)** — `tests/orderimport-wiring.test.js` 에:
 
 ```js
 test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-motion · 진행 스트립 · 중복 기본 해제/전체 체크 제외/확인창 경고', () => {
@@ -157,15 +159,15 @@ test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-
 });
 ```
 
-- [ ] **Step 2: 구현** — 목업 CSS 를 `CSS` 상수로(셀렉터 `#${PANEL_ID}`), 마크업을 목업 구조로(`oi-h`·`oi-steps`·`oi-bar`·`oi-prog`·`oi-t` colgroup·`oi-chip`·`oi-skel`·SVG `<symbol>` 은 패널 루트에 한 번). `S.phase`·`S.progress` 갱신: `loadFile`(reading) · `enrich`(enriching, `oiEnrichTotal` 로 total, 요청마다 done++ 후 300ms 스로틀 `render`) · `runTargets`(running; `log` 훅에서 `S.progress.label = C.oiStepLabel(step, info, S.progress.label)` + 스트립 텍스트만 갱신; `onOrder` 마다 done++). `refreshOrder` 에 `o.dup`. chkall 은 `!o.dup.dup`. `run()` 확인창에 `nDup`. `custText` 를 칩으로, `orderRow` 에 중복 칩·등록 중/완료 칩, 표 위 중복 배너.
-- [ ] **Step 3: 통과** — `node --test tests/orderimport-*.test.js` fail 0 (기존 문자열 고정 테스트 포함). `node -e "new Function(require('fs').readFileSync('src/orderimport.js','utf8'))"`.
-- [ ] **Step 4: 렌더 확인** — 4.2.3 로컬 복사(트레이 앱은 사장님 허락 후 정지) 또는 배포 후, 실제 xls 로 패널을 열어 1920·1366 폭 스크린샷(조회 중·검토·등록 중). 어긋난 것은 여기서 고친다.
-- [ ] **Step 5: 커밋** — `feat(주문 가져오기): 패널 리디자인 — 사이드바 토큰·진행 스트립·스켈레톤·칩·중복 주문장 사전 경고`
+- [x] **Step 2: 구현** — 목업 CSS 를 `CSS` 상수로(셀렉터 `#${PANEL_ID}`), 마크업을 목업 구조로(`oi-h`·`oi-steps`·`oi-bar`·`oi-prog`·`oi-t` colgroup·`oi-chip`·`oi-skel`·SVG `<symbol>` 은 패널 루트에 한 번). `S.phase`·`S.progress` 갱신: `loadFile`(reading) · `enrich`(enriching, `oiEnrichTotal` 로 total, 요청마다 done++ 후 300ms 스로틀 `render`) · `runTargets`(running; `log` 훅에서 `S.progress.label = C.oiStepLabel(step, info, S.progress.label)` + 스트립 텍스트만 갱신; `onOrder` 마다 done++). `refreshOrder` 에 `o.dup`. chkall 은 `!o.dup.dup`. `run()` 확인창에 `nDup`. `custText` 를 칩으로, `orderRow` 에 중복 칩·등록 중/완료 칩, 표 위 중복 배너.
+- [x] **Step 3: 통과** — `node --test tests/orderimport-*.test.js` fail 0 (기존 문자열 고정 테스트 포함). `node -e "new Function(require('fs').readFileSync('src/orderimport.js','utf8'))"`.
+- [x] **Step 4: 렌더 확인** — 4.2.3 로컬 복사(트레이 앱은 사장님 허락 후 정지) 또는 배포 후, 실제 xls 로 패널을 열어 1920·1366 폭 스크린샷(조회 중·검토·등록 중). 어긋난 것은 여기서 고친다.
+- [x] **Step 5: 커밋** — `feat(주문 가져오기): 패널 리디자인 — 사이드바 토큰·진행 스트립·스켈레톤·칩·중복 주문장 사전 경고`
 
 ---
 
 ### Task 4: 4.2.3 배포 준비 · T2 검수 · 배포
 
-- [ ] `manifest.json` 4.2.3 → `pwsh -NoProfile -File build-shell-index.ps1` → `node --test tests/loader-integrity.test.js`.
-- [ ] 브리프(`REVIEW-BRIEF.tmp.md`: 대상 diff, 저장소 밖 사실 — 게이트 계약·장부 로컬성·사장님 결정, 원장 누적 판정) → GLM 1R(≤3) → Opus 5 → DeepSeek 교차 → 채택 0.
-- [ ] 원장 기록 → 브리프 삭제 → main ff 병합 → push → 라이브 확인 스크린샷을 사장님께.
+- [x] `manifest.json` 4.2.3 → `pwsh -NoProfile -File build-shell-index.ps1` → `node --test tests/loader-integrity.test.js`.
+- [x] 브리프(`REVIEW-BRIEF.tmp.md`: 대상 diff, 저장소 밖 사실 — 게이트 계약·장부 로컬성·사장님 결정, 원장 누적 판정) → GLM 1R(≤3) → Opus 5 → DeepSeek 교차 → 채택 0.
+- [x] 원장 기록 → 브리프 삭제 → main ff 병합 → push → 라이브 확인 스크린샷을 사장님께.
