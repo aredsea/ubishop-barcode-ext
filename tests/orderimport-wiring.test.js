@@ -122,7 +122,9 @@ test('UI 배선: 실행 중에는 onClick/onChange/enrich 가 조작을 받지 �
 //  친 글자가 사라지고 클릭이 떨어져 나간 옛 버튼에 붙었다. Enter 처리도 없었다.
 test('UI 배선: 직접 검색 — 검색칸 change 는 재렌더하지 않고, 클릭·Enter 가 같은 searchLine 을 부르며, 검색어·결과 안내가 렌더에 남는다', () => {
   const ui = read('src/orderimport.js');
-  assert.ok(/if \(f === 'q'\) \{ l\.q = el\.value; return; \}\s*\/\/[^\n]*\n\s*if \(f === 'pick'\) \{/.test(ui), "onChange 가 'q' 를 재렌더 없이 끝낸다(pick 분기보다 먼저)");
+  assert.ok(/if \(f === 'q'\) \{ l\.q = el\.value; return; \}[\s\S]{0,400}?if \(f === 'pick'\) \{/.test(ui), "onChange 가 'q' 를 재렌더 없이 끝낸다(pick 분기보다 먼저)");
+  //  Opus O1 P2-3(2026-09-16): 미등록 판매처 접미·마켓 change 가 폴스루 재렌더로 값을 지워 [적용]이 한 번도 동작한 적 없었다.
+  assert.ok(/if \(f === 'mkt-suffix' \|\| f === 'mkt-job'\) return;/.test(ui), '접미·마켓 change 는 재렌더하지 않는다');
   assert.ok(/else if \(act === 'search'\) await searchLine\(\+btn\.dataset\.o, \+btn\.dataset\.l, btn\.parentElement\.querySelector\('input\[data-f="q"\]'\)\);/.test(ui), '클릭 → searchLine');
   assert.ok(/function onKeydown\(e\) \{[\s\S]{0,300}?e\.key !== 'Enter'\) return;[\s\S]{0,200}?searchLine\(\+el\.dataset\.o, \+el\.dataset\.l, el\);/.test(ui), 'Enter → searchLine');
   assert.ok(/if \(S\.running \|\| S\.starting\) return;\s*searchLine\(/.test(ui), 'Enter 검색도 실행 중 게이트');
@@ -209,13 +211,37 @@ test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-
   assert.ok(/function progStrip\(\)/.test(ui) && /S\.phase === 'reading'/.test(ui) && /S\.phase === 'enriching'/.test(ui) && /S\.phase === 'running'/.test(ui), '진행 스트립 3단계');
   assert.ok(/role="status" aria-live="polite"/.test(ui), '진행 스트립 aria');
   assert.ok(/S\.progress\.key = key; S\.progress\.label = C\.oiStepLabel\(step, info, S\.progress\.label\); progPatch\(\);/.test(ui), '실행기 log → 스트립 문구');
-  assert.ok(/o\.dup = C\.oiDupCheck\(o, o\.prev\);/.test(ui) && /if \(o\.checked == null\) o\.checked = o\.ready && !o\.dup\.dup;/.test(ui), '중복은 첫 판정 때 체크 해제');
+  assert.ok(/const wasDup = !!\(o\.dup && o\.dup\.dup\);\s*o\.dup = C\.oiDupCheck\(o, o\.prev\);/.test(ui), '중복 판정 전 이전 판정을 기억');
+  assert.ok(/if \(o\.checked == null \|\| \(o\.dup\.dup && !wasDup && !o\.result\)\) o\.checked = o\.ready && !o\.dup\.dup;/.test(ui), '첫 판정과 새로 중복이 된 순간에만 기본값(Opus O1 P2-5)');
   assert.ok(/else if \(!o\.ready\) o\.checked = false;/.test(ui), '실행 불가면 해제, 그 외엔 사용자 체크 유지');
-  assert.ok(/o\.checked = el\.checked && o\.ready && !o\.dup\.dup;/.test(ui), '전체 체크는 중복을 건너뛴다');
+  assert.ok(/if \(f === 'chkall'\) \{ S\.orders\.forEach\(\(o\) => \{ if \(o\.dup\.dup\) return; o\.checked = el\.checked && o\.ready; \}\);/.test(ui), '전체 체크는 중복을 건너뛴다(손으로 켠 것도 끄지 않는다)');
   assert.ok(/이미 등록된 것과 같은 주문장 ' \+ nDup \+ '개가 포함돼 있습니다\(중복 등록\)/.test(ui), '확인창 경고');
   assert.ok(/sig: C\.oiOrderSig\(o\),/.test(ui), 'toRunOrder 가 서명을 싣는다');
-  assert.ok(/이미 등록된 것과 같은 주문장 ' \+ nDup \+ '개는 체크를 풀어 두었습니다/.test(ui), '표 위 배너');
-  assert.ok(/function renderSoft\(\)/.test(ui) && /progStep\('m'\)/.test(ui) && /progStep\('c'\)/.test(ui) && /progStep\('s'\)/.test(ui), '조회 진행 카운터');
+  assert.ok(/gift: !!l\.gift,/.test(ui), 'toRunOrder 가 사은품 플래그를 싣는다(Opus O1 P2-4 M1)');
+  assert.ok(/개는 체크를 풀어 두었습니다/.test(ui) && /개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다/.test(ui), '배너는 실제 체크 상태를 말한다');
+  assert.ok(/const nDup = S\.orders\.filter\(\(o\) => o\.dup && o\.dup\.dup && !o\.result\)\.length, nDupUnchecked/.test(ui), '이번 실행 결과가 있는 행은 중복 집계에서 뺀다(M3)');
+  assert.ok(/l\.spec\.price = l\.gift \? C\.oiMoney0\(el\.value\) : C\.oiMoney\(el\.value\);/.test(ui), '판매가 편집은 사은품만 0 허용(M2)');
+  assert.ok(/if \(f === 'chk'\) \{ const o = S\.orders\[\+el\.dataset\.o\]; o\.checked = el\.checked && o\.ready; render\(\); return; \}/.test(ui), '개별 체크는 중복도 켤 수 있다(M8 — 사람이 결정)');
+  assert.ok(/\(o\.result \? resultChip\(o\.result\) : prevChip\(o\)\)/.test(ui), '결과 행은 결과 칩만(M5)');
+  assert.ok(/function renderSoft\(\) \{\s*if \(focusInPanelInput\(\)\) \{ progPatch\(\); return; \}\s*renderBody\(\); progPatch\(\);/.test(ui), '조회 중 갱신은 표만(툴바·파일 input 불변, Opus O1 P2-2)');
+  assert.ok(/progStep\('m'\)/.test(ui) && /progStep\('c'\)/.test(ui) && /progStep\('s'\)/.test(ui), '조회 진행 카운터');
+  assert.equal((ui.match(/S\.phase = 'idle'/g) || []).length >= 4, true, '예외·종료 경로마다 phase idle 복귀(M6·M7)');
+  assert.ok(/S\.running = false; S\.phase = 'idle';/.test(ui) && /catch \(err\) \{ if \(gen !== S\.fileGen\) return; S\.phase = 'idle';/.test(ui), '실행 종료·파일 실패 경로의 idle');
+  assert.ok(/const nDup = targets\.filter\(\(o\) => o\.dup && o\.dup\.dup\)\.length;/.test(ui), '확인창의 중복 수(M9)');
+  assert.ok(/\['22', '오늘룩'\]\]/.test(ui), 'MARKET_OPTS 오늘룩(Opus O1 P2-1 회귀)');
+});
+//  Opus O1 P2-4(2026-09-16): 새 배선의 핵심 분기가 소스 대조에 없어 변이 11종이 살아남았다 → toRunOrder 를 실제로 실행.
+test('toRunOrder 동작: 서명·사은품 플래그·판매가 0 이 실행 주문에 실린다', () => {
+  const ui = read('src/orderimport.js');
+  const C = require(path.join(ROOT, 'src', 'orderimport-core.js'));
+  const toRunOrder = new Function('C', extractFn(ui, 'toRunOrder') + '\nreturn toRunOrder;')(C);
+  const o = { key: 'GS샵|1', seller: 'GS샵', orderNo: '1', market: { name: 'GS샵' }, buyer: '홍', phone: { ok: true, phone: '010-1234-5678' }, clientName: '홍5678/G',
+    lines: [{ productName: '[사은품] 박스', optionText: '', qty: 1, gift: true, mapping: { entry: { seq: '7', code: 'C', name: 'N' } }, spec: { k: null, color: null, itemSize: '', qty: 1, price: 0, remark: '정산 0 원' } },
+            { productName: '반지', optionText: '[17호]', qty: 1, gift: false, mapping: { entry: { seq: '8', code: 'D', name: 'M', colorFallback: 'WG' } }, spec: { k: '925', color: 'WG', itemSize: '17', qty: 2, price: 17000, remark: '' } }] };
+  const r = toRunOrder(o);
+  assert.equal(r.sig, C.oiOrderSig(o));
+  assert.equal(r.lines[0].spec.gift, true); assert.equal(r.lines[0].spec.price, 0);
+  assert.equal(r.lines[1].spec.gift, false); assert.equal(r.lines[1].spec.price, 17000); assert.equal(r.lines[1].master.colorFallback, 'WG');
 });
 
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {

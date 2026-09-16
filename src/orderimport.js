@@ -83,8 +83,10 @@
     o.ready = o.lines.every((l) => !l.issues.length) && !!o.market && o.phone.ok;
     o.prev = S.ledger[o.key] || null;
     //  장부와 주문번호·상품이 완전히 같으면 기본 체크를 풀어 두고 사람이 정하게 한다(스펙 2026-09-16 §5b). 첫 판정 때만 — 그 뒤는 사용자의 체크가 우선.
+    const wasDup = !!(o.dup && o.dup.dup);
     o.dup = C.oiDupCheck(o, o.prev);
-    if (o.checked == null) o.checked = o.ready && !o.dup.dup;
+    //  첫 판정, 또는 판정 뒤에 새로 중복이 된 순간(다른 탭이 그 사이 등록 — 그때의 체크는 중복을 모르고 한 것)에만 기본값을 적용한다(Opus O1 P2-5).
+    if (o.checked == null || (o.dup.dup && !wasDup && !o.result)) o.checked = o.ready && !o.dup.dup;
     else if (!o.ready) o.checked = false;
   }
   function buildOrders(parsed) {
@@ -102,7 +104,7 @@
     const p = Promise.resolve(S.enriching).catch(() => {}).then(enrichBody);   // 겹치는 조회는 직렬화 — S.enriching 이 항상 마지막 조회를 가리키게
     if (!S.enriching) progInit(C.oiEnrichTotal(S.orders, S.masters));   // 시작 직후 스트립이 이전 실행의 카운터를 보이지 않게(GLM 1R P3)
     S.phase = 'enriching'; S.enriching = p; render();
-    try { await p; } finally { if (S.enriching === p) { S.enriching = null; if (S.phase === 'enriching') S.phase = 'idle'; render(); } }
+    try { await p; } finally { if (S.enriching === p) { S.enriching = null; if (S.phase === 'enriching') S.phase = 'idle'; renderWhenIdle(); } }
   }
   //  진행 카운터: 요청 하나 끝날 때마다 +1. 표는 사람이 입력 중이 아닐 때만 다시 그린다(입력 중 포커스를 뺏지 않게) — 스트립은 항상 갱신.
   function progInit(tot) { S.progress = { done: 0, total: tot.total, m: [0, tot.masters], c: [0, tot.customers], s: [0, tot.suggests], key: '', label: '' }; }
@@ -339,7 +341,7 @@
   const fmtAt = (at) => esc(String(at || '').slice(0, 16).replace('T', ' '));
 
   //  코드표 밖 판매처: 이 세션에서만 접미·마켓을 정한다(스펙 §2.3, Terra 4R P2). 표에는 저장하지 않는다.
-  const MARKET_OPTS = [['2', 'SSG'], ['3', 'CJ몰'], ['4', 'H몰'], ['5', '스마트스토어'], ['6', '카페24'], ['7', 'GS샵'], ['8', '쿠팡'], ['9', '위메프'], ['10', '롯데ON'], ['11', '카카오'], ['12', '11번가'], ['13', 'G마켓'], ['14', '옥션'], ['15', '더리본샵'], ['16', 'AK몰'], ['17', '지그재그'], ['18', '아몬즈'], ['19', '지인소개'], ['20', '퀸잇'], ['21', '에이블리']];
+  const MARKET_OPTS = [['2', 'SSG'], ['3', 'CJ몰'], ['4', 'H몰'], ['5', '스마트스토어'], ['6', '카페24'], ['7', 'GS샵'], ['8', '쿠팡'], ['9', '위메프'], ['10', '롯데ON'], ['11', '카카오'], ['12', '11번가'], ['13', 'G마켓'], ['14', '옥션'], ['15', '더리본샵'], ['16', 'AK몰'], ['17', '지그재그'], ['18', '아몬즈'], ['19', '지인소개'], ['20', '퀸잇'], ['21', '에이블리'], ['22', '오늘룩']];
   function marketPick(o, oi) {
     const dis = S.running ? ' disabled' : '';
     return '<div class="oi-mkt"><span class="oi-issue">' + ico('warn') + '판매처 미등록(' + esc(o.seller) + ')</span> <span class="oi-muted">접미</span> <input class="oi-in sm" data-f="mkt-suffix" data-o="' + oi + '" placeholder="예: 십" maxlength="4" style="width:64px"' + dis + '> <span class="oi-muted">마켓</span> <select class="oi-in" style="width:auto" data-f="mkt-job" data-o="' + oi + '"' + dis + '><option value="">— 선택 —</option>'
@@ -416,23 +418,42 @@
     if (b && b.lastChild && b.lastChild.nodeType === 3) b.lastChild.textContent = '등록 중 · ' + (S.progress.label || '');
   }
   //  사람이 패널 안 입력칸에 있으면 표를 다시 그리지 않는다(포커스·입력 보호). 스트립은 갱신.
+  //  진행 중(조회) 갱신: 툴바(.oi-bar — 파일 input 포함)는 건드리지 않는다(Opus O1 P2 — 열려 있던 파일 선택창의 input 이 떨어져 나갔다).
+  //  사람이 패널 안 입력칸에 있으면 표도 다시 그리지 않고 스트립만 갱신(포커스·입력 보호). 아니면 표만 다시 그린다.
   function renderSoft() {
+    if (focusInPanelInput()) { progPatch(); return; }
+    renderBody(); progPatch();
+  }
+  function focusInPanelInput() {
     const a = document.activeElement;
     const p = document.getElementById(PANEL_ID);
-    if (p && a && p.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'SELECT') && a.type !== 'checkbox' && a.type !== 'file') { progPatch(); return; }
-    render();
+    return !!(p && a && p.contains(a) && (a.tagName === 'INPUT' || a.tagName === 'SELECT') && a.type !== 'checkbox' && a.type !== 'file');
+  }
+  //  단계가 끝났을 때의 전체 렌더 — 입력 중이면 그 칸을 떠난 뒤(focusout) 한 번 그린다(Opus O1 Nit: 조회 끝 렌더가 입력 중 값을 날렸다).
+  let renderPendingBlur = false;
+  function renderWhenIdle() {
+    if (!focusInPanelInput()) { render(); return; }
+    progPatch();
+    if (renderPendingBlur) return;
+    renderPendingBlur = true;
+    const p = document.getElementById(PANEL_ID);
+    const once = () => { renderPendingBlur = false; if (p) p.removeEventListener('focusout', once, true); setTimeout(render, 0); };
+    if (p) p.addEventListener('focusout', once, true); else renderPendingBlur = false;
   }
   function stepsHtml() {
     const hasFile = S.orders.length > 0, running = S.phase === 'running' || S.results.length > 0;
     const st = (n, label, state) => '<span class="oi-step' + (state ? ' ' + state : '') + '"><span class="n">' + (state === 'done' ? ico('check') : n) + '</span>' + label + '</span>';
     return '<div class="oi-steps">' + st(1, '파일', hasFile ? 'done' : 'on') + '<span class="sep">›</span>' + st(2, '검토', running ? 'done' : hasFile ? 'on' : '') + '<span class="sep">›</span>' + st(3, '등록', running ? 'on' : '') + '</div>';
   }
+  function counts() {
+    const nOrd = S.orders.length, nReady = S.orders.filter((o) => o.ready).length, nChk = S.orders.filter((o) => o.checked && o.ready).length;
+    const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.result).length, nDupUnchecked = S.orders.filter((o) => o.dup && o.dup.dup && !o.result && !o.checked).length;
+    const nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length, nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
+    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nAll, nLines };
+  }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
-    const nOrd = S.orders.length, nReady = S.orders.filter((o) => o.ready).length, nChk = S.orders.filter((o) => o.checked && o.ready).length;
-    const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.result).length, nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length;
-    const nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
-    const done = S.results.filter((r) => r.status === 'done').length, skipped = S.results.filter((r) => r.status !== 'done').length;
+    const { nOrd, nReady, nChk, nLines } = counts();
     const lock = S.running ? ' disabled' : '';
     p.querySelector('.oi-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.oi-top').innerHTML =
@@ -443,8 +464,18 @@
       + '<button class="oi-btn quiet" data-act="export-map">매핑표 내보내기</button><label class="oi-btn quiet">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden' + (S.running ? ' disabled' : '') + '></label>'
       + '<button class="oi-btn quiet" data-act="export-log">로그 JSON</button></div>'
       + progStrip();
+    renderBody();
+  }
+  //  표·결과만 다시 그린다(툴바 제외). 배너 문구는 실제 체크 상태를 말한다(Opus O1 P2-5 — 체크된 채 남은 중복이 있으면 "풀어 두었다" 고 하지 않는다).
+  function renderBody() {
+    const p = document.getElementById(PANEL_ID); if (!p) return;
+    const { nOrd, nChk, nDup, nDupUnchecked, nAll } = counts();
+    const done = S.results.filter((r) => r.status === 'done').length, skipped = S.results.filter((r) => r.status !== 'done').length;
+    const banner = !nDup ? '' : (nDupUnchecked === nDup
+      ? '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.'
+      : '이미 등록된 것과 같은 주문장 ' + nDup + '개 중 ' + (nDup - nDupUnchecked) + '개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다.');
     p.querySelector('.oi-b').innerHTML =
-      (nDup ? '<div class="oi-banner">' + ico('warn') + '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.</div>' : '')
+      (banner ? '<div class="oi-banner">' + ico('warn') + banner + '</div>' : '')
       + (nOrd ? '<table class="oi-t"><colgroup><col class="c-chk"><col><col><col class="c-prod"><col class="c-k"><col class="c-color"><col class="c-size"><col class="c-qty"><col class="c-price"><col class="c-remark"></colgroup>'
         + '<thead><tr><th><input type="checkbox" class="oi-chk" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제(중복 제외)"' + (nAll && nChk === nAll ? ' checked' : '') + (nAll && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th class="num">수량</th><th class="num">판매가</th><th>비고</th></tr></thead><tbody>'
         + S.orders.map(orderRow).join('') + '</tbody></table>' : (S.phase === 'reading' ? '' : '<div class="oi-empty">파일을 선택하면 주문장 검토 표가 여기에 뜹니다.</div>'))
@@ -529,9 +560,10 @@
     if (el.id === 'ub-oi-mapfile') { const f = el.files && el.files[0]; if (f) await importMap(f); return; }
     const f = el.dataset.f; if (!f) return;
     if (f === 'chk') { const o = S.orders[+el.dataset.o]; o.checked = el.checked && o.ready; render(); return; }
-    if (f === 'chkall') { S.orders.forEach((o) => { o.checked = el.checked && o.ready && !o.dup.dup; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장과 중복 주문장(§5b, 개별 체크로만)은 제외
-    const o = S.orders[+el.dataset.o]; const l = o.lines[+el.dataset.l];
+    if (f === 'chkall') { S.orders.forEach((o) => { if (o.dup.dup) return; o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장과 중복 주문장(§5b, 개별 체크로만)은 제외
+    const o = S.orders[+el.dataset.o]; const l = o && o.lines[+el.dataset.l];
     if (f === 'q') { l.q = el.value; return; }   // 검색어는 줄에만 남기고 다시 그리지 않는다 — 그리면 글자가 사라진다
+    if (f === 'mkt-suffix' || f === 'mkt-job') return;   // 미등록 판매처 접미·마켓 — [적용] 이 DOM 에서 읽는다. 재렌더하면 값이 사라져 적용이 절대 안 됐다(Opus O1 P2-3, 검색 버그와 같은 종류)
     if (f === 'pick') {
       if (!el.value) return;
       const [seq, code, name] = el.value.split('|');

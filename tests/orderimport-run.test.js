@@ -452,6 +452,21 @@ test('줄 응답의 행 수가 기대(내 줄 수+1)와 다르면 새 줄이 하
   assert.ok(!names(erp).includes('deleteLines')); assert.ok(!names(erp).includes('postComplete'));
 });
 
+//  Opus O1 P2-4(2026-09-16): res.sig 삭제·사은품 플래그 삭제 변이가 살아남았다 → 실행 결과의 서명과 사은품 0원 등록을 고정.
+test('실행 결과에 주문장 서명이 실리고(장부용), 사은품 줄은 판매가 0 으로 POST 돼 완료된다', async () => {
+  const erp = makeErp();
+  const o = order(); o.sig = 'SIG-1';
+  o.lines[1].spec = Object.assign({}, o.lines[1].spec, { price: 0, gift: true, remark: '정산 0 원' });
+  const oPost = erp.postLine.bind(erp);
+  erp.postLine = async (fields) => { const r = await oPost(fields); const f = Object.fromEntries(fields); r.rows[r.rows.length - 1].price = f.orderPrice; return r; };   // 서버 행 주문가 = 보낸 값
+  const r = await C.oiRunOrder(o, erp, hooks);
+  assert.equal(r.status, 'done', r.reason);
+  assert.equal(r.sig, 'SIG-1');
+  const posted = erp.calls.filter((c) => c[0] === 'postLine').map((c) => c[1].orderPrice);
+  assert.deepEqual(posted, ['17,000', '0']);
+  assert.equal(C.oiPostRunState(r, 'now').ledgerEntry.sig, 'SIG-1');
+});
+
 test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신호)', async () => {
   const erp = makeErp();
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음
