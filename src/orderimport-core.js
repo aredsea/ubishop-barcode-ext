@@ -255,6 +255,28 @@
   const OI_MAX_LINES = 20;
 
   //  코드표 밖 판매처를 **이 세션에서만** 보정(스펙 §2.3). 표에 저장하지 않는다. 접미가 비면 적용하지 않는다.
+  //  카페24 주문 중 판매금액 대비 정산금액 차이가 60% 이상이면 고객 등록의 마켓만 '지인소개'(19) 로 넣는다(사장님 2026-09-16).
+  //   고객명 접미는 그대로 '카'. 판매금액 = Σ 판매가×수량, 정산금액 = Σ 줄 정산금액(사은품은 둘 다 0). 어느 줄이든 값이 없거나 판매금액이 0 이면
+  //   판정 불가 → 원래 마켓. 주문장 단위로 본다(고객 등록이 주문장당 한 번이라서).
+  const OI_REFERRAL_JOB = '19', OI_REFERRAL_RATIO = 0.6, OI_CAFE24_JOB = MARKETS['카페24'].clientJob;
+  function oiReferralRatio(order) {
+    const lines = (order && order.lines) || [];
+    if (!lines.length) return null;
+    let sale = 0, settle = 0;
+    for (const l of lines) {
+      const price = Number(l.price), qty = l.qty == null ? 1 : Number(l.qty), st = Number(l.settle);
+      if (l.price == null || l.settle == null || !isFinite(price) || !isFinite(qty) || !isFinite(st)) return null;
+      sale += price * qty; settle += st;
+    }
+    if (!(sale > 0)) return null;
+    return (sale - settle) / sale;
+  }
+  function oiClientJob(order) {
+    const m = order && order.market;
+    if (!m) return '';
+    if (String(m.clientJob) === OI_CAFE24_JOB) { const r = oiReferralRatio(order); if (r != null && r >= OI_REFERRAL_RATIO) return OI_REFERRAL_JOB; }
+    return String(m.clientJob == null ? '' : m.clientJob);
+  }
   function oiApplyMarket(order, suffix, clientJob) {
     const suf = String(suffix == null ? '' : suffix).trim();
     if (!order || !suf) return false;
@@ -610,7 +632,7 @@
   //  erp 인터페이스(orderimport-erp.js 가 구현):
   //   state() → {tradeJun, client, rows:number}
   //   searchClient(type,word) → [{name,shop,phone,tel,seq}]
-  //   registerClient(name, phone, clientJob) → {ok, msg, client:{seq,name,phone}|null}
+  //   registerClient(name, phone, clientJob, remark) → {ok, msg, client:{seq,name,phone}|null}
   //   getWriteForm({tradeJun,master,client,clientName}) → oiReadWriteForm 결과
   //   postLine(fields) → {ok, msg, tradeJun, rows}
   //   getForm10({tradeJun,client,clientName}) → oiReadForm10 결과
@@ -669,12 +691,22 @@
       const exact = byName.find((c) => c.name === order.clientName);
       if (exact) res.client = { seq: exact.seq, name: exact.name, mode: 'reuse' };
       else {
-        let phone = order.phone && order.phone.phone ? order.phone.phone : '';
-        if (phone) { const byPhone = await erp.searchClient('phone', phone); if (byPhone.some((c) => c.phone === phone)) phone = ''; }
-        const reg = await erp.registerClient(order.clientName, phone, order.market.clientJob);
+        //  휴대폰을 비울 때는 번호를 비고(remark)에 남긴다 — 사장님 규칙(2026-09-16): "휴대폰 항목만 비워두고 전화번호는 비고란에".
+        let phone = order.phone && order.phone.phone ? order.phone.phone : '', remark = '';
+        if (phone) { const byPhone = await erp.searchClient('phone', phone); if (byPhone.some((c) => c.phone === phone)) { remark = phone; phone = ''; } }
+        let reg = await erp.registerClient(order.clientName, phone, order.market.clientJob, remark);
         log('register', reg);
-        if (!reg.ok || !reg.client) { res.status = 'skipped'; res.reason = 'register_failed:' + (reg.msg || ''); return res; }
-        res.client = { seq: reg.client.seq, name: order.clientName, mode: phone ? 'new' : 'new_nophone' };
+        //  검색은 휴대폰 열만 보므로 다른 고객의 '전화번호(신랑)' 와 겹치는 번호는 못 거른다 → 서버가 '휴대폰이 전화번호와 중복' 으로 거부한다.
+        //  그때만 휴대폰을 비우고 번호는 비고에 실어 한 번 더. 그 전에 이름으로 다시 찾아 이미 생겼으면 재사용(중복 고객 방지).
+        if (!reg.ok && phone && oiPhoneDupMsg(reg.msg)) {
+          const again = (await erp.searchClient('clientName', order.clientName)).find((c) => c.name === order.clientName);
+          if (again) { res.client = { seq: again.seq, name: again.name, mode: 'reuse' }; log('register_retry', { reuse: again.seq }); }
+          else { remark = phone; phone = ''; reg = await erp.registerClient(order.clientName, '', order.market.clientJob, remark); log('register_retry', reg); }
+        }
+        if (!res.client) {
+          if (!reg.ok || !reg.client) { res.status = 'skipped'; res.reason = 'register_failed:' + (reg.msg || ''); return res; }
+          res.client = { seq: reg.client.seq, name: order.clientName, mode: phone ? 'new' : 'new_nophone' };
+        }
       }
 
       //  세션의 열린 주문장이 아직 내 tradeJun 인지 plain GET 으로 본다 — 명시 tradeJun GET 은 완료된 전표의 줄도 계속 보여주므로 그것만으론
@@ -770,8 +802,11 @@
     if (!entry.sig) return { dup: true, kind: 'legacy', entry };
     return entry.sig === oiOrderSig(order) ? { dup: true, kind: 'same', entry } : { dup: false, kind: 'diff', entry };
   }
+  //  고객 등록 거부 문구 중 '휴대폰이 (다른 고객의) 전화번호와 중복' 만 재시도 대상이다. 실측 문구(2026-09-16): '휴대폰이 전화번호와 중복인 고객이 되었습니다.\n\n다시 입력하세요!'
+  //   (\n 은 서버가 넣은 글자 그대로라 [\s\S] 로 건넌다.) 그 밖의 거부는 재시도하지 않는다.
+  function oiPhoneDupMsg(msg) { return /휴대폰[\s\S]*중복/.test(String(msg == null ? '' : msg)); }
   //  실행기 log(step) → 진행 스트립 문구. 모르는 step 은 마지막 문구를 유지한다(스펙 §3).
-  const OI_STEP_LABEL = { guard: '세션 확인', client: '고객 확인', register: '고객 등록', complete: '주문장 완료 요청', junnum: '전표 조회', rollback: '되돌리는 중', fail: '되돌리는 중' };
+  const OI_STEP_LABEL = { guard: '세션 확인', client: '고객 확인', register: '고객 등록', register_retry: '고객 등록(휴대폰 비움 재시도)', complete: '주문장 완료 요청', junnum: '전표 조회', rollback: '되돌리는 중', fail: '되돌리는 중' };
   function oiStepLabel(step, info, last) {
     if (step === 'line') { const i = Number(info && info.i), n = Number(info && info.n); return '줄 ' + (isFinite(i) ? i + 1 : '?') + (isFinite(n) && n > 0 ? '/' + n : '') + ' 등록'; }
     return OI_STEP_LABEL[step] || last || '';
@@ -820,7 +855,7 @@
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
-    oiGroupOrders, oiApplyMarket, oiLineIssues,
+    oiGroupOrders, oiApplyMarket, oiLineIssues, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,

@@ -46,7 +46,10 @@ function makeErp(opts) {
     calls, srv,
     async state() { calls.push(['state']); return state(); },
     async searchClient(type, word) { calls.push(['searchClient', type, word]); return srv.clients.filter((c) => type === 'phone' ? c.phone === word : c.name.includes(word)); },
-    async registerClient(name, phone, clientJob) { calls.push(['registerClient', name, phone, clientJob]); if (opts.registerFails) return { ok: false, msg: '등록 실패', client: null }; const c = { seq: '123784', name, phone }; srv.clients.push(c); return { ok: true, msg: '', client: c }; },
+    async registerClient(name, phone, clientJob, remark) { calls.push(['registerClient', name, phone, clientJob, remark]); if (opts.registerFails) return { ok: false, msg: '등록 실패', client: null };
+      //  phoneDup: 휴대폰을 넣은 등록은 서버가 '휴대폰이 전화번호와 중복' 으로 거부한다(실측 문구). 빈 휴대폰이면 통과.
+      if (opts.phoneDup && phone) { if (opts.phoneDupCreates) srv.clients.push({ seq: '777', name, phone: '' }); return { ok: false, msg: '휴대폰이 전화번호와 중복인 고객이 되었습니다.\\n\\n다시 입력하세요!', client: null }; }
+      const c = { seq: '123784', name, phone }; srv.clients.push(c); return { ok: true, msg: '', client: c }; },
     //  실제 서버처럼: tradeJun 을 **명시**해 GET 하면 이미 완료된 주문장의 줄도 계속 보인다(srv.closed). 세션의 열린 주문장은 srv.tradeJun/srv.rows.
     async getWriteForm(p) { calls.push(['getWriteForm', p.tradeJun, p.master, p.client]); if (opts.foreignRowAt != null && !srv.injected && srv.rows.length === opts.foreignRowAt) { srv.injected = true; srv.rows.push(Object.assign(row('999999', srv.tradeJun || '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); } const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; const tj = closed ? p.tradeJun : srv.tradeJun; const rows = closed ? closed.slice() : srv.rows.slice(); return { values: formValues({ tradeJun: tj, client: p.client, master: p.master }), missing: [], kOpts: KOPTS, colorOpts: COLOR, arrays: { arr_weight: [0, 0], arr_salePrice: [19000, 0], arr_inputSupply: [4500, 0] }, rows, defaults: { k: '5', color: 'WG', itemSize: '11' } }; },
     async postLine(fields) { calls.push(['postLine', Object.fromEntries(fields)]); if (opts.lineFailsAt != null && srv.rows.length === opts.lineFailsAt) return { ok: false, msg: '실패', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; if (!srv.tradeJun) srv.tradeJun = '141236'; const f = Object.fromEntries(fields); srv.rows.push(row(String(++srv.seqNo), srv.tradeJun, f.itemSize, f.shopRemark)); return { ok: true, msg: '', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; },
@@ -85,13 +88,57 @@ test('고객 재사용: 정확일치 고객이 있으면 등록하지 않는다(
   assert.ok(!names(erp).includes('registerClient'));
 });
 
-test('예물고객 충돌: 다른 이름이 같은 휴대폰이면 휴대폰 빈칸으로 등록', async () => {
+test('예물고객 충돌: 다른 이름이 같은 휴대폰이면 휴대폰 빈칸으로 등록하고 번호는 비고에 남긴다', async () => {
   const erp = makeErp({ clients: [{ seq: '333', name: '라마바/차카타', phone: '106-0000-2567' }] });
   const r = await C.oiRunOrder(order(), erp, hooks);
   assert.equal(r.status, 'done');
   const reg = erp.calls.find((c) => c[0] === 'registerClient');
   assert.equal(reg[2], '', '휴대폰이 비어야 한다'); assert.equal(reg[3], '18');
+  assert.equal(reg[4], '106-0000-2567', '비고에 번호(사장님 규칙 2026-09-16)');
   assert.equal(r.client.mode, 'new_nophone');
+});
+test('정상 등록은 비고가 비어 있고 휴대폰이 실린다', async () => {
+  const erp = makeErp();
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'done');
+  const reg = erp.calls.find((c) => c[0] === 'registerClient');
+  assert.equal(reg[2], '106-0000-2567'); assert.equal(reg[4], '');
+  assert.equal(r.client.mode, 'new');
+});
+
+//  사장님 규칙 2026-09-16: 서버가 '휴대폰이 전화번호와 중복' 으로 거부하면(검색으론 못 거르는 다른 고객의 전화번호(신랑) 충돌) 휴대폰을 비우고 번호는 비고에 실어 한 번 더.
+test('서버 휴대폰 중복 거부: 이름 재검색 → 없으면 휴대폰 빈칸+비고 번호로 재등록 → 줄 등록까지 진행', async () => {
+  const erp = makeErp({ phoneDup: true });
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'done', r.reason);
+  const regs = erp.calls.filter((c) => c[0] === 'registerClient');
+  assert.equal(regs.length, 2);
+  assert.deepEqual(regs[0].slice(1), ['차카타2567/아', '106-0000-2567', '18', '']);
+  assert.deepEqual(regs[1].slice(1), ['차카타2567/아', '', '18', '106-0000-2567']);
+  const seq = names(erp);
+  const i1 = seq.indexOf('registerClient'), i2 = seq.lastIndexOf('registerClient');
+  assert.ok(seq.slice(i1 + 1, i2).includes('searchClient'), '재등록 전에 이름으로 다시 찾는다(중복 고객 방지)');
+  assert.equal(r.client.mode, 'new_nophone');
+  assert.equal(erp.calls.filter((c) => c[0] === 'postLine').length, 2);
+});
+test('서버 휴대폰 중복 거부 뒤 이름 재검색에 이미 있으면 재등록 없이 재사용', async () => {
+  const erp = makeErp({ phoneDup: true, phoneDupCreates: true });
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'done', r.reason);
+  assert.equal(erp.calls.filter((c) => c[0] === 'registerClient').length, 1, '두 번째 등록 POST 없음');
+  assert.deepEqual(r.client, { seq: '777', name: '차카타2567/아', mode: 'reuse' });
+});
+test('휴대폰 중복이 아닌 거부는 재시도 없이 skipped', async () => {
+  const erp = makeErp({ registerFails: true });
+  await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(erp.calls.filter((c) => c[0] === 'registerClient').length, 1);
+});
+test('휴대폰을 애초에 비운 등록이 거부되면 재시도하지 않는다(무한 재시도 방지)', async () => {
+  const erp = makeErp({ clients: [{ seq: '333', name: '라마바/차카타', phone: '106-0000-2567' }] });
+  erp.registerClient = async (name, phone, job, remark) => { erp.calls.push(['registerClient', name, phone, job, remark]); return { ok: false, msg: '휴대폰이 전화번호와 중복인 고객이 되었습니다.', client: null }; };
+  const r = await C.oiRunOrder(order(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.match(r.reason, /^register_failed:휴대폰/);
+  assert.equal(erp.calls.filter((c) => c[0] === 'registerClient').length, 1);
 });
 
 test('가드: 열린 주문장이 있으면 아무 쓰기도 하지 않고 skipped', async () => {

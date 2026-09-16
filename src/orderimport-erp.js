@@ -56,14 +56,14 @@
     return C.oiMasterSearchRows(r.html);
   }
   //  등록 응답은 그 이름으로 검색된 고객검색 페이지로 리다이렉트된다(실측) → 그 행에서 seq 를 읽는다. 없으면 재검색.
-  async function registerClient(name, phone, clientJob) {
+  async function registerClient(name, phone, clientJob, remark) {
     const g = await req('/etc/clientWriteForm.do?tcode=order_item&formname=form1&url=/order/item/orderItemWriteForm.do&actFlag=1&shop=LT&shopName=FASHION');
     const hidden = C.oiExtractHidden(g.html);
     if (!hidden.some(([n]) => n === 'sKey')) return { ok: false, msg: 'clientWriteForm sKey 없음', client: null };
     const d = new Date(); const p = (x) => String(x).padStart(2, '0');
     const fixed = {
       regShop: 'LT', clientName: name, phone: phone || '', tel: '', smsType: '1', emailType: '1', grade: '05',
-      jumin1: '', jumin2: '', email: '', zipcode1: '', zipcode2: '', address: '', bunji: '', remark: '',
+      jumin1: '', jumin2: '', email: '', zipcode1: '', zipcode2: '', address: '', bunji: '', remark: String(remark == null ? '' : remark).slice(0, 200),   // 비 고(textarea maxlength 200)
       inDate: '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()), clientType: '1', clientManager: '',
       sexType: '2', wedType: '0', birthDate: '', birthType: '1', birthLeapType: '0', weddingDate: '', weddingType: '1', weddingLeapType: '0',
       clientJob: clientJob || '', clientArea1: '', clientArea2: '', clientVisit1: '', clientVisit2Name: '',

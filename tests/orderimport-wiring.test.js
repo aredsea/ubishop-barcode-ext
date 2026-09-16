@@ -238,6 +238,24 @@ test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-
   assert.ok(/\['22', '오늘룩'\]\]/.test(ui), 'MARKET_OPTS 오늘룩(Opus O1 P2-1 회귀)');
 });
 //  Opus O1 P2-4(2026-09-16): 새 배선의 핵심 분기가 소스 대조에 없어 변이 11종이 살아남았다 → toRunOrder 를 실제로 실행.
+//  Opus 5 P2-1(2026-09-16): 비고가 서버로 가는 마지막 고리(어댑터)가 테스트 밖이었다 — 소스 핀(원장 #93 선례: DOM/네트워크 하네스는 과함).
+test('registerClient 어댑터: 4번째 인자 remark 가 고객관리 폼의 비 고(remark, 200자) 로 실린다', () => {
+  const erp = read('src/orderimport-erp.js');
+  assert.ok(/async function registerClient\(name, phone, clientJob, remark\)/.test(erp), '시그니처');
+  assert.ok(/remark: String\(remark == null \? '' : remark\)\.slice\(0, 200\)/.test(erp), 'fixed.remark 에 실린다(200자 절단)');
+});
+//  사장님 규칙 2026-09-16 ②: 카페24 정산 차 60% 이상이면 실행 주문의 마켓 clientJob 만 지인소개(19). 접미(고객명)는 그대로.
+test('toRunOrder 동작: 카페24 정산 차 60% 이상이면 market.clientJob 만 19, 미만이면 6, 접미·고객명 불변', () => {
+  const ui = read('src/orderimport.js');
+  const C = require(path.join(ROOT, 'src', 'orderimport-core.js'));
+  const toRunOrder = new Function('C', extractFn(ui, 'toRunOrder') + '\nreturn toRunOrder;')(C);
+  const mk = (price, settle) => ({ key: '카페24|1', seller: '카페24', orderNo: '1', market: { name: '카페24', suffix: '카', clientJob: '6' }, buyer: '홍', phone: { ok: true, phone: '010-1234-5678' }, clientName: '홍5678/카',
+    lines: [{ productName: '목걸이', optionText: '', qty: 1, price, settle, gift: false, mapping: { entry: { seq: '7', code: 'C', name: 'N' } }, spec: { k: '925', color: null, itemSize: '', qty: 1, price, remark: '정산 ' + settle + ' 원' } }] });
+  const hi = toRunOrder(mk(100000, 30000)), lo = toRunOrder(mk(100000, 50000));
+  assert.equal(hi.market.clientJob, '19'); assert.equal(hi.market.suffix, '카'); assert.equal(hi.clientName, '홍5678/카');
+  assert.equal(lo.market.clientJob, '6');
+  assert.ok(/마켓 지인소개\(정산 차 60%↑\)/.test(ui), '검토 표 고객 칩에 표시');
+});
 test('toRunOrder 동작: 서명·사은품 플래그·판매가 0 이 실행 주문에 실린다', () => {
   const ui = read('src/orderimport.js');
   const C = require(path.join(ROOT, 'src', 'orderimport-core.js'));

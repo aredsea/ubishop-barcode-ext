@@ -151,7 +151,8 @@
   }
   function toRunOrder(o) {
     return {
-      key: o.key, seller: o.seller, orderNo: o.orderNo, market: o.market, buyer: o.buyer, phone: o.phone, clientName: o.clientName,
+      key: o.key, seller: o.seller, orderNo: o.orderNo, buyer: o.buyer, phone: o.phone, clientName: o.clientName,
+      market: Object.assign({}, o.market, { clientJob: C.oiClientJob(o) }),   // 카페24 정산 차 60%↑ → 등록 마켓만 지인소개(스펙 §5d)
       sig: C.oiOrderSig(o),                                     // 장부에 남겨 다음 파일에서 "완전히 같은 주문장" 을 가린다(스펙 §5b)
       lines: o.lines.map((l) => ({
         master: { seq: l.mapping.entry.seq, code: l.mapping.entry.code, name: l.mapping.entry.name, colorFallback: l.mapping.entry.colorFallback || '' },
@@ -354,8 +355,9 @@
     if (!o.customer) return (S.phase === 'enriching' && o.market && o.phone.ok) ? '<span class="oi-skel w1"></span>' : '<span class="oi-muted">조회 전</span>';
     const m = o.customer.mode;
     if (m === 'reuse') return chip('reuse', '재사용 #' + o.customer.seq);
-    if (m === 'new') return chip('new', '신규 등록');
-    if (m === 'new_nophone') return chip('nophone', '신규 등록 · 휴대폰 비움(다른 고객이 사용 중)');
+    const ref = (o.market && C.oiClientJob(o) !== String(o.market.clientJob)) ? ' · 마켓 지인소개(정산 차 60%↑)' : '';
+    if (m === 'new') return chip('new', '신규 등록' + ref);
+    if (m === 'new_nophone') return chip('nophone', '신규 등록 · 휴대폰 비움(다른 고객이 사용 중)' + ref);
     return chip('fail', '조회 실패', 'warn');
   }
   function lineRow(o, oi, l, li) {
