@@ -31,7 +31,7 @@
 **Interfaces:**
 - Produces: `ccTargetStatus(code) → boolean` (O--/OS-/I--/T--), `ccClassifyChecked(rows) → {targets, excluded, duplicate}` (rows 에 `cs:{has,barcode}`), `ccChainLabel(code, cs) → string`, `ccRequeryReason(row) → string`.
 
-- [ ] **Step 1: 기존 테스트를 새 계약으로 고치고 새 테스트를 추가한다 (RED)**
+- [x] **Step 1: 기존 테스트를 새 계약으로 고치고 새 테스트를 추가한다 (RED)**
 
 `tests/orderitem-cancel.test.js` 의 `NAMES` 를 바꾸고 아래 테스트를 교체·추가한다.
 
@@ -111,12 +111,12 @@ test('ccRequeryReason: found=false 사유 구분 — 로그인 만료 > 중복 >
 });
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `node --test tests/orderitem-cancel.test.js`
 Expected: FAIL — `ccChainLabel 선언을 찾지 못했습니다` (추출 즉사) 또는 ccTargetStatus/ccClassifyChecked 단언 실패.
 
-- [ ] **Step 3: 구현**
+- [x] **Step 3: 구현**
 
 `src/skin.js` §5.11 순수 판정부를 이렇게 바꾼다(`ccTargetStatus`·`ccClassifyChecked` 교체, 두 함수 추가):
 
@@ -180,12 +180,12 @@ Expected: FAIL — `ccChainLabel 선언을 찾지 못했습니다` (추출 즉�
   }
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run: `node --test tests/orderitem-cancel.test.js`
 Expected: PASS (전부).
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/skin.js tests/orderitem-cancel.test.js
@@ -204,7 +204,7 @@ git commit -m "feat(일괄취소): 사슬 대상 상태(O--/OS-/I--/T--)·승인
 - Consumes: `ccRowCancelSeq(rowHtml)`, `parseCurrentSettingArgs(href)`(§5.4, 기존).
 - Produces: `ccRowCurrentSetting(rowHtml) → {master,orderSeq,barcode,shop,client,orderDate}|null`, `ccNextStep(row) → {kind:'done'} | {kind:'fail', reason} | {kind:'write', step, label, want, barcode?}` (step ∈ `'deliv-delete'|'unassign'|'standby-off'|'cancel'`, want = 목표 상태 코드), `ccStepOutcome(next, vRow) → 'success'|'uncertain'`, `ccPickDelivIdx(values, barcode, orderSeq) → {idx}|{ambiguous:n}|null`, `ccBuildUnassignUrl(barcode, orderSeq, searchFields) → string|null`.
 
-- [ ] **Step 1: 테스트 추가 (RED)**
+- [x] **Step 1: 테스트 추가 (RED)**
 
 `NAMES` 에 `'ccRowCancelSeq', 'parseCurrentSettingArgs', 'ccRowCurrentSetting', 'ccNextStep', 'ccStepOutcome', 'ccPickDelivIdx', 'ccBuildUnassignUrl'` 을 추가하고(destructuring 도), 파일 끝에:
 
@@ -284,12 +284,12 @@ test('ccBuildUnassignUrl: 팝업 cancelForm 과 같은 모양 — tcode·barcode
 });
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `node --test tests/orderitem-cancel.test.js`
 Expected: FAIL — `ccRowCurrentSetting 선언을 찾지 못했습니다`.
 
-- [ ] **Step 3: 구현** — Task 1 의 함수들 뒤에 추가:
+- [x] **Step 3: 구현** — Task 1 의 함수들 뒤에 추가:
 
 ```js
   //  행 HTML 의 배정 팝업 링크 currentSetting(master, orderSeq, barcode, shop, client, orderDate) 인자. 없거나 6개가 아니면 null(§5.4 parseCurrentSettingArgs 재사용).
@@ -370,12 +370,12 @@ Expected: FAIL — `ccRowCurrentSetting 선언을 찾지 못했습니다`.
   }
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run: `node --test tests/orderitem-cancel.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/skin.js tests/orderitem-cancel.test.js
@@ -393,7 +393,7 @@ git commit -m "feat(일괄취소): 다음 단계 판정(ccNextStep)·목표 확�
 **Interfaces:**
 - Produces: `cBuildStandbyUrl(sKey, searchFields, status1 = 'OS-', status2 = 'O--')` — 2인자 호출은 종전과 같은 URL. `cReadCheckedRows()` 행에 `cs: { has, barcode }`.
 
-- [ ] **Step 1: 테스트 (RED)** — `tests/orderitem-c.test.js` 의 `cBuildStandbyUrl` 테스트 블록 뒤에 추가(그 파일의 추출 방식·변수명을 그대로 따른다):
+- [x] **Step 1: 테스트 (RED)** — `tests/orderitem-c.test.js` 의 `cBuildStandbyUrl` 테스트 블록 뒤에 추가(그 파일의 추출 방식·변수명을 그대로 따른다):
 
 ```js
 test('cBuildStandbyUrl: 상태 인자를 주면 본사확인취소(status1=O--, status2=OS-), 안 주면 종전(OS-/O--) 그대로', () => {
@@ -416,9 +416,9 @@ test('cReadCheckedRows: 행마다 배정 팝업 링크 여부와 바코드(cs)�
 });
 ```
 
-- [ ] **Step 2: 실패 확인** — `node --test tests/orderitem-c.test.js tests/orderitem-cancel-batch.test.js` → 새 테스트 2개 FAIL.
+- [x] **Step 2: 실패 확인** — `node --test tests/orderitem-c.test.js tests/orderitem-cancel-batch.test.js` → 새 테스트 2개 FAIL.
 
-- [ ] **Step 3: 구현**
+- [x] **Step 3: 구현**
 
 `cBuildStandbyUrl`:
 
@@ -464,9 +464,9 @@ test('cReadCheckedRows: 행마다 배정 팝업 링크 여부와 바코드(cs)�
         out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null, orderDate: orderDate, cs: cs });
 ```
 
-- [ ] **Step 4: 통과 확인** — `node --test tests/orderitem-c.test.js tests/orderitem-c2a.test.js tests/orderitem-c2b.test.js tests/orderitem-cancel-batch.test.js` → PASS (기존 standby URL 테스트 포함).
+- [x] **Step 4: 통과 확인** — `node --test tests/orderitem-c.test.js tests/orderitem-c2a.test.js tests/orderitem-c2b.test.js tests/orderitem-cancel-batch.test.js` → PASS (기존 standby URL 테스트 포함).
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/skin.js tests/orderitem-c.test.js tests/orderitem-cancel-batch.test.js
@@ -485,7 +485,7 @@ git commit -m "feat(일괄취소): standby URL 상태 인자(본사확인취소)
 - Consumes: `ccBuildUnassignUrl`, `cBuildStandbyUrl`, `ccRedirectMsg`, `ccPickDelivIdx`, `dcmPostRaw`, `dcmSearchParams`, `dcmHidden`, `dcmDelete`, `dcmAppendLog`, `ASG_FETCH_MS`.
 - Produces: `ccDoStep(next, row, fields) → {dispatched, msg}`, `ccDoStandbyOff(orderSeq, sKey, fields)`, `ccDoUnassign(barcode, orderSeq, fields)`, `ccDoDelivDelete(barcode, orderSeq)`, `ccFindDelivRow(barcode, orderSeq) → {ok, idx, sKey, junNum, delivDate, shop, status, reason}`.
 
-- [ ] **Step 1: 하네스 확장 + 테스트 (RED)** — `tests/orderitem-cancel-batch.test.js` 의 `build()`:
+- [x] **Step 1: 하네스 확장 + 테스트 (RED)** — `tests/orderitem-cancel-batch.test.js` 의 `build()`:
 
 ```js
 const NAMES = ['ccTargetStatus', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome', 'ccRowCancelSeq',
@@ -577,9 +577,9 @@ test('ccDoStep: 단계별로 알맞은 쓰기 함수 하나만 부른다, 모르
 });
 ```
 
-- [ ] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → `ccDoStandbyOff 선언을 찾지 못했습니다`.
+- [x] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → `ccDoStandbyOff 선언을 찾지 못했습니다`.
 
-- [ ] **Step 3: 구현** — `ccDoCancel` 바로 뒤에 추가:
+- [x] **Step 3: 구현** — `ccDoCancel` 바로 뒤에 추가:
 
 ```js
   //  본사확인취소 POST(⚠ 쓰기) — 네이티브 standby(form1, form3, 'O--', 'OS-') 와 같은 URL·본문(idx=<seq>). ccDoCancel 과 같은 dispatch 규약:
@@ -665,9 +665,9 @@ test('ccDoStep: 단계별로 알맞은 쓰기 함수 하나만 부른다, 모르
   }
 ```
 
-- [ ] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 새 테스트 PASS, 기존 테스트도 PASS(ccRunCancelBatch 는 아직 옛 본문 — 추출만 늘어남).
+- [x] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 새 테스트 PASS, 기존 테스트도 PASS(ccRunCancelBatch 는 아직 옛 본문 — 추출만 늘어남).
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/skin.js tests/orderitem-cancel-batch.test.js
@@ -686,7 +686,7 @@ git commit -m "feat(일괄취소): 쓰기 4종 디스패치 — 본사확인취�
 - Consumes: Task 2·4 의 함수 전부, `fetchOrderRow`, `cReadSearchFields`, `cUpdateRow`, `ASG_VERIFY_MS`, `cBatchBusy`.
 - Produces: `ccRunCancelBatch(targets, progress, isAborted) → {success, failed:[{orderSeq, reason}], uncertain:[{orderSeq, reason}], processed, total}` (모양 불변).
 
-- [ ] **Step 1: 하네스의 재조회 스텁을 사슬용으로 넓히고 테스트 추가 (RED)**
+- [x] **Step 1: 하네스의 재조회 스텁을 사슬용으로 넓히고 테스트 추가 (RED)**
 
 `makeRequery` 의 `rowHtml`/반환을 이렇게 바꾼다(기존 O-- 동작은 그대로):
 
@@ -819,9 +819,9 @@ test('단계 상한: 루프는 CC_MAX_STEPS(6) 로 막혀 있다(정상 전이�
 });
 ```
 
-- [ ] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 사슬 테스트들 FAIL(옛 루프는 T--/I--/OS- 를 '상태 부적합' 으로 실패시킨다).
+- [x] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 사슬 테스트들 FAIL(옛 루프는 T--/I--/OS- 를 '상태 부적합' 으로 실패시킨다).
 
-- [ ] **Step 3: 구현** — `ccRunCancelBatch` 를 통째로 교체:
+- [x] **Step 3: 구현** — `ccRunCancelBatch` 를 통째로 교체:
 
 ```js
   //  건마다 최대 CC_MAX_STEPS 회: 재조회 → ccNextStep → 쓰기 1회 → 목표 상태 확인(폴링) → 그 확인 응답을 다음 단계의 근거로. 정상 전이는 5회 안에 끝난다.
@@ -913,11 +913,11 @@ test('단계 상한: 루프는 CC_MAX_STEPS(6) 로 막혀 있다(정상 전이�
   }
 ```
 
-- [ ] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js tests/orderitem-cancel.test.js tests/orderitem-cancel-skey.test.js` → 전부 PASS. 기존 O-- 테스트의 재조회 횟수·GET 횟수·갱신 횟수 단언이 그대로 통과해야 한다(통과하지 않으면 루프가 재조회를 더 부르고 있다는 뜻 — `row = vRow` 를 확인).
+- [x] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js tests/orderitem-cancel.test.js tests/orderitem-cancel-skey.test.js` → 전부 PASS. 기존 O-- 테스트의 재조회 횟수·GET 횟수·갱신 횟수 단언이 그대로 통과해야 한다(통과하지 않으면 루프가 재조회를 더 부르고 있다는 뜻 — `row = vRow` 를 확인).
 
-- [ ] **Step 5: 변이 확인 (수동)** — 다음을 하나씩 바꿔 대응 테스트가 FAIL 하는지 보고 되돌린다: ① `row = vRow;` 삭제 → 사슬 전체 테스트의 재조회 횟수/키 단언 FAIL ② `if (!written) results.processed--;` 의 조건 제거 → 중단 테스트 FAIL ③ `ccStepOutcome(next, vRow) !== 'success'` 를 `false` 로 → 미확정 테스트 FAIL ④ 출고장 삭제 분기에서 `dcmAppendLog` 결과 무시 → Task 4 로그 실패 테스트 FAIL.
+- [x] **Step 5: 변이 확인 (수동)** — 다음을 하나씩 바꿔 대응 테스트가 FAIL 하는지 보고 되돌린다: ① `row = vRow;` 삭제 → 사슬 전체 테스트의 재조회 횟수/키 단언 FAIL ② `if (!written) results.processed--;` 의 조건 제거 → 중단 테스트 FAIL ③ `ccStepOutcome(next, vRow) !== 'success'` 를 `false` 로 → 미확정 테스트 FAIL ④ 출고장 삭제 분기에서 `dcmAppendLog` 결과 무시 → Task 4 로그 실패 테스트 FAIL.
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/skin.js tests/orderitem-cancel-batch.test.js
@@ -935,7 +935,7 @@ git commit -m "feat(일괄취소): 건별 루프를 상태 사슬로 — 재조�
 **Interfaces:**
 - Consumes: `ccChainLabel(code, cs)`.
 
-- [ ] **Step 1: 테스트 (RED)** — `buildDialog` 의 `names` 를 `['ccChainLabel', 'ccShowApprovalDialog']` 로 바꾸고(ccChainLabel 은 표를 함수 안에 둬서 단독 추출된다 — Task 1) 다음을 추가:
+- [x] **Step 1: 테스트 (RED)** — `buildDialog` 의 `names` 를 `['ccChainLabel', 'ccShowApprovalDialog']` 로 바꾸고(ccChainLabel 은 표를 함수 안에 둬서 단독 추출된다 — Task 1) 다음을 추가:
 
 ```js
 test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계" 를 보여주고, 출고장 삭제·재고 반환 경고를 명시한다', () => {
@@ -957,9 +957,9 @@ test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계"
 });
 ```
 
-- [ ] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 새 테스트 FAIL.
+- [x] **Step 2: 실패 확인** — `node --test tests/orderitem-cancel-batch.test.js` → 새 테스트 FAIL.
 
-- [ ] **Step 3: 구현** — `ccShowApprovalDialog` 의 else 분기:
+- [x] **Step 3: 구현** — `ccShowApprovalDialog` 의 else 분기:
 
 ```js
       } else {
@@ -982,9 +982,9 @@ test('승인창: 대상 행마다 "orderSeq — 현재 상태 → 거칠 단계"
       }
 ```
 
-- [ ] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js tests/orderitem-cancel.test.js` → PASS.
+- [x] **Step 4: 통과 확인** — `node --test tests/orderitem-cancel-batch.test.js tests/orderitem-cancel.test.js` → PASS.
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/skin.js tests/orderitem-cancel-batch.test.js
@@ -1002,11 +1002,11 @@ git commit -m "feat(일괄취소): 승인창에 행별 사슬 단계와 출고�
 - Modify: `manifest.json` version `4.2.7` → `pwsh -NoProfile -File build-shell-index.ps1` → `shell-files.json`
 - Test: `node --test tests/loader-integrity.test.js`
 
-- [ ] **Step 1: 팝업 문구** — 스위치 설명에 "출고완료·입고완료·본사확인 건은 출고장 삭제·선택취소·본사확인취소를 거쳐 취소" 한 구절을 덧붙인다(마크업 구조는 건드리지 않는다).
-- [ ] **Step 2: 스펙 정정** 위 3건.
-- [ ] **Step 3: 버전·인덱스** — `manifest.json` 4.2.7, `pwsh -NoProfile -File build-shell-index.ps1`, `node --test tests/loader-integrity.test.js` PASS.
-- [ ] **Step 4: 전체 게이트** — `node --test tests/orderitem-cancel.test.js tests/orderitem-cancel-batch.test.js tests/orderitem-cancel-skey.test.js tests/orderitem-c.test.js tests/orderitem-c2a.test.js tests/orderitem-c2b.test.js tests/orderitem-assign.test.js tests/loader-integrity.test.js` → fail 0.
-- [ ] **Step 5: 커밋**
+- [x] **Step 1: 팝업 문구** — 스위치 설명에 "출고완료·입고완료·본사확인 건은 출고장 삭제·선택취소·본사확인취소를 거쳐 취소" 한 구절을 덧붙인다(마크업 구조는 건드리지 않는다).
+- [x] **Step 2: 스펙 정정** 위 3건.
+- [x] **Step 3: 버전·인덱스** — `manifest.json` 4.2.7, `pwsh -NoProfile -File build-shell-index.ps1`, `node --test tests/loader-integrity.test.js` PASS.
+- [x] **Step 4: 전체 게이트** — `node --test tests/orderitem-cancel.test.js tests/orderitem-cancel-batch.test.js tests/orderitem-cancel-skey.test.js tests/orderitem-c.test.js tests/orderitem-c2a.test.js tests/orderitem-c2b.test.js tests/orderitem-assign.test.js tests/loader-integrity.test.js` → fail 0.
+- [x] **Step 5: 커밋**
 
 ```bash
 git add popup/popup.html docs manifest.json shell-files.json
@@ -1019,7 +1019,7 @@ git commit -m "chore(일괄취소): 팝업 설명·스펙 정정·SHELL 4.2.7"
 
 **Files:** `docs/REVIEW-LEDGER.md` (회차 기록), 메모리 `project_ubishop_barcode_ext.md`.
 
-- [ ] **Step 1: 읽기 전용 라이브 확인** — 로컬 stable 폴더에 브랜치 코드를 올리고(트레이 앱 D102LabelPrinter 를 먼저 끈다 — ExtSync 가 20분마다 되돌린다) 주문전표에서 출고완료·입고완료(재고주문/발주주문)·본사확인·출고확인 행을 하나씩 체크 → [일괄취소] → **승인창만 열어** 행별 문구·제외 사유를 확인하고 [닫기]. 쓰기는 하지 않는다. 결과를 스펙 §1 뒤에 한 줄로 남긴다.
-- [ ] **Step 2: 검수 T3** — `REVIEW-BRIEF.tmp.md`(원장 '누적 판정' 첨부, diff = `git diff main..HEAD -- src/skin.js tests/orderitem-cancel.test.js tests/orderitem-cancel-batch.test.js tests/orderitem-c.test.js popup/popup.html`)로 Terra 1R → 채택 지적 수정 → Terra 재검수(채택 0 까지) → Opus 5 1회 → DeepSeek 교차 1회. Fable 없음. 각 라운드 `usage_daily` 전후 측정. 채택/기각과 근거를 원장에.
-- [ ] **Step 3: 배포** — main 병합 → push → ExtSync 반영(20분). 메모리 갱신.
-- [ ] **Step 4: 라이브 쓰기 1건** — 사장님이 지정한 출고완료 실제 건 1건으로 사슬 전체를 사장님 입회 하에 실행하고, 결과(각 단계 상태·소요 시간·출고장 번호)를 스펙 §1 뒤에 기록한다.
+- [x] **Step 1: 읽기 전용 라이브 확인** — 로컬 stable 폴더에 브랜치 코드를 올리고(트레이 앱 D102LabelPrinter 를 먼저 끈다 — ExtSync 가 20분마다 되돌린다) 주문전표에서 출고완료·입고완료(재고주문/발주주문)·본사확인·출고확인 행을 하나씩 체크 → [일괄취소] → **승인창만 열어** 행별 문구·제외 사유를 확인하고 [닫기]. 쓰기는 하지 않는다. 결과를 스펙 §1 뒤에 한 줄로 남긴다.
+- [x] **Step 2: 검수 T3** — `REVIEW-BRIEF.tmp.md`(원장 '누적 판정' 첨부, diff = `git diff main..HEAD -- src/skin.js tests/orderitem-cancel.test.js tests/orderitem-cancel-batch.test.js tests/orderitem-c.test.js popup/popup.html`)로 Terra 1R → 채택 지적 수정 → Terra 재검수(채택 0 까지) → Opus 5 1회 → DeepSeek 교차 1회. Fable 없음. 각 라운드 `usage_daily` 전후 측정. 채택/기각과 근거를 원장에.
+- [x] **Step 3: 배포** — main 병합 → push → ExtSync 반영(20분). 메모리 갱신.
+- [x] **Step 4: 라이브 쓰기 1건** — 사장님이 지정한 출고완료 실제 건 1건으로 사슬 전체를 사장님 입회 하에 실행하고, 결과(각 단계 상태·소요 시간·출고장 번호)를 스펙 §1 뒤에 기록한다.
