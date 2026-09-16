@@ -557,3 +557,11 @@ test('승인창: 배치가 도는 동안 배경 클릭으로 닫히지 않고, �
   await ov.dispatch('click', {});
   assert.equal(ov.removed, true, '끝난 뒤 배경 클릭은 닫는다');
 });
+
+// ── cReadCheckedRows 의 cs (DOM 함수 — 소스 핀) ──────────────────────────────
+test('cReadCheckedRows: 행마다 배정 팝업 링크 여부와 바코드(cs)를 읽는다(소스 핀 — DOM 함수)', () => {
+  const src = extractFn(SRC, 'cReadCheckedRows');
+  assert.ok(/a\[href\*="currentSetting"\]/.test(src) && /parseCurrentSettingArgs\(/.test(src), '링크 인자를 파싱한다');
+  assert.ok(/cs:\s*cs/.test(src) && /cs = \{ has: true, barcode: String\(args\.barcode \|\| ''\) \}/.test(src), 'cs 필드');
+  assert.ok(/\\\(\(\[\^\(\)\]\+\)\\\)\\s\*\$/.test(src), '링크가 없으면 상태 셀 괄호값(출고완료 (250HHL))을 바코드로');
+});

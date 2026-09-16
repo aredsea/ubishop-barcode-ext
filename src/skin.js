@@ -1676,15 +1676,16 @@
     }
     return results;
   }
-  //  standby URL 조립(본사확인 = status1='OS-', status2='O--').
+  //  standby URL 조립. 기본은 본사확인(status1='OS-', status2='O--'); 일괄취소 사슬은 본사확인취소('O--','OS-')로 부른다 —
+  //  네이티브 standby(form1, form3, status1, status2) 와 같은 규약(실측 2026-09-16, status1=목표·status2=요구 현재상태).
   //  searchFields = {reqPage, pageSize, ...} — 호출부가 form1.elements 에서 읽어 넘긴다.
   //  sKey 가 없으면 null → 호출부 실패(fail-closed).
-  function cBuildStandbyUrl(sKey, searchFields) {
+  function cBuildStandbyUrl(sKey, searchFields, status1, status2) {
     if (!sKey) return null;
     const p = new URLSearchParams();
     p.set('tcode', 'order_item');
-    p.set('status1', 'OS-');
-    p.set('status2', 'O--');
+    p.set('status1', status1 == null ? 'OS-' : String(status1));
+    p.set('status2', status2 == null ? 'O--' : String(status2));
     p.set('sKey', sKey);
     if (searchFields) {
       const keys = Object.keys(searchFields);
@@ -5825,7 +5826,22 @@
             }
           } catch (_) {}
         }
-        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null, orderDate: orderDate });
+        //  cs = 배정 팝업 링크 유무·바코드(일괄취소 사슬의 승인창 판정용 — 쓰기 근거는 재조회다). 링크가 없으면(출고완료) 상태 셀 괄호값.
+        let cs = { has: false, barcode: '' };
+        if (tr) {
+          try {
+            const a = tr.querySelector('a[href*="currentSetting"]');
+            const args = a ? parseCurrentSettingArgs(a.getAttribute('href')) : null;
+            if (args) cs = { has: true, barcode: String(args.barcode || '') };
+            else {
+              const si = cStatusColFor(tr.closest('table'));
+              const st = (si >= 0 && tr.cells && tr.cells[si]) ? (tr.cells[si].textContent || '').replace(/\s+/g, '') : '';
+              const mb = st.match(/\(([^()]+)\)\s*$/);
+              if (mb) cs.barcode = mb[1];
+            }
+          } catch (_) {}
+        }
+        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null, orderDate: orderDate, cs: cs });
       }
     } catch (e) { cLog('체크 행 읽기 실패', e); }
     return out;
