@@ -121,10 +121,38 @@
 | 104 | 고객등록-O1 | Opus 5 | Nit-2 검토 표에서 편집한 판매가·수량은 지인소개 판정에 안 들어간다(파일값 null → 원래 마켓) | **기각(기록)** | 방향이 보수적(원래 마켓). 스펙 §5d 에 명시. 편집값 기준을 원하면 spec 을 넘기도록 바꾼다 |
 | 105 | 고객등록-O1 | Opus 5 | Nit-3 고객 조회 실패(`unknown`) 칩에는 지인소개 표시가 안 붙는데 실행은 적용된다 · `ref` 조건 반전 변이가 산다 | **기각(기록)** | 표시 전용. 실행 규칙은 `oiClientJob` 이 실행 테스트로 고정돼 있다 |
 | 106 | 고객등록-1R | Luna | 지적 없음 | — | 통합 가능(외부 1R 충족) |
+| 107 | 사슬취소-1R | Terra | P1 선택취소 전 링크 orderSeq(2번째 인자)를 행과 대조하지 않음 | **채택·수정** | `ccNextStep` I-- 에 `args.orderSeq === seq` EXACT(취소 링크 가드와 같은 규율) |
+| 108 | 사슬취소-1R | Terra | P2 출고전표 조회 POST 에 타임아웃 없음 → 정체 시 배치가 영영 busy | **채택·수정** | `dcmPostRaw/dcmDelete` 선택 `signal`, `ccFindDelivRow/ccDoDelivDelete` 에 `ASG_FETCH_MS` abort(사이드바 출고취소 무변경) |
+| 109 | 사슬취소-O1 | Opus 5 | P1 I-- 링크 바코드 대조가 같은 출처(`assignedBarcode` 도 링크에서 옴)끼리라 항상 참 — 테스트는 프로덕션이 못 만드는 입력으로 통과 | **채택·수정** | 상태 셀 괄호 바코드 `ccCellBarcode(row.text)` 와 대조. 스텁도 `text` 에 괄호. 프로덕션 입력 그대로의 불일치 케이스로 교체 |
+| 110 | 사슬취소-O1 | Opus 5 | P2 출고완료 발주주문은 출고장(첫 쓰기, 되돌릴 수 없음)만 지워지고 선택취소에서 막힘 | **채택·수정** | 승인(`cs`)·실행 직전(`ccNextStep` T--) 둘 다에서 유형 셀로 거름. O2 Nit 로 `재고주문` 양성 판정으로 강화 |
+| 111 | 사슬취소-O1 | Opus 5 | Nit 중단 시 이미 쓴 건 화면 미갱신 · T-- 바코드 없는 행 승인 통과 · 링크 파싱 실패 사유 오진 | **채택 2·기각 1** | 앞 둘 수정. 파싱 실패 사유는 fail-closed 라 문구만의 문제 — 기록 |
+| 112 | 사슬취소-2R | Terra | P2 폴링 마감 직전 시작한 재조회가 12s 뒤 성공으로 오면 그 응답으로 다음 쓰기 | **기각(기록)** | 12s 는 대기 상한이지 응답 유효기한이 아니다. 늦은 응답도 그 시점의 서버 진실(더 새 응답), 다음 쓰기 직전 게이트·[중단] 재확인. 최악은 대기 12s+8s. 4.1.9 같은 루프가 T3 통과 |
+| 113 | 사슬취소-O2 | Opus 5 | P2 삭제 POST 타임아웃 배선 3지점이 테스트 밖(변이 3종 생존) | **채택·수정** | 실제 `dcmDelete`·`dcmPostRaw` 추출본으로 abort·fetch init.signal·타이머를 동작 테스트, 변이 3종 KILL |
+| 114 | 사슬취소-O2 | Opus 5 | Nit 발주 라벨 집합이 실측 2종뿐(미탐 가능) · cs.balju 라이브 미확인 · 타임아웃 뒤 실제 삭제 시 WAL deleted 누락 | **채택 1·기록 2** | 양성 판정(`재고주문` 요구)으로 전환. 라이브 읽기 재확인(매장 목록 13열·standby 앵커 없음 → 버튼 미주입). WAL 은 before_delete 로 복구 근거 충분 |
+| 115 | 사슬취소-X1 | DeepSeek v4-pro | 지적 없음(불변식 9종·상태기계·signal 역호환·테스트 확인) | 채택 — · 기각 — | 교차 1회(사장님 지시로 Fable 없음) |
 
 ---
 
 ## 회차별 상세
+
+### 주문전표 일괄취소 확장 — 출고완료·입고완료·본사확인 건의 상태 사슬 취소 — SHELL v4.2.7 (2026-09-16)
+
+**대상**: `src/skin.js` §5.11(`ccNextStep`·`ccStepOutcome`·`ccPickDelivIdx`·`ccBuildUnassignUrl`·`ccCellBarcode`·`ccRowIsJaego`·`ccChainLabel`·`ccRequeryReason` 순수부 / `ccDoStandbyOff`·`ccDoUnassign`·`ccFindDelivRow`·`ccDoDelivDelete`·`ccDoStep`·`ccRunCancelBatch` 상태기계·`ccShowApprovalDialog`) · §5.10 `cReadCheckedRows`(cs) · `cBuildStandbyUrl` 상태 인자 · `dcmPostRaw/dcmDelete` 선택 signal · `popup/popup.html`. 테스트 `orderitem-cancel(+25)`·`orderitem-cancel-batch(+22)`·`orderitem-c2b(+1)`. 브랜치 `feat/cancel-chain` → main. 스펙 `2026-09-16-orderitem-cancel-chain-design.md`, 플랜 `…/plans/2026-09-16-orderitem-cancel-chain.md`.
+
+**검수 등급 T3** — 운영 ERP 에 되돌릴 수 없는 쓰기 4종(출고장 삭제·선택취소·본사확인취소·취소)을 사슬로 보낸다. 사장님 지시(Fable 없음·라운드 최소)대로 Terra 반복 + Opus 5 + DeepSeek 교차 1회.
+
+| 라운드 | 자리 | 모델 | 지적 | 채택 | 기각 | 비용 |
+|---|---|---|---|---|---|---|
+| 1R | 고위험 | `openai/gpt-5.6-terra` (high) | 2 (P1·P2) | 2 | 0 | $0.1834 |
+| O1 | 내부 | Opus 5 xhigh | 1 (P1) + 2 (P2) + Nit 3 | 4 + 2 | 1(기록) | 구독(미분리) |
+| 2R | 고위험 재검수 | `openai/gpt-5.6-terra` (high) | 1 (P2) | 0 | 1(기록) | $0.1696 |
+| O2 | 내부 재검수 | Opus 5 xhigh | 1 (P2) + Nit 3 | 2 | 2(기록) | 구독(미분리) |
+| X1 | 교차 | `deepseek/deepseek-v4-pro` | 지적 없음(불변식 9종·상태기계·signal 역호환·테스트 확인) | — | — | $0.1199 |
+
+**OpenRouter 검수 비용**: Terra $0.3530 + DeepSeek $0.1199. 변이: 루프 6종 + 1R 반영 5종 + O2 배선 3종 = 14종 전부 KILL. 라이브: 읽기 전용으로 실제 `cReadCheckedRows→ccClassifyChecked→ccChainLabel` 를 목록 응답에 돌려 승인창 문구 확인(T--/OS-/O--/TS-/OC- — 매장 계정 세션이라 I-- 는 전부 제외 사유). **쓰기 1건 라이브는 사장님 지정 출고완료 실제 건으로 입회 하에**(미실행).
+
+**교훈**: ① 같은 출처끼리의 대조는 대조가 아니다(Opus O1 P1) — 가드를 만들 때 두 값의 원천이 독립인지 먼저 본다. ② 되돌릴 수 없는 첫 쓰기 뒤에 막히는 경로(막다른 길)는 첫 쓰기 전에 걸러야 한다(Opus O1 P2). ③ 타임아웃 같은 배선은 첫 홉만 테스트하면 뒤 홉 변이가 산다(Opus O2 P2) — 실물 추출본으로 끝까지. ④ 계정 스코프(매장 13열/본사 14열)가 목록 계약을 바꾼다 — 라이브 읽기 확인은 본사 계정 세션에서 한 번 더.
+
 
 ### 주문 가져오기 고객 등록 보강 — 휴대폰 중복 거부 재시도(비고에 번호) · 카페24 정산 차 60%↑ 지인소개 — SHELL v4.2.6 (2026-09-16)
 

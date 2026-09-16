@@ -26,6 +26,9 @@
 
 → 출고완료·출고확인 행에는 배정 팝업 링크가 없다. **출고장을 지워야 입고완료로 돌아가고 그때 팝업이 열린다** — 사장님이 말한 순서와 일치한다.
 → 입고완료라도 **발주주문은 팝업 자체가 없다**(선택취소 경로가 없다) → 이 설계의 대상이 아니다.
+→ **계정 스코프**: 같은 날 매장(FASHION, `searchShop=LT`) 계정 세션으로 다시 재면 입고완료 56행 중 링크 **0**(본사 계정 세션에서는 96/100). 배정·선택취소는 본사 권한이라
+  매장 계정에서는 링크가 아예 렌더되지 않는다 → 링크 없는 입고완료의 제외 사유는 "발주주문이거나 본사 계정이 아님" 두 원인을 다 적는다. 사슬은 **본사 계정으로 로그인한 세션**에서 돌려야 한다.
+  매장 계정 목록은 **13열**이고 유형 셀이 `고객(상품)` 까지만(재고주문/발주주문 접미 없음), 툴바에 `standby` 앵커(본사확인/본사확인취소)가 **없다** → `[일괄취소]` 버튼 자체가 주입되지 않는다(`injectBulkCancelButton` 은 standby 앵커 뒤에 붙인다). 본사 계정 목록(14열)만 `고객(…)재고주문`/`발주주문` 접미가 있다 — `ccRowIsJaego` 는 그 접미를 요구한다(양성 판정).
 
 ### 1.2 출고전표(`delivItemList.do`) 행의 `idx` 값 = `<출고seq>,<바코드>,<?>,<주문 orderSeq>`
 
@@ -69,6 +72,12 @@ GET `/jun/orderitem/orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건
 
 ---
 
+### 1.6 구현 후 읽기 확인 (2026-09-16, 매장 계정 세션)
+
+실제 `cReadCheckedRows → ccClassifyChecked → ccChainLabel` 코드를 목록 응답(DOMParser)에 그대로 돌려 승인창 문구를 확인했다(쓰기 없음):
+- 출고완료 2건 → `출고완료 (250HHL) → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소` (상태 셀 괄호 바코드 추출 정상) · 본사확인 → `본사확인 → 본사확인취소 · 취소` · 주문완료 → `주문완료 → 취소` · 출고확인 → 제외 사유 · 주문취소 → `이미 취소됨`.
+- 입고완료는 이 세션이 매장 계정이라 링크가 없어 전부 제외 사유로 떨어졌다(위 1.1 계정 스코프). 본사 계정 세션에서의 `입고완료 (바코드) → 선택취소 · …` 문구는 단위 테스트(fakeDom)로만 확인.
+
 ## 2. 확정된 결정 (사장님, 2026-09-16)
 
 | 결정 | 선택 | 근거 |
@@ -78,7 +87,7 @@ GET `/jun/orderitem/orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건
 | 구현 경로 | **A — 기존 `[일괄취소]` 루프를 "재조회 → 다음 쓰기 하나" 상태기계로 확장** | B(별도 버튼)는 중복이고 요청과 어긋남, C(네이티브 UI 구동)는 2026-09-11 에 기각한 경로 |
 | 실패·미확정 | **즉시 중단**(기존) — 그 건의 **현재 상태를 결과에 명시** | 사슬 중간에 멈추면 행이 중간 상태(예: 출고장은 지워지고 입고완료)로 남는다. 어디서 멈췄는지 모르는 것이 가장 위험하다 |
 | 출고 건 특정 | **바코드 + orderSeq 둘 다 일치하는 행 정확히 1건** | 바코드만 맞는 건(4번째 토큰 `0` 또는 다른 주문)은 지우지 않는다 — 다른 주문의 출고를 지우는 사고를 구조로 막는다 |
-| 발주주문 입고완료 | **제외 + 사유 표시** | 팝업(선택취소)이 없어 자동화 경로가 없다. "입고완료(발주주문) — 배정 팝업이 없어 수동" |
+| 발주주문 입고완료 | **제외 + 사유 표시** | 팝업(선택취소)이 없어 자동화 경로가 없다. "입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동" |
 
 ---
 
@@ -88,7 +97,7 @@ GET `/jun/orderitem/orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건
 
 | 재사용 (무변경) | 재사용 (인자 확장) | 신규 |
 |---|---|---|
-| `fetchOrderRow`(상태·`assignedBarcode`·`rowHtml`·`sKey` 한 응답) · `cReadSearchFields` · `cUpdateRow` · `cStatusColFor`/`cListStatusCode` · `ccBuildCancelUrl`·`ccDoCancel`·`ccRowCancelSeq`·`ccRedirectMsg` · `dcmPostRaw`·`dcmSearchParams`·`dcmHidden`·`dcmDelete`·`dcmAppendLog` · 승인창 CSS·`ensureCcStyle` · `cBatchBusy` | `cReadCheckedRows`(행에 `cs` 링크 여부·바코드 추가) · `cBuildStandbyUrl(sKey, fields, status1='OS-', status2='O--')` · `cDoStandby(orderSeq, sKey, fields, status1, status2)` — 기존 호출은 기본값으로 무변경 · `ccTargetStatus`/`ccClassifyChecked`(대상 확장) · `ccShowApprovalDialog`(행별 사슬 표시) · `ccRunCancelBatch`(상태기계) | 순수: `ccNextStep` · `ccChainLabel` · `ccPickDelivIdx` · `ccBuildUnassignUrl` · `ccStepOutcome` / 실행: `ccFindDelivRow` · `ccDoUnassign` |
+| `fetchOrderRow`(상태·`assignedBarcode`·`rowHtml`·`sKey` 한 응답) · `cReadSearchFields` · `cUpdateRow` · `cStatusColFor`/`cListStatusCode` · `ccBuildCancelUrl`·`ccDoCancel`·`ccRowCancelSeq`·`ccRedirectMsg` · `dcmPostRaw`·`dcmSearchParams`·`dcmHidden`·`dcmDelete`·`dcmAppendLog` · 승인창 CSS·`ensureCcStyle` · `cBatchBusy` | `cReadCheckedRows`(행에 `cs` 링크 여부·바코드 추가) · `cBuildStandbyUrl(sKey, fields, status1='OS-', status2='O--')` — 기존 호출은 기본값으로 무변경(`cDoStandby` 는 손대지 않는다) · `ccTargetStatus`/`ccClassifyChecked`(대상 확장) · `ccShowApprovalDialog`(행별 사슬 표시) · `ccRunCancelBatch`(상태기계) | 순수: `ccNextStep` · `ccStepOutcome` · `ccChainLabel` · `ccRequeryReason` · `ccRowCurrentSetting` · `ccPickDelivIdx` · `ccBuildUnassignUrl` / 실행: `ccFindDelivRow` · `ccDoStandbyOff`(본사확인취소 POST — ccDoCancel 과 같은 dispatch 규약이라 cDoStandby 를 감싸지 않고 따로 둔다) · `ccDoUnassign` · `ccDoDelivDelete` · `ccDoStep` |
 
 - 모든 쓰기는 `fetch(credentials:'include')`. ISOLATED world 라 `form.submit`·`location` 대입·팝업 열기는 쓰지 않는다.
 - 접두 `cc` 유지. 순수 판정부는 DOM·네트워크·`chrome.*`·타이머 무접촉 → `tests/orderitem-cancel.test.js`.
@@ -99,15 +108,17 @@ GET `/jun/orderitem/orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건
 
 ### 4.1 대상 판정 (승인창용, 화면 행 기준) — `ccClassifyChecked(rows)`
 
-`cReadCheckedRows` 가 행마다 `{ orderSeq, code, orderDate, cs: { has, barcode } }` 를 준다(`cs` = `a[href*="currentSetting"]` 존재 여부와 3번째 인자).
+`cReadCheckedRows` 가 행마다 `{ orderSeq, code, orderDate, cs: { has, barcode, jaego } }` 를 준다(`cs` = `a[href*="currentSetting"]` 존재 여부와 3번째 인자(없으면 상태 셀 괄호값), `jaego` = 행 텍스트에 `재고주문`).
 
 | 화면 상태 | 판정 | 승인창 표시 |
 |---|---|---|
 | `O--` | 대상 | `주문완료 → 취소` |
 | `OS-` | 대상 | `본사확인 → 본사확인취소 · 취소` |
 | `I--` + `cs.has && cs.barcode` | 대상 | `입고완료 (바코드) → 선택취소 · 본사확인취소 · 취소` |
-| `I--` + 링크 없음 | **제외** | `입고완료(발주주문) — 배정 팝업이 없어 수동` |
-| `T--` | 대상 | `출고완료 (바코드) → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소` |
+| `I--` + 링크 없음 | **제외** | `입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동` |
+| `T--` + 유형 셀 `재고주문` + 바코드 | 대상 | `출고완료 (바코드) → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소` |
+| `T--` + 유형 셀에 `재고주문` 없음(발주주문·유형 불명·13열 매장 목록) | **제외** | `출고완료 — 재고주문이 아님(발주주문 등), 출고장을 지워도 배정 팝업이 없어 수동` (검수 1R Opus P2: 첫 쓰기가 되돌릴 수 없는데 그 다음 단계가 막히는 건. O2 Nit: 양성 판정이라 모르는 라벨은 fail-closed) |
+| `T--` + 상태 셀에 괄호 바코드 없음 | 제외 | `출고완료 — 상태 셀에서 바코드를 읽지 못함, 수동` |
 | `TS-` | 제외 | `출고확인(매장재고) — 매장이 입고 확인한 건, 수동` |
 | `OC-` | 제외 | `이미 취소됨` |
 | `B--` · `TE-` · `S--` · 불명 | 제외 | `취소 불가 상태(…)` |
@@ -119,7 +130,7 @@ GET `/jun/orderitem/orderItemCancel.do?tcode=order_item&seq=&sKey=&<검색조건
 
 기존 창에 두 가지만 더한다.
 - 대상 목록을 행마다 `orderSeq · 현재 상태 → 거칠 단계`(4.1 표의 문구) 로 보여준다. 제외 목록은 사유 그대로.
-- ERP 원문 경고(`취소 된 주문서는 복구되지 않습니다…`) 아래에 **"출고완료 건은 출고장 삭제, 입고완료 건은 재고 반환(선택취소)이 함께 실행됩니다. 되돌릴 수 없습니다."** 를 명시한다.
+- ERP 원문 경고(`취소 된 주문서는 복구되지 않습니다…`) 아래에 **"출고완료 건은 출고장 삭제, 입고완료 건은 재고 반환(선택취소)이 함께 실행됩니다. 되돌릴 수 없습니다. 본사 계정으로 로그인한 세션에서만 실행하세요 — 매장 계정은 선택취소 권한이 없어 출고장만 지워지고 멈춥니다."** 를 명시한다.
 [취소 진행]/[닫기]→[중단]·`isTrusted` 게이트·진행 중 창 유지·배경 클릭 무시는 그대로.
 
 ### 4.3 건별 루프 — `ccRunCancelBatch(targets, progress, isAborted)` 상태기계
@@ -138,11 +149,12 @@ loop:
   4) progress(tag + step.label)
   5) 쓰기 1회 (4.4) → {dispatched, msg}. dispatched=false 면 실패(쓰기 없었음), 중단
   6) 목표 상태 확인: 최대 ASG_VERIFY_MS(12s) 동안 1.5s 간격 재조회, ccStepOutcome(step, vRow) === 'success' 까지
-     성공 → cUpdateRow(vRow), loop 로(다음 단계는 다시 1) 부터 — 새 응답·새 sKey)
-     미확정 → results.uncertain.push({ orderSeq, reason: '<단계> 미확정 — 현재 상태: <vRow.text 또는 불명> · 수동 확인' + 서버 msg }), 중단
+     성공 → row = vRow 로 2) 부터(그 확인 응답이 곧 다음 단계의 근거 — 새 sKey·링크·상태. 별도 재조회를 더 하지 않는다)
+     미확정 → results.uncertain.push({ orderSeq, reason: '<단계> 미확정 — 현재 상태: <vRow.text 또는 불명> · 수동 확인 필요' + 서버 msg }), 중단
+  화면 갱신(cUpdateRow)은 그 건이 끝날 때 1회 — 성공(OC- 행)·실패(서버 진실 행)·미확정(확인 재조회 행, found 일 때). 첫 재조회가 이미 OC- 면 쓰기 없이 성공으로 센다.
 ```
 
-- **쓰기마다 fresh 재조회**: 단계가 바뀔 때마다 1) 로 돌아가므로 sKey 도 그 단계 직전 응답의 것이다(2026-09-11 §4.3 "같은 응답의 상태와 키" 원칙 유지).
+- **쓰기마다 fresh 근거**: 각 단계의 근거는 직전 확인 재조회 응답이라 sKey 도 그 응답의 것이다(2026-09-11 §4.3 "같은 응답의 상태와 키" 원칙 유지). 기존 O-- 건은 종전과 같이 재조회 2회(상태 확인 + 취소 확인)·GET 1회.
 - 출고장 삭제 단계만 재조회가 둘이다: 주문 재조회(상태 T-- 확인) + **출고전표 조회**(`ccFindDelivRow`, 그 응답의 sKey 로 즉시 삭제). 그 사이에 다른 GET 을 끼우지 않는다.
 - 결과 요약: `success`(OC- 도달) / `failed` / `uncertain` 에 더해 **각 건의 마지막 확인 상태**를 문구에 싣는다.
   예: `389513 · 출고장 삭제 완료 → 선택취소 미확정 — 현재 상태: 입고완료 (250HHL) · 수동 확인 필요`.
@@ -153,9 +165,9 @@ loop:
 
 | 단계 | 함수 | 요청 | 근거 응답 | 성공 확인(재조회) |
 |---|---|---|---|---|
-| 출고장 삭제 | `ccFindDelivRow(barcode, orderSeq)` → `dcmAppendLog(before_delete)` → `dcmDelete({sKey, idx}, barcode)` | `POST delivItemList.do?tcode=deliv_item`(전체기간·seq 정렬·`searchBarcode`) → `POST delivItemDelete.do?tcode=deliv_item` + 같은 검색조건, 본문 `sKey`+`idx` | 출고전표 응답: `idx` 토큰 `[1]===barcode && [3]===orderSeq` 인 행 **정확히 1건**, 그 행 상태 셀 `출고완료`, hidden `sKey` | `code === 'I--'` |
-| 선택취소 | `ccDoUnassign(barcode, orderSeq, fields)` | `GET /jun/orderitem/orderItemPopCurrentSettingCancel.do?tcode=order_item&barcode=&orderSeq=&<cReadSearchFields()>` | 주문 재조회: `code === 'I--'`, `rowHtml` 에 `currentSetting` 링크, 링크 3번째 인자 === `assignedBarcode`(빈 값 아님) | `code === 'OS-' && assignedBarcode === ''` |
-| 본사확인취소 | `cDoStandby(orderSeq, sKey, fields, 'O--', 'OS-')` | `POST orderItemStandby.do?tcode=order_item&status1=O--&status2=OS-&sKey=&<fields>`, 본문 `idx=<orderSeq>` | 주문 재조회: `code === 'OS-'`, `sKey` | `code === 'O--'` |
+| 출고장 삭제 | `ccFindDelivRow(barcode, orderSeq)` → `dcmAppendLog(before_delete)` → `dcmDelete({sKey, idx}, barcode, signal)` | `POST delivItemList.do?tcode=deliv_item`(전체기간·seq 정렬·`searchBarcode`) → `POST delivItemDelete.do?tcode=deliv_item` + 같은 검색조건, 본문 `sKey`+`idx`. **둘 다 `ASG_FETCH_MS` abort**(`dcmPostRaw`/`dcmDelete` 에 선택 `signal` 인자 — Terra/Opus 1R P2, 정체 시 배치가 영영 busy 로 남지 않게) | 주문 재조회: `code === 'T--'`, 행이 **재고주문**(`ccRowIsJaego`, 양성 판정), 상태 셀 괄호 바코드. 출고전표 응답: `idx` 토큰 `[1]===barcode && [3]===orderSeq` 인 행 **정확히 1건**, 그 행 상태 셀 `출고완료`, hidden `sKey` | `code === 'I--'` |
+| 선택취소 | `ccDoUnassign(barcode, orderSeq, fields)` | `GET /jun/orderitem/orderItemPopCurrentSettingCancel.do?tcode=order_item&barcode=&orderSeq=&<cReadSearchFields()>` | 주문 재조회: `code === 'I--'`, `rowHtml` 에 `currentSetting` 링크, **링크 2번째 인자(orderSeq) === 행 orderSeq**(Terra 1R P1), **링크 3번째 인자 === 상태 셀 괄호 바코드**(`ccCellBarcode(row.text)` — `assignedBarcode` 는 링크에서 오므로 독립 출처가 아니다, Opus 1R P1), 빈 값 아님 | `code === 'OS-'` 이고 `assignedBarcode === ''` 이고 상태 셀 괄호도 없음 |
+| 본사확인취소 | `ccDoStandbyOff(orderSeq, sKey, fields)` (= `cBuildStandbyUrl(sKey, fields, 'O--', 'OS-')` POST) | `POST orderItemStandby.do?tcode=order_item&status1=O--&status2=OS-&sKey=&<fields>`, 본문 `idx=<orderSeq>` | 주문 재조회: `code === 'OS-'`, `sKey` | `code === 'O--'` |
 | 취소 | `ccDoCancel(orderSeq, sKey, fields)` (기존) | `GET orderItemCancel.do?…` | 주문 재조회: `code === 'O--'`, `sKey`, `ccRowCancelSeq(rowHtml) === orderSeq` | `code === 'OC-'` |
 
 - 삭제·취소·선택취소는 **dispatch 뒤 재시도 금지**(도달 여부 불명은 전부 미확정). 네트워크 예외도 `dispatched:true` 로 두고 재조회로만 판정(기존 `ccDoCancel` 규약).
@@ -171,8 +183,8 @@ loop:
   | `OC-` | — | `done` |
   | `O--` | `ccRowCancelSeq(rowHtml) === orderSeq` | `write: 'cancel'` / 아니면 `fail: 취소 링크 없음·불일치` |
   | `OS-` | — | `write: 'standby-off'` |
-  | `I--` | `rowHtml` 의 `currentSetting` 3번째 인자 === `assignedBarcode` ≠ `''` | `write: 'unassign'` / 링크 없음 → `fail: 입고완료(발주주문) — 배정 팝업이 없어 수동` / 인자 불일치 → `fail: 배정 바코드 불일치` |
-  | `T--` | `assignedBarcode` ≠ `''` | `write: 'deliv-delete'` / 없으면 `fail: 출고 바코드를 읽지 못함` |
+  | `I--` | 링크 있음 · 링크 orderSeq === 행 orderSeq · 링크 바코드 === 상태 셀 괄호 바코드(`ccCellBarcode(row.text)`) ≠ `''` | `write: 'unassign'` / 링크 없음 → `fail: 입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동` / 주문번호 불일치 → `fail: 배정 링크 주문번호 불일치` / 바코드 불일치 → `fail: 배정 바코드 불일치` |
+  | `T--` | 재고주문(`ccRowIsJaego(rowHtml)` true) · 상태 셀 괄호 바코드 ≠ `''` | `write: 'deliv-delete'` / 재고주문 아님 → `fail: 출고완료 — 재고주문이 아님(발주주문 등), …` / 바코드 없음 → `fail: 출고 바코드를 읽지 못함` |
   | `TS-` `TE-` `S--` `B--` `null` | — | `fail: 상태 부적합: <text>` |
   `sKey` 요구 단계(`standby-off`·`cancel`)는 `row.sKey` 가 없으면 `fail: sKey 추출 실패`.
 - `ccStepOutcome(step, vRow)` — `{dispatched:true}` 뒤 재조회 결과로 `'success' | 'uncertain'` (4.4 마지막 열). found 아님·다른 상태·null 은 전부 `uncertain`(기존 `ccClassifyOutcome` 규약 일반화; `cancel` 단계는 기존 함수와 같은 답).
@@ -195,10 +207,10 @@ loop:
 2. **쓰기의 근거는 언제나 쓰기 직전 재조회 응답 하나**: 상태·바코드·링크·sKey 가 같은 응답에서 나온다. 화면 행·승인창의 값은 근거가 아니다.
 3. 목표 상태가 **재조회로 확인되기 전에는 다음 단계로 넘어가지 않는다.** dispatch 뒤 재시도 없음.
 4. 출고장은 **바코드 + orderSeq 둘 다 일치하는 행 1건**만, 상태 `출고완료` 일 때만, write-ahead 로그를 남긴 뒤에만 지운다.
-5. 선택취소는 재조회 행의 `currentSetting` 링크 바코드가 상태 셀 바코드와 같을 때만 보낸다(엉뚱한 바코드를 떼는 경로 차단). 발주주문(링크 없음)은 절대 자동 처리하지 않는다.
+5. 선택취소는 재조회 행의 `currentSetting` 링크가 **이 행의 orderSeq** 를 가리키고 링크 바코드가 **상태 셀 괄호 바코드(독립 출처)** 와 같을 때만 보낸다(엉뚱한 주문·바코드를 떼는 경로 차단). 발주주문(링크 없음)은 절대 자동 처리하지 않고, 출고완료 발주주문은 출고장 삭제(첫 쓰기) 전에 거른다.
 6. 취소 GET 은 기존대로 `del('<seq>')` 링크 인자 EXACT 일치가 있어야 나간다.
 7. 한 건은 최대 `CC_MAX_STEPS` 회 — 무한 루프 없음. 실패·미확정은 **그 건에서 배치 중단**, 처리된 건까지 화면 갱신, 결과에 현재 상태 명시.
-8. 게이트(`ubSkin && ubHqConfirm`)·[중단]은 **매 쓰기 직전**에 다시 본다. `cBatchBusy` 공유(본사확인+입고완료와 배타).
+8. 게이트(`ubSkin && ubHqConfirm`)·[중단]은 **매 쓰기 직전**에 다시 본다. 이미 쓴 단계가 있는 건은 중단 시에도 서버 상태로 화면을 갱신한다. `cBatchBusy` 공유(본사확인+입고완료와 배타). 모든 요청(주문 재조회·출고전표 조회·쓰기 4종)에 `ASG_FETCH_MS` 타임아웃이 있어 정체가 배치를 영영 잡아두지 못한다.
 9. 어떤 조회도 쓰기 URL(`Cancel.do`·`CurrentSettingCancel.do`·`Standby.do`·`delivItemDelete.do`)을 "확인용으로" 부르지 않는다.
 
 ---
@@ -213,7 +225,7 @@ loop:
 ## 7. 검수·배포
 
 - 등급 **T3**(서버 쓰기 4종·되돌리기 불가·주문/재고 도메인). 사장님 지시로 Terra 반복 + Opus 5 + DeepSeek 교차 1회, **Fable 없음**, 라운드는 채택 0 이 되는 즉시 종료.
-- SHELL 4.2.6 — `manifest.json` → `build-shell-index.ps1` → `loader-integrity` → main push. 팝업 라벨 '주문전표 일괄 처리' 의 설명에 사슬 취소를 한 줄 추가.
+- SHELL 4.2.7(4.2.6 은 같은 날 고객 등록 보강이 썼다) — `manifest.json` → `build-shell-index.ps1` → `loader-integrity` → main push. 팝업 라벨 '주문전표 일괄 처리' 의 설명에 사슬 취소를 한 줄 추가.
 
 ## 8. 범위 외
 

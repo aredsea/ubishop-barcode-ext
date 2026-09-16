@@ -720,9 +720,10 @@
   // 🔴 postDoc 은 doc 만 돌려줘서 성공 판정을 할 수 없다. 유비샵은 POST-redirect-GET 이고
   //   성공·실패 모두 폼페이지로 리다이렉트되며 **실패일 때만** URL 쿼리 msg 에 사유가 실린다.
   //   응답 본문의 alert 문구 스캔은 항상 오탐이다(폼페이지에 검증 alert 이 상시 박혀 있음).
-  async function dcmPostRaw(action, params) {
+  //  signal(선택): 일괄취소 사슬이 ASG_FETCH_MS abort 를 건다(Terra/Opus 1R P2 — 없으면 정체 시 배치가 영영 busy). 사이드바 호출은 종전대로 없음.
+  async function dcmPostRaw(action, params, signal) {
     const r = await fetch(action, {
-      method: 'POST', credentials: 'include', cache: 'no-cache',
+      method: 'POST', credentials: 'include', cache: 'no-cache', signal: signal || undefined,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
       body: params.toString()
     });
@@ -773,11 +774,11 @@
   // 삭제 — 페이지 del() 과 같은 구조다:
   //   idx_form.action = "/jun/delivitem/delivItemDelete.do?tcode=deliv_item" + CONST_URL; submit()
   // CONST_URL 은 현재 검색조건이라 우리가 같은 조건을 실어 보낸다. 본문엔 sKey + 체크된 idx.
-  async function dcmDelete(target, barcode) {
+  async function dcmDelete(target, barcode, signal) {
     const p = new URLSearchParams(dcmSearchParams(barcode));
     p.set('sKey', target.sKey == null ? '' : target.sKey);
     p.set('idx', target.idx);
-    const { url } = await dcmPostRaw('/jun/delivitem/delivItemDelete.do?tcode=deliv_item', p);
+    const { url } = await dcmPostRaw('/jun/delivitem/delivItemDelete.do?tcode=deliv_item', p, signal);
     let msg = '';
     try { msg = new URL(url, location.origin).searchParams.get('msg') || ''; } catch (_) {}
     return { ok: !msg, msg: msg };
@@ -1676,15 +1677,16 @@
     }
     return results;
   }
-  //  standby URL 조립(본사확인 = status1='OS-', status2='O--').
+  //  standby URL 조립. 기본은 본사확인(status1='OS-', status2='O--'); 일괄취소 사슬은 본사확인취소('O--','OS-')로 부른다 —
+  //  네이티브 standby(form1, form3, status1, status2) 와 같은 규약(실측 2026-09-16, status1=목표·status2=요구 현재상태).
   //  searchFields = {reqPage, pageSize, ...} — 호출부가 form1.elements 에서 읽어 넘긴다.
   //  sKey 가 없으면 null → 호출부 실패(fail-closed).
-  function cBuildStandbyUrl(sKey, searchFields) {
+  function cBuildStandbyUrl(sKey, searchFields, status1, status2) {
     if (!sKey) return null;
     const p = new URLSearchParams();
     p.set('tcode', 'order_item');
-    p.set('status1', 'OS-');
-    p.set('status2', 'O--');
+    p.set('status1', status1 == null ? 'OS-' : String(status1));
+    p.set('status2', status2 == null ? 'O--' : String(status2));
     p.set('sKey', sKey);
     if (searchFields) {
       const keys = Object.keys(searchFields);
@@ -5825,7 +5827,23 @@
             }
           } catch (_) {}
         }
-        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null, orderDate: orderDate });
+        //  cs = 배정 팝업 링크 유무·바코드(일괄취소 사슬의 승인창 판정용 — 쓰기 근거는 재조회다). 링크가 없으면(출고완료) 상태 셀 괄호값.
+        let cs = { has: false, barcode: '', jaego: false };
+        if (tr) {
+          try {
+            cs.jaego = /재고주문/.test(tr.textContent || '');   // 유형 셀 `고객(…)재고주문` — 출고완료 사슬은 재고주문만(발주주문·13열 매장 목록은 fail-closed)
+            const a = tr.querySelector('a[href*="currentSetting"]');
+            const args = a ? parseCurrentSettingArgs(a.getAttribute('href')) : null;
+            if (args) { cs.has = true; cs.barcode = String(args.barcode || ''); }
+            else {
+              const si = cStatusColFor(tr.closest('table'));
+              const st = (si >= 0 && tr.cells && tr.cells[si]) ? (tr.cells[si].textContent || '').replace(/\s+/g, '') : '';
+              const mb = st.match(/\(([^()]+)\)\s*$/);
+              if (mb) cs.barcode = mb[1];
+            }
+          } catch (_) {}
+        }
+        out.push({ orderSeq: orderSeq, code: tr ? cRowStatusCode(tr) : null, orderDate: orderDate, cs: cs });
       }
     } catch (e) { cLog('체크 행 읽기 실패', e); }
     return out;
@@ -6350,19 +6368,40 @@
     .ub-cc-go:disabled { background: #e7a4a4; cursor: default; }
   `;
   // ── 일괄취소 순수 판정부 — DOM·네트워크·chrome.*·타이머 미접촉. tests/orderitem-cancel.test.js ──
-  //  취소 가능 상태 = 정확히 주문완료(O--) 하나뿐. EXACT, prefix 아님(cTargetStatus 와 같은 규율).
+  //  사슬 대상 = 주문완료(O--)·본사확인(OS-)·입고완료(I--)·출고완료(T--) 넷. EXACT, prefix 아님(스펙 2026-09-16 §4.1).
   function ccTargetStatus(code) {
-    return code === 'O--';
+    return code === 'O--' || code === 'OS-' || code === 'I--' || code === 'T--';
+  }
+  //  승인창 표시 문구(판정에 쓰지 않는다). cs = { has: currentSetting 링크 유무, barcode: 링크 3번째 인자 또는 상태 셀 괄호값 }.
+  //  표는 함수 안에 둔다 — 테스트 하네스가 함수 하나만 추출한다.
+  function ccChainLabel(code, cs) {
+    const CHAIN = {
+      'O--': '주문완료 → 취소',
+      'OS-': '본사확인 → 본사확인취소 · 취소',
+      'I--': '입고완료%s → 선택취소 · 본사확인취소 · 취소',
+      'T--': '출고완료%s → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소'
+    };
+    const s = CHAIN[code];
+    if (!s) return '';
+    const bc = cs && cs.barcode ? ' (' + cs.barcode + ')' : '';
+    return s.replace('%s', bc);
+  }
+  //  fetchOrderRow 가 found=false 를 낸 사유(표시용). 우선순위: 로그인 만료 > 중복 > 잘림 > 행 없음.
+  function ccRequeryReason(row) {
+    if (row && row.loginExpired) return '로그인 만료';
+    if (row && row.duplicate) return '중복 orderSeq(재조회)';
+    if (row && row.hasMore) return '재조회 실패(결과 잘림 — 조건을 좁혀라)';
+    return '재조회 실패(행 없음)';
   }
   //  체크된 행 → 대상/제외. excluded 는 {orderSeq, code, reason}. 같은 orderSeq 둘 이상이면
   //  duplicate=true — 조용히 합치지 않고 호출부가 중단한다(cClassifyChecked 와 같은 규약).
+  //  입고완료는 배정 팝업 링크(currentSetting)가 있고 바코드가 있을 때만 대상 — 발주주문(공장 발주→입고)은 팝업이 없어
+  //  선택취소 경로가 없다(실측 2026-09-16). 출고확인(TS-)은 매장이 입고 확인한 재고라 제외(사장님 결정).
   function ccClassifyChecked(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const REASON = new Map([
-      ['OS-', '본사확인 상태 — [본사확인취소] 후 다시'], ['OC-', '이미 취소됨'],
-      ['B--', '취소 불가 상태(발주완료)'], ['I--', '취소 불가 상태(입고완료)'],
-      ['T--', '취소 불가 상태(출고완료)'], ['TS-', '취소 불가 상태(출고확인)'],
-      ['TE-', '취소 불가 상태(출고오확인)'], ['S--', '취소 불가 상태(판매완료)']
+      ['OC-', '이미 취소됨'], ['TS-', '출고확인(매장재고) — 매장이 입고 확인한 건, 수동'],
+      ['B--', '취소 불가 상태(발주완료)'], ['TE-', '취소 불가 상태(출고오확인)'], ['S--', '취소 불가 상태(판매완료)']
     ]);
     const seen = new Set();
     let duplicate = false;
@@ -6374,11 +6413,118 @@
     const excluded = [];
     for (const r of list) {
       const code = r ? r.code : undefined;
-      if (ccTargetStatus(code)) { targets.push(r); continue; }
+      if (ccTargetStatus(code)) {
+        if (code === 'I--' && !(r.cs && r.cs.has && r.cs.barcode)) {
+          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동' });
+          continue;
+        }
+        //  출고완료는 재고주문일 때만 — 발주주문은 출고장만 지워지고 선택취소에서 막힌다. 첫 쓰기(되돌릴 수 없음) 전에 승인 단계에서 거른다(Opus 1R P2, 양성 판정 O2 Nit).
+        if (code === 'T--' && !(r.cs && r.cs.jaego)) {
+          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '출고완료 — 재고주문이 아님(발주주문 등), 출고장을 지워도 배정 팝업이 없어 수동' });
+          continue;
+        }
+        if (code === 'T--' && !(r.cs && r.cs.barcode)) {
+          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '출고완료 — 상태 셀에서 바코드를 읽지 못함, 수동' });
+          continue;
+        }
+        targets.push(r); continue;
+      }
       excluded.push({ orderSeq: r ? r.orderSeq : undefined, code: code,
                       reason: REASON.get(code) || '상태 불명' });
     }
     return { targets: targets, excluded: excluded, duplicate: duplicate };
+  }
+  //  행 HTML 의 배정 팝업 링크 currentSetting(master, orderSeq, barcode, shop, client, orderDate) 인자. 없거나 6개가 아니면 null(§5.4 parseCurrentSettingArgs 재사용).
+  function ccRowCurrentSetting(rowHtml) {
+    const m = String(rowHtml == null ? '' : rowHtml).match(/currentSetting\s*\([^)]*\)/);
+    return m ? parseCurrentSettingArgs(m[0]) : null;
+  }
+  //  상태 셀 텍스트(`입고완료(2608ET)`·`출고완료 (250HHL)`)의 괄호 바코드 — 링크와 독립된 출처(Opus 1R P1: fetchOrderRow.assignedBarcode 는 링크에서 오므로
+  //  링크와 비교하면 같은 값끼리의 비교였다). 없으면 ''.
+  function ccCellBarcode(text) {
+    const m = String(text == null ? '' : text).replace(/\s+/g, '').match(/\(([^()]+)\)$/);
+    return m ? m[1] : '';
+  }
+  //  행이 재고주문인가 — 본사 계정 목록(14열)의 유형 셀 `고객(…)재고주문`/`고객(…)발주주문`. 발주주문(공장 발주→입고)은 배정 팝업이 없어
+  //  선택취소 경로가 없고, 출고완료 발주주문은 출고장만 지워지고 막힌다(Opus 1R P2) → 첫 쓰기 전에 걸러야 한다.
+  //  양성 판정(재고주문 요구)이다 — 모르는 유형 라벨·유형 없는 13열 목록(매장 계정)은 fail-closed(Opus O2 Nit).
+  function ccRowIsJaego(rowHtml) {
+    return /재고주문/.test(String(rowHtml == null ? '' : rowHtml).replace(/<[^>]*>/g, ''));
+  }
+  //  재조회 행(fetchOrderRow 결과) → 다음 쓰기 하나. 스펙 2026-09-16 §4.5 표. 전부 fail-closed — 조건이 하나라도 안 맞으면 write 를 내지 않는다.
+  //   반환 {kind:'done'} | {kind:'fail', reason} | {kind:'write', step, label, want[, barcode]}; want = 목표 상태(재조회로 확인할 코드).
+  function ccNextStep(row) {
+    const fail = (reason) => ({ kind: 'fail', reason: reason });
+    if (!row || row.found !== true) return fail(ccRequeryReason(row));
+    const code = row.code, seq = String(row.orderSeq == null ? '' : row.orderSeq);
+    if (code === 'OC-') return { kind: 'done' };
+    if (code === 'O--') {
+      if (!row.sKey) return fail('sKey 추출 실패');
+      const linkSeq = ccRowCancelSeq(row.rowHtml);
+      if (linkSeq !== seq) return fail(linkSeq == null ? '취소 링크 없음(서버 렌더 기준 취소 불가)' : '취소 링크 불일치(' + linkSeq + ')');
+      return { kind: 'write', step: 'cancel', label: '취소 처리', want: 'OC-' };
+    }
+    if (code === 'OS-') {
+      if (!row.sKey) return fail('sKey 추출 실패');
+      return { kind: 'write', step: 'standby-off', label: '본사확인취소', want: 'O--' };
+    }
+    if (code === 'I--') {
+      const args = ccRowCurrentSetting(row.rowHtml);
+      if (!args) return fail('입고완료 — 배정 팝업 링크 없음(발주주문이거나 본사 계정이 아님), 수동');
+      //  링크의 주문번호가 이 행과 정확히 같아야 한다 — 다른 행의 링크가 섞여 들어오면 엉뚱한 주문의 바코드를 뗀다(Terra 1R P1, 취소 링크 가드와 같은 규율).
+      if (args.orderSeq !== seq) return fail('배정 링크 주문번호 불일치(' + (args.orderSeq || '없음') + ')');
+      //  링크 바코드와 상태 셀 괄호 바코드가 같을 때만 — 두 출처가 독립이어야 대조가 의미 있다(Opus 1R P1).
+      const cellBc = ccCellBarcode(row.text);
+      if (!cellBc || args.barcode !== cellBc) return fail('배정 바코드 불일치(링크 ' + (args.barcode || '없음') + ' / 상태 ' + (cellBc || '없음') + ')');
+      return { kind: 'write', step: 'unassign', label: '선택취소(' + cellBc + ')', want: 'OS-', barcode: cellBc };
+    }
+    if (code === 'T--') {
+      if (!ccRowIsJaego(row.rowHtml)) return fail('출고완료 — 재고주문이 아님(발주주문 등), 출고장을 지워도 배정 팝업이 없어 수동');
+      const bc = ccCellBarcode(row.text);
+      if (!bc) return fail('출고 바코드를 읽지 못함');
+      return { kind: 'write', step: 'deliv-delete', label: '출고장 삭제(' + bc + ')', want: 'I--', barcode: bc };
+    }
+    return fail('상태 부적합: ' + (row.text || code || '불명'));
+  }
+  //  dispatch 뒤 목표 확인 재조회의 판정. found 아님·다른 상태·null 은 전부 'uncertain'(재시도 금지 신호 — ccClassifyOutcome 과 같은 규약).
+  //   선택취소는 상태(OS-)와 바코드 빈 값이 둘 다 보여야 success(바코드가 남아 있으면 떼어지지 않은 것).
+  function ccStepOutcome(next, vRow) {
+    if (!next || !vRow || vRow.found !== true) return 'uncertain';
+    if (vRow.code !== next.want) return 'uncertain';
+    if (next.step === 'unassign' && (String(vRow.assignedBarcode == null ? '' : vRow.assignedBarcode) !== '' || ccCellBarcode(vRow.text) !== '')) return 'uncertain';
+    return 'success';
+  }
+  //  출고전표 idx 값(`<출고seq>,<바코드>,<?>,<주문 orderSeq>`, 실측 2026-09-16 9/9) 중 바코드와 주문이 둘 다 맞는 것.
+  //   정확히 1건이면 {idx}, 2건 이상이면 {ambiguous:n}, 없으면 null — 바코드만 맞는 건(4번째 0·다른 주문)은 절대 고르지 않는다.
+  function ccPickDelivIdx(values, barcode, orderSeq) {
+    const bc = String(barcode == null ? '' : barcode).trim().toUpperCase();
+    const seq = String(orderSeq == null ? '' : orderSeq).trim();
+    if (!bc || !seq) return null;
+    const hits = (Array.isArray(values) ? values : []).filter((v) => {
+      const t = String(v == null ? '' : v).split(',');
+      return t.length >= 4 && t[1].trim().toUpperCase() === bc && t[3].trim() === seq;
+    });
+    if (hits.length === 1) return { idx: hits[0] };
+    return hits.length ? { ambiguous: hits.length } : null;
+  }
+  //  팝업 [선택취소] cancelForm 과 같은 모양(스펙 §1.3): tcode·barcode·orderSeq + 검색조건. sKey 없음(팝업에도 없다).
+  //   빈 값이면 null(빈 값이 쓰기로 흘러가지 않게). 고정 키는 searchFields 가 덮지 못한다. ⚠⚠ 이 URL 의 GET 이 쓰기다 — 조회 목적으로 부르지 마라.
+  function ccBuildUnassignUrl(barcode, orderSeq, searchFields) {
+    const bc = String(barcode == null ? '' : barcode).trim();
+    const seq = String(orderSeq == null ? '' : orderSeq).trim();
+    if (!bc || !seq) return null;
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('barcode', bc);
+    p.set('orderSeq', seq);
+    if (searchFields) {
+      const keys = Object.keys(searchFields);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (!p.has(k)) p.set(k, String(searchFields[k] == null ? '' : searchFields[k]));
+      }
+    }
+    return '/jun/orderitem/orderItemPopCurrentSettingCancel.do?' + p.toString();
   }
   //  취소 URL — 네이티브 del(seq) 가 만드는 것과 같은 모양(tcode·seq·sKey + CONST_URL 검색조건).
   //  seq·sKey 가 비면 null(빈 값이 쓰기로 흘러가지 않게). 고정 키는 searchFields 가 덮지 못한다.
@@ -6451,8 +6597,96 @@
       return { dispatched: true, msg: '' };
     } finally { clearTimeout(timer); }
   }
-  //  배치 오케스트레이터. 순차, 첫 실패·미확정에서 중단. progress(msg)=승인창 진행 표시,
-  //  isAborted()=사용자 중단 요청(다음 건 경계에서 멈춤). cBatchBusy 는 작업C 와 공유한다.
+  //  본사확인취소 POST(⚠ 쓰기) — 네이티브 standby(form1, form3, 'O--', 'OS-') 와 같은 URL·본문(idx=<seq>). ccDoCancel 과 같은 dispatch 규약:
+  //  URL 을 못 만들면 dispatched=false(쓰기 없었음), 보낸 뒤의 네트워크 오류·타임아웃은 dispatched=true(도달 불명 → 재조회로만 판정).
+  async function ccDoStandbyOff(orderSeq, sKey, searchFields) {
+    const url = cBuildStandbyUrl(sKey, searchFields, 'O--', 'OS-');
+    if (!url) return { dispatched: false, msg: 'URL 조립 실패(sKey 없음)' };
+    const body = new URLSearchParams();
+    body.set('idx', String(orderSeq == null ? '' : orderSeq));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const r = await fetch(url, { method: 'POST', credentials: 'include', cache: 'no-cache', signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: body.toString() });
+      return { dispatched: true, msg: ccRedirectMsg(r.url) };
+    } catch (e) {
+      ccLog('본사확인취소 POST 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    } finally { clearTimeout(timer); }
+  }
+  //  선택취소 GET(⚠ 쓰기) — 팝업 cancelForm 과 같은 URL(스펙 §1.3, sKey 없음). dispatch 규약은 ccDoCancel 과 같다.
+  async function ccDoUnassign(barcode, orderSeq, searchFields) {
+    const url = ccBuildUnassignUrl(barcode, orderSeq, searchFields);
+    if (!url) return { dispatched: false, msg: 'URL 조립 실패(바코드/seq 없음)' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const r = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal });
+      return { dispatched: true, msg: ccRedirectMsg(r.url) };
+    } catch (e) {
+      ccLog('선택취소 GET 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    } finally { clearTimeout(timer); }
+  }
+  //  출고전표에서 이 주문의 출고 건을 특정한다(읽기). idx 토큰 [1]==바코드 && [3]==orderSeq 정확히 1건 + 상태 셀 '출고완료' + 응답 sKey.
+  //  사이드바 출고취소의 dcmFindDeliv(바코드만·최신 1건)와 용도가 달라 따로 둔다. 열 인덱스는 dcmFindDeliv 와 같다(0 No·2 출고장번호·4 출고일·8 매장·14 상태).
+  async function ccFindDelivRow(barcode, orderSeq) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const { html, doc } = await dcmPostRaw('/jun/delivitem/delivItemList.do?tcode=deliv_item', new URLSearchParams(dcmSearchParams(barcode)), ctrl.signal);
+      const boxes = [...doc.querySelectorAll('input[name=idx]')];
+      const pick = ccPickDelivIdx(boxes.map((b) => b.value || ''), barcode, orderSeq);
+      if (!pick) return { ok: false, reason: '출고전표에 이 주문(' + orderSeq + ')의 ' + barcode + ' 출고 건이 없음' };
+      if (pick.ambiguous) return { ok: false, reason: '출고 건이 ' + pick.ambiguous + '건이라 특정 불가' };
+      const sKey = dcmHidden(html, 'sKey');
+      if (!sKey) return { ok: false, reason: '출고전표 sKey 추출 실패' };
+      const box = boxes.find((b) => (b.value || '') === pick.idx);
+      const tr = box && box.closest ? box.closest('tr') : null;
+      const c = tr ? [...tr.cells].map((x) => (x.textContent || '').replace(/\s+/g, ' ').trim()) : [];
+      const status = c[14] || '';
+      if (status !== '출고완료') return { ok: false, reason: '출고 건 상태가 출고완료가 아님(' + (status || '불명') + ')' };
+      return { ok: true, idx: pick.idx, sKey: sKey, junNum: c[2] || '', delivDate: c[4] || '', shop: (c[8] || '').slice(0, 30), status: status };
+    } catch (e) {
+      ccLog('출고전표 조회 실패', (e && e.message) || e);
+      return { ok: false, reason: '출고전표 조회 실패(네트워크/타임아웃)' };
+    } finally { clearTimeout(timer); }
+  }
+  //  출고장 삭제(⚠ 쓰기): 특정 → write-ahead 로그(UB_DCM_LOG, §5.5a 규칙: 못 남기면 지우지 않는다) → dcmDelete POST.
+  //  서버 msg 는 표시용 — 삭제됐는지는 호출부가 주문 재조회(I--)로만 판정한다.
+  async function ccDoDelivDelete(barcode, orderSeq) {
+    const f = await ccFindDelivRow(barcode, orderSeq);
+    if (!f.ok) return { dispatched: false, msg: f.reason };
+    if (!dcmAppendLog({ phase: 'before_delete', via: 'bulkcancel', orderSeq: orderSeq, barcode: barcode, junNum: f.junNum,
+                        delivDate: f.delivDate, shop: f.shop, status: f.status, idx: f.idx })) {
+      return { dispatched: false, msg: '처리 로그를 남길 수 없어 삭제하지 않음' };
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const d = await dcmDelete({ sKey: f.sKey, idx: f.idx }, barcode, ctrl.signal);
+      if (d.ok) dcmAppendLog({ phase: 'deleted', via: 'bulkcancel', orderSeq: orderSeq, barcode: barcode, junNum: f.junNum });
+      return { dispatched: true, msg: d.msg || '' };
+    } catch (e) {
+      ccLog('출고장 삭제 POST 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    } finally { clearTimeout(timer); }
+  }
+  //  단계 → 쓰기 하나. next 는 ccNextStep 의 write 결과, row 는 그 판정의 근거 응답(sKey 를 여기서 꺼낸다).
+  async function ccDoStep(next, row, searchFields) {
+    const step = next && next.step;
+    if (step === 'cancel') return ccDoCancel(row.orderSeq, row.sKey, searchFields);
+    if (step === 'standby-off') return ccDoStandbyOff(row.orderSeq, row.sKey, searchFields);
+    if (step === 'unassign') return ccDoUnassign(next.barcode, row.orderSeq, searchFields);
+    if (step === 'deliv-delete') return ccDoDelivDelete(next.barcode, row.orderSeq);
+    return { dispatched: false, msg: '알 수 없는 단계: ' + step };
+  }
+  //  건마다 최대 CC_MAX_STEPS 회: 재조회 → ccNextStep → 쓰기 1회 → 목표 상태 확인(폴링) → 그 확인 응답을 다음 단계의 근거로. 정상 전이는 5회 안에 끝난다.
+  const CC_MAX_STEPS = 6;
+  //  배치 오케스트레이터(스펙 2026-09-16 §4.3). 순차, 첫 실패·미확정에서 중단. progress(msg)=승인창 진행 표시,
+  //  isAborted()=사용자 중단 요청(매 쓰기 직전에 본다). cBatchBusy 는 작업C 와 공유한다.
+  //  한 건 = 상태기계: 재조회 row → ccNextStep(row) 가 고른 쓰기 하나 → 목표 상태를 재조회로 확인 → 그 응답(vRow)이 다음 단계의 근거(상태·sKey·링크가 한 응답).
   async function ccRunCancelBatch(targets, progress, isAborted) {
     const results = { success: 0, failed: [], uncertain: [], processed: 0, total: targets.length };
     if (cBatchBusy) return results;
@@ -6471,56 +6705,60 @@
         if (!orderDate) { results.failed.push({ orderSeq: orderSeq, reason: '주문일 파싱 실패' }); break; }
         // 1) 쓰기 직전 재조회 — 승인창의 상태는 승인용이지 쓰기 근거가 아니다
         progress(tag + '상태 확인');
-        const row = await fetchOrderRow(orderSeq, orderDate);
-        if (!row.found) {
-          results.failed.push({ orderSeq: orderSeq, reason:
-            row.loginExpired ? '로그인 만료' :
-            row.duplicate ? '중복 orderSeq(재조회)' :
-            row.hasMore ? '재조회 실패(결과 잘림 — 조건을 좁혀라)' : '재조회 실패(행 없음)' });
-          break;
+        let row = await fetchOrderRow(orderSeq, orderDate);
+        let written = 0;                                 // 이 건에 보낸 쓰기 수 — 중단 회계와 문구에 쓴다
+        let stop = false;                                // 이 건에서 배치를 멈춘다
+        let done = false;
+        const stateText = (r) => (r && r.found) ? (r.text || r.code || '불명') : '불명';
+        for (let step = 0; step < CC_MAX_STEPS && !stop && !done; step++) {
+          if (!row.found) {
+            results.failed.push({ orderSeq: orderSeq, reason: ccRequeryReason(row) + (written ? ' — ' + written + '단계 진행 뒤' : '') });
+            stop = true; break;
+          }
+          // 2) 다음 쓰기 하나(순수 판정). done 이면 이 건 성공, fail 이면 서버 진실로 화면 갱신 후 중단.
+          const next = ccNextStep(row);
+          if (next.kind === 'done') { results.success++; cUpdateRow(orderSeq, row); done = true; break; }
+          if (next.kind === 'fail') {
+            results.failed.push({ orderSeq: orderSeq, reason: (written ? '진행 중 실패 — 현재 상태: ' + stateText(row) + ' · ' : '') + next.reason });
+            cUpdateRow(orderSeq, row); stop = true; break;
+          }
+          // 3) 재조회를 기다리는 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1).
+          //    아직 아무 것도 안 쓴 건은 processed 에서 되돌리고(요약이 '처리 완료' 로 나오면 안 된다 — Opus P2-1),
+          //    이미 한 단계 이상 썼으면 중간 상태를 숨기지 않고 미확정으로 남긴다(스펙 §4.3).
+          if (!(state.ubSkin && state.ubHqConfirm) || (isAborted && isAborted())) {
+            if (!written) results.processed--;
+            else { results.uncertain.push({ orderSeq: orderSeq, reason: '중단 — 현재 상태: ' + stateText(row) + ' · 수동 확인' }); cUpdateRow(orderSeq, row); }   // 처리된 데까지 화면 갱신(Opus 1R Nit)
+            ccLog('게이트 해제/중단 요청(쓰기 직전) → 중단'); stop = true; break;
+          }
+          progress(tag + next.label);
+          // 4) 쓰기 1회(⚠) — dispatch. 못 보냈으면(URL·특정·로그 실패) 쓰기 없었음 = 확정 실패.
+          const d = await ccDoStep(next, row, cReadSearchFields());
+          if (!d.dispatched) {
+            results.failed.push({ orderSeq: orderSeq, reason: next.label + ' 실패: ' + d.msg + (written ? ' — 현재 상태: ' + stateText(row) : '') });
+            stop = true; break;
+          }
+          written++;
+          // 5) 목표 상태를 재조회로만 판정 — 최대 ASG_VERIFY_MS. dispatch 뒤 재시도 없음.
+          progress(tag + next.label + ' 확인');
+          let vRow = null;
+          const dl = Date.now() + ASG_VERIFY_MS;
+          while (Date.now() < dl) {
+            vRow = await fetchOrderRow(orderSeq, orderDate);
+            if (ccStepOutcome(next, vRow) === 'success') break;
+            await new Promise(function (r) { setTimeout(r, 1500); });
+          }
+          if (ccStepOutcome(next, vRow) !== 'success') {
+            results.uncertain.push({ orderSeq: orderSeq, reason: next.label + ' 미확정 — 현재 상태: ' + stateText(vRow) + ' · 수동 확인 필요' + (d.msg ? ' · 서버: ' + d.msg : '') });
+            if (vRow && vRow.found) cUpdateRow(orderSeq, vRow);
+            stop = true; break;
+          }
+          row = vRow;                                    // 다음 단계의 근거 = 방금 목표를 확인한 그 응답(새 sKey·링크·상태)
         }
-        // 2) 정확히 주문완료(O--) 만 — 그 사이 남이 취소·본사확인한 건도 여기서 걸린다
-        if (!ccTargetStatus(row.code)) {
-          results.failed.push({ orderSeq: orderSeq, reason: '상태 부적합: ' + (row.text || row.code || '불명') });
-          cUpdateRow(orderSeq, row);                   // 화면을 서버 진실로
-          break;
+        if (!stop && !done) {
+          results.uncertain.push({ orderSeq: orderSeq, reason: '단계 상한(' + CC_MAX_STEPS + ') 초과 — 현재 상태: ' + stateText(row) + ' · 수동 확인' });
+          stop = true;
         }
-        // 3) sKey — 위 재조회 응답에 박힌 키를 그대로 쓴다. 상태와 키가 같은 응답이라 그 사이에 남이
-        //    상태를 바꿀 창이 없고(3R Terra P1), 네이티브(POST 렌더 목록의 키로 [취소] GET)와 같은 계약이다
-        //    (Opus P2-3 — 별도 GET 으로 받은 키와 중간 렌더의 상호작용 자체를 없앤다). 없으면 fail-closed.
-        const sKey = row.sKey;
-        if (!sKey) { results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' }); break; }
-        // 3-0) 같은 응답의 행에 서버가 렌더한 [취소] 링크가 있고 그 인자가 이 orderSeq 와 정확히 같아야 한다.
-        //      상태 라벨 판정이 틀려도(열 밀림·권한상 취소 불가 행·키 불일치) 여기서 fail-closed(Fable P1).
-        const linkSeq = ccRowCancelSeq(row.rowHtml);
-        if (linkSeq !== orderSeq) {
-          results.failed.push({ orderSeq: orderSeq, reason: linkSeq == null
-            ? '취소 링크 없음(서버 렌더 기준 취소 불가)' : '취소 링크 불일치(' + linkSeq + ')' });
-          break;
-        }
-        // 3-1) 재조회를 기다리는 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1).
-        //      이 건은 손대지 않은 것이므로 processed 에서 되돌린다 — 요약이 '처리 완료' 로 나오면 안 된다(Opus P2-1).
-        if (!(state.ubSkin && state.ubHqConfirm)) { results.processed--; ccLog('게이트 해제(쓰기 직전) → 중단'); break; }
-        if (isAborted && isAborted()) { results.processed--; ccLog('사용자 중단 요청(쓰기 직전) → 중단'); break; }
-        progress(tag + '취소 처리');
-        // 4) 취소 GET(⚠ 쓰기) — dispatch
-        const d = await ccDoCancel(orderSeq, sKey, cReadSearchFields());
-        if (!d.dispatched) { results.failed.push({ orderSeq: orderSeq, reason: d.msg }); break; }
-        // 5) 재조회로만 판정 — OC- 가 보일 때까지 최대 ASG_VERIFY_MS
-        progress(tag + '확인');
-        let vRow = null;
-        const dl = Date.now() + ASG_VERIFY_MS;
-        while (Date.now() < dl) {
-          vRow = await fetchOrderRow(orderSeq, orderDate);
-          if (vRow && vRow.found && vRow.code === 'OC-') break;
-          await new Promise(function (r) { setTimeout(r, 1500); });
-        }
-        const outcome = ccClassifyOutcome({ dispatched: true, requery: vRow });
-        if (outcome === 'success') { results.success++; cUpdateRow(orderSeq, vRow); continue; }
-        results.uncertain.push({ orderSeq: orderSeq,
-          reason: '취소 미확정 — 수동 확인 필요' + (d.msg ? ' · 서버: ' + d.msg : '') });
-        if (vRow && vRow.found) cUpdateRow(orderSeq, vRow);
-        break;
+        if (stop) break;
       }
     } catch (e) {
       ccLog('배치 실행 오류', e);
@@ -6564,13 +6802,20 @@
       } else {
         bodyHtml = '<div class="ub-hq-sum">총 ' + total + '건 중 대상 <b>' + targets.length +
                    '건</b> / 제외 ' + excluded.length + '건</div>';
+        if (targets.length) {
+          //  행마다 현재 상태와 거칠 단계(표시 전용 — 쓰기 근거는 실행 중 재조회다, 스펙 2026-09-16 §4.2)
+          const items = targets.map(t => '<li>' + esc(t.orderSeq) + ' — ' + esc(ccChainLabel(t.code, t.cs) || t.code) + '</li>').join('');
+          bodyHtml += '<div class="ub-hq-ex"><ul>' + items + '</ul></div>';
+        }
         if (excluded.length) {
           const items = excluded.map(x => '<li>' + esc(x.orderSeq) + ' — ' + esc(x.reason) +
                         (x.code ? ' (' + esc(x.code) + ')' : '') + '</li>').join('');
           bodyHtml += '<div class="ub-hq-ex"><ul>' + items + '</ul></div>';
         }
         if (targets.length) {
-          bodyHtml += '<div class="ub-hq-warn" style="margin-top:10px">취소된 주문서는 복구되지 않습니다.</div>';
+          bodyHtml += '<div class="ub-hq-warn" style="margin-top:10px">취소된 주문서는 복구되지 않습니다.</div>' +
+                      '<div class="ub-hq-note">출고완료 건은 출고장 삭제, 입고완료 건은 재고 반환(선택취소)이 함께 실행됩니다. 되돌릴 수 없습니다. ' +
+                      '본사 계정으로 로그인한 세션에서만 실행하세요 — 매장 계정은 선택취소 권한이 없어 출고장만 지워지고 멈춥니다.</div>';
         }
       }
       card.innerHTML =

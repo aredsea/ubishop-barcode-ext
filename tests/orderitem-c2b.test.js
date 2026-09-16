@@ -124,6 +124,14 @@ test('cBuildStandbyUrl: sKey + 검색조건으로 올바른 URL 조립', () => {
   assert.equal(p.get('searchShop'), 'LT');
 });
 
+test('cBuildStandbyUrl: 상태 인자를 주면 본사확인취소(status1=O--, status2=OS-), 안 주면 종전(OS-/O--) 그대로', () => {
+  const a = new URL('http://x' + cBuildStandbyUrl('260916125809911', { reqPage: '1' })).searchParams;
+  assert.equal(a.get('status1'), 'OS-'); assert.equal(a.get('status2'), 'O--');
+  const b = new URL('http://x' + cBuildStandbyUrl('260916125809911', { reqPage: '1', status1: 'HACK' }, 'O--', 'OS-')).searchParams;
+  assert.equal(b.get('status1'), 'O--'); assert.equal(b.get('status2'), 'OS-'); assert.equal(b.get('sKey'), '260916125809911');
+  assert.equal(cBuildStandbyUrl('', {}, 'O--', 'OS-'), null);
+});
+
 test('cBuildStandbyUrl: sKey 없으면 null (fail-closed)', () => {
   assert.equal(cBuildStandbyUrl(null, {}), null);
   assert.equal(cBuildStandbyUrl('', {}), null);
