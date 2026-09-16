@@ -139,7 +139,7 @@
       key: o.key, seller: o.seller, orderNo: o.orderNo, market: o.market, buyer: o.buyer, phone: o.phone, clientName: o.clientName,
       lines: o.lines.map((l) => ({
         master: { seq: l.mapping.entry.seq, code: l.mapping.entry.code, name: l.mapping.entry.name, colorFallback: l.mapping.entry.colorFallback || '' },
-        spec: { k: l.spec.k || null, color: l.spec.color || null, itemSize: l.spec.itemSize == null ? '' : String(l.spec.itemSize), qty: Number(l.spec.qty), price: Number(l.spec.price), remark: l.spec.remark || '' }
+        spec: { k: l.spec.k || null, color: l.spec.color || null, itemSize: l.spec.itemSize == null ? '' : String(l.spec.itemSize), qty: Number(l.spec.qty), price: Number(l.spec.price), gift: !!l.gift, remark: l.spec.remark || '' }
       }))
     };
   }
@@ -376,7 +376,7 @@
     }
     else if (f === 'itemSize') { l.spec.itemSize = el.value.trim(); l.spec.optOverride = true; }
     else if (f === 'qty') l.spec.qty = C.oiMoney(el.value);
-    else if (f === 'price') l.spec.price = C.oiMoney(el.value);
+    else if (f === 'price') l.spec.price = l.gift ? C.oiMoney0(el.value) : C.oiMoney(el.value);   // 사은품은 0 허용
     else if (f === 'remark') { l.spec.remark = el.value; l.spec.remarkAuto = false; }
     else if (f === 'suffix') {                                 // 비고 접미 — 이 상품의 매핑 항목에 저장(스펙 §2.4, Terra 12R P2)
       if (!l.mapping) return;

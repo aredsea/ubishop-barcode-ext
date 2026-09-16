@@ -114,7 +114,8 @@
       const seller = cell('seller'), orderNo = cell('orderNo');
       if (!seller && !orderNo) return;                      // 빈 행·'합계' 행(판매처·주문번호가 없다)
       //  주문번호만 빈 행은 버리지도 합치지도 않는다 — 검토 표에 '주문번호 없음' 으로 올려 사람이 보게 한다(Terra 2R P2).
-      const qtyRaw = cell('qty');
+      const qtyRaw = cell('qty'), priceRaw = cell('price');
+      const gift = /사은품/.test(cell('name'));               // 사은품은 판매가 0 으로 주문한다(사장님 2026-09-16 — 유비샵도 0 주문 가능)
       lines.push({
         row: i + 2,                                          // 엑셀 행 번호(헤더=1)
         seller, orderNo,
@@ -124,7 +125,8 @@
         phoneNumericCell: numericPhone.has(i + 1),
         productName: cell('name'),
         optionText: cell('option'),
-        price: oiMoney(cell('price')),
+        gift,
+        price: gift ? (priceRaw ? oiMoney0(priceRaw) : 0) : oiMoney(priceRaw),
         settle: (k => (k in hm.idx) ? oiMoney0(cell('settle')) : null)('settle'),
         qty: qtyRaw ? oiMoney(qtyRaw) : 1,
         status: cell('status')
@@ -535,7 +537,7 @@
     if (spec.itemSize != null && spec.itemSize !== '') v.itemSize = String(spec.itemSize);
     if (!(spec.qty > 0)) issues.push('수량');
     v.orderQty = String(spec.qty);
-    if (!(spec.price > 0)) issues.push('판매가');
+    if (!(spec.price > 0) && !(spec.gift && spec.price === 0)) issues.push('판매가');   // 사은품만 0 허용
     v.orderPrice = oiComma(spec.price);
     v.shopRemark = spec.remark || '';
     if (master && master.seq && String(v.master) !== String(master.seq)) issues.push('master 불일치: ' + v.master + '≠' + master.seq);

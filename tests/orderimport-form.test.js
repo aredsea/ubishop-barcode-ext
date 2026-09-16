@@ -167,3 +167,14 @@ test('oiCheckForm / oiCheckFinal: client·행 수·orderSeq·코드·사이즈·
   const badQty = { master: { code: 'F-RF-I-WG-PA-00F6' }, spec: { itemSize: '11', qty: 2, price: 17000 } };   // Opus 5 P2: qty 대조 변이가 살아남았다
   assert.match(C.oiCheckFinal(f10, { client: '123790', tradeJun: '141240', orderSeqs: ['389463'], lines: [badQty] }).reason, /^qty/);
 });
+
+//  사장님 요청(2026-09-16): 사은품은 판매가 0 으로 등록한다. 일반 상품의 0 은 여전히 차단.
+test('oiLinePayload: 사은품(gift) 스펙은 판매가 0 을 허용해 orderPrice "0" 으로, 일반 상품의 0 은 차단', () => {
+  const f = C.oiReadWriteForm(WRITE);
+  const master = { seq: '7083', code: 'F-RF-I-WG-PA-00F6' };
+  const g = C.oiLinePayload(f, master, { k: '925', color: null, itemSize: '', qty: 1, price: 0, gift: true, remark: '정산 0 원' });
+  assert.deepEqual(g.issues, []);
+  assert.equal(Object.fromEntries(g.fields).orderPrice, '0');
+  assert.ok(C.oiLinePayload(f, master, { k: '925', color: null, itemSize: '', qty: 1, price: 0, remark: '' }).issues.includes('판매가'));
+  assert.ok(C.oiLinePayload(f, master, { k: '925', color: null, itemSize: '', qty: 1, price: null, gift: true, remark: '' }).issues.includes('판매가'), '사은품이라도 null 은 차단');
+});
