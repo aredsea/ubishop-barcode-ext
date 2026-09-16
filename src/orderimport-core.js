@@ -618,7 +618,7 @@
   //  hooks: { today():Date, log(key, step, info) }
   async function oiRunOrder(order, erp, hooks) {
     const log = (step, info) => { try { hooks && hooks.log && hooks.log(order.key, step, info); } catch (_) {} };
-    const res = { key: order.key, status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], rowSnaps: [], junNums: [], rolledBack: 0, completed: false, completing: false, lineUnknown: false };
+    const res = { key: order.key, sig: order.sig || '', status: 'pending', reason: '', client: null, tradeJun: '', orderSeqs: [], idxValues: [], rowSnaps: [], junNums: [], rolledBack: 0, completed: false, completing: false, lineUnknown: false };
     const fail = async (status, reason) => {
       res.reason = reason; log('fail', reason);
       //  🔴 완료 POST 가 성공한 뒤의 실패는 되돌리지 않는다 — 이미 주문장이 확정됐으므로 그 줄을 지우면 안 된다.
@@ -693,7 +693,7 @@
         let post;
         try { post = await erp.postLine(built.fields); }
         catch (e) { res.lineUnknown = true; return await fail('skipped', 'line_post_exception:' + String(e && e.message || e)); }
-        log('line', { i, ok: post.ok, msg: post.msg, tradeJun: post.tradeJun, rows: (post.rows || []).length });
+        log('line', { i, n: order.lines.length, ok: post.ok, msg: post.msg, tradeJun: post.tradeJun, rows: (post.rows || []).length });
         if (!post.ok) return await fail('skipped', 'line_failed:' + post.msg);
         const rows = post.rows || [];
         const fresh = rows.filter((r) => !res.orderSeqs.includes(r.orderSeq));
@@ -756,6 +756,33 @@
     }
   }
 
+  //  주문장의 '상품 서명' — 줄마다 상품명|옵션|수량(공백 하나로·소문자)을 정렬해 잇는다. 장부 항목과 대조해
+  //  "완전히 같은 주문번호+상품" 을 가린다(스펙 2026-09-16 §5b — 사장님: 그런 건은 사전에 경고해 포함 여부를 정하게).
+  function oiOrderSig(order) {
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+    return ((order && order.lines) || []).map((l) => norm(l.productName) + '|' + norm(l.optionText) + '|' + String(l.qty == null ? '' : l.qty)).sort().join('\n');
+  }
+  //  장부 항목과 대조. sig 가 있는 항목만 정확히 가리고, 옛 항목(sig 없음)은 보수적으로 중복으로 본다.
+  function oiDupCheck(order, entry) {
+    if (!entry) return { dup: false, kind: 'none', entry: null };
+    if (!entry.sig) return { dup: true, kind: 'legacy', entry };
+    return entry.sig === oiOrderSig(order) ? { dup: true, kind: 'same', entry } : { dup: false, kind: 'diff', entry };
+  }
+  //  실행기 log(step) → 진행 스트립 문구. 모르는 step 은 마지막 문구를 유지한다(스펙 §3).
+  const OI_STEP_LABEL = { guard: '세션 확인', client: '고객 확인', register: '고객 등록', complete: '주문장 완료 요청', junnum: '전표 조회', rollback: '되돌리는 중', fail: '되돌리는 중' };
+  function oiStepLabel(step, info, last) {
+    if (step === 'line') { const i = Number(info && info.i), n = Number(info && info.n); return '줄 ' + (isFinite(i) ? i + 1 : '?') + (isFinite(n) && n > 0 ? '/' + n : '') + ' 등록'; }
+    return OI_STEP_LABEL[step] || last || '';
+  }
+  //  enrich 가 보낼 요청 수(진행 바 분모) — enrichBody 의 세 루프와 같은 조건.
+  function oiEnrichTotal(orders, masters) {
+    const seqs = new Set();
+    (orders || []).forEach((o) => (o.lines || []).forEach((l) => { if (l.mapping && !(masters || {})[l.mapping.entry.seq]) seqs.add(String(l.mapping.entry.seq)); }));
+    const customers = (orders || []).filter((o) => !o.customer && o.market && o.phone && o.phone.ok).length;
+    const suggests = (orders || []).reduce((n, o) => n + (o.lines || []).filter((l) => !l.mapping && !l.suggest).length, 0);
+    return { masters: seqs.size, customers, suggests, total: seqs.size + customers + suggests };
+  }
+
   //  실행 결과 → UI 가 해야 할 일(체크 해제 여부·장부 기록). 순수 함수라 테스트로 고정한다(Opus 5 P1).
   //   - done → 해제 + 장부.  - 서버에 뭔가 남았을 수 있는 결과(완료 시도 이후 실패·되돌리지 못한 줄) → 해제 + 장부(unverified) → 재클릭 시 중복 주문장 방지·'이전에 넣음' 경고.
   //   - 완전히 되돌린 skipped·가드 skipped·blocked → 그대로(재시도 가능).
@@ -764,10 +791,10 @@
     const at = now || new Date().toISOString();
     const juns = (r.junNums || []).map((j) => j.junNum).filter(Boolean);
     const lines = (r.orderSeqs || []).length;
-    if (r.status === 'done') return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines } };
+    if (r.status === 'done') return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines, sig: r.sig || '' } };
     //  lineUnknown(줄 POST 응답 유실)은 orderSeqs 가 비어 있어도 서버에 줄이 남았을 수 있다(Opus O2 P2).
     const mayRemain = !!(r.completing || r.completed || r.lineUnknown) || (lines > 0 && (r.rolledBack || 0) < lines);
-    if (r.status !== 'blocked' && mayRemain) return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines, unverified: true, reason: r.reason || r.status } };
+    if (r.status !== 'blocked' && mayRemain) return { uncheck: true, ledgerEntry: { at, tradeJun: r.tradeJun || '', junNums: juns, lines, sig: r.sig || '', unverified: true, reason: r.reason || r.status } };
     return { uncheck: false, ledgerEntry: null };
   }
 
@@ -795,7 +822,8 @@
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,
-    oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll, oiPostRunState
+    oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll, oiPostRunState,
+    oiOrderSig, oiDupCheck, oiStepLabel, oiEnrichTotal
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubOi = api; }

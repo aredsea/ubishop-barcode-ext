@@ -201,7 +201,7 @@ test('oiNormPhone: 이미 세 토막이면 원문 하이픈 유지, 숫자만 �
 test('oiPostRunState: 완료됐을 수 있는 결과는 체크 해제 + 장부(unverified), 완전히 되돌린 skipped 만 재시도 가능', () => {
   const base = { key: 'K', tradeJun: '141236', orderSeqs: ['1', '2'], junNums: [{ junNum: '0000002YF5' }], rolledBack: 0, completing: false, completed: false };
   const done = C.oiPostRunState(Object.assign({}, base, { status: 'done' }), 'now');
-  assert.equal(done.uncheck, true); assert.deepEqual(done.ledgerEntry, { at: 'now', tradeJun: '141236', junNums: ['0000002YF5'], lines: 2 });
+  assert.equal(done.uncheck, true); assert.deepEqual(done.ledgerEntry, { at: 'now', tradeJun: '141236', junNums: ['0000002YF5'], lines: 2, sig: '' });   // sig: 2026-09-16 중복 경고용(§5b)
   for (const r of [
     Object.assign({}, base, { status: 'fatal', reason: 'complete_unverified:x', completing: true }),
     Object.assign({}, base, { status: 'fatal', reason: 'session_not_clear', completed: true, completing: true }),
@@ -307,4 +307,44 @@ test('oiLineIssues: 미매칭·옵션 미해석·판매처 미등록·판매가 
   const kIssue = C.oiLineIssues(line, { mapping: { entry: { seq: '7083', code: 'F-RF-I-WG-PA-00F6' } }, parsed: C.oiParseOption('[14K-옐로우골드-12호]'), form });
   assert.ok(kIssue.some((s) => s.startsWith('품위 옵션 없음: 14')));
   assert.ok(kIssue.some((s) => s.startsWith('색상 없음: YG')));
+});
+
+// ── 2026-09-16 리디자인 회차: 중복 주문장 사전 경고(스펙 §5b)·진행 스트립(§3) 순수부 ──
+test('oiOrderSig: 상품명·옵션·수량으로 만든 서명은 순서·공백·대소문자와 무관하다', () => {
+  const a = { lines: [{ productName: 'Silver925 퓨어 컷팅 반지', optionText: '[17호]', qty: 1 }, { productName: '[사은품] 박스', optionText: '', qty: 1 }] };
+  const b = { lines: [{ productName: '[사은품]  박스 ', optionText: '', qty: 1 }, { productName: 'silver925 퓨어  컷팅 반지', optionText: ' [17호]', qty: 1 }] };
+  assert.equal(C.oiOrderSig(a), C.oiOrderSig(b));
+  assert.notEqual(C.oiOrderSig(a), C.oiOrderSig({ lines: [a.lines[0]] }), '줄이 빠지면 다른 서명');
+  assert.notEqual(C.oiOrderSig(a), C.oiOrderSig({ lines: [Object.assign({}, a.lines[0], { qty: 2 }), a.lines[1]] }), '수량이 다르면 다른 서명');
+  assert.equal(C.oiOrderSig({ lines: [] }), '');
+});
+test('oiDupCheck: 장부 없음/서명 같음/다름/옛 항목', () => {
+  const o = { lines: [{ productName: 'A', optionText: '', qty: 1 }] };
+  const sig = C.oiOrderSig(o);
+  assert.deepStrictEqual(C.oiDupCheck(o, null), { dup: false, kind: 'none', entry: null });
+  assert.equal(C.oiDupCheck(o, { at: 't', sig }).kind, 'same'); assert.equal(C.oiDupCheck(o, { at: 't', sig }).dup, true);
+  assert.equal(C.oiDupCheck(o, { at: 't', sig: sig + 'x' }).kind, 'diff'); assert.equal(C.oiDupCheck(o, { at: 't', sig: sig + 'x' }).dup, false);
+  assert.equal(C.oiDupCheck(o, { at: 't', lines: 1 }).kind, 'legacy'); assert.equal(C.oiDupCheck(o, { at: 't', lines: 1 }).dup, true);
+});
+test('oiPostRunState: 장부 항목에 상품 서명이 실린다(done·unverified 둘 다)', () => {
+  const base = { key: 'K', status: 'done', reason: '', tradeJun: '1', orderSeqs: ['1'], junNums: [{ junNum: 'J' }], rolledBack: 0, sig: 'SIG' };
+  assert.equal(C.oiPostRunState(base, 'now').ledgerEntry.sig, 'SIG');
+  assert.equal(C.oiPostRunState(Object.assign({}, base, { status: 'fatal', completing: true, reason: 'complete_unverified:x' }), 'now').ledgerEntry.sig, 'SIG');
+});
+test('oiStepLabel: 실행기 log step → 사람 문구, 모르는 step 은 마지막 문구 유지', () => {
+  assert.equal(C.oiStepLabel('guard', {}, ''), '세션 확인');
+  assert.equal(C.oiStepLabel('register', {}, ''), '고객 등록');
+  assert.equal(C.oiStepLabel('line', { i: 1, n: 2 }, ''), '줄 2/2 등록');
+  assert.equal(C.oiStepLabel('complete', {}, ''), '주문장 완료 요청');
+  assert.equal(C.oiStepLabel('rollback', {}, ''), '되돌리는 중');
+  assert.equal(C.oiStepLabel('foreign_check_error', {}, '전표 조회'), '전표 조회');
+});
+test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
+  const orders = [
+    { market: { name: 'x' }, phone: { ok: true }, customer: null, lines: [{ mapping: { entry: { seq: '7' } }, suggest: null }, { mapping: null, suggest: null }] },
+    { market: null, phone: { ok: true }, customer: null, lines: [{ mapping: { entry: { seq: '7' } }, suggest: null }] },
+    { market: { name: 'y' }, phone: { ok: true }, customer: { mode: 'reuse' }, lines: [{ mapping: null, suggest: [] }] }
+  ];
+  assert.deepStrictEqual(C.oiEnrichTotal(orders, {}), { masters: 1, customers: 1, suggests: 1, total: 3 });
+  assert.deepStrictEqual(C.oiEnrichTotal(orders, { 7: {} }), { masters: 0, customers: 1, suggests: 1, total: 2 });
 });
