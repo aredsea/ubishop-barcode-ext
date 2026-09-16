@@ -6570,6 +6570,87 @@
       return { dispatched: true, msg: '' };
     } finally { clearTimeout(timer); }
   }
+  //  본사확인취소 POST(⚠ 쓰기) — 네이티브 standby(form1, form3, 'O--', 'OS-') 와 같은 URL·본문(idx=<seq>). ccDoCancel 과 같은 dispatch 규약:
+  //  URL 을 못 만들면 dispatched=false(쓰기 없었음), 보낸 뒤의 네트워크 오류·타임아웃은 dispatched=true(도달 불명 → 재조회로만 판정).
+  async function ccDoStandbyOff(orderSeq, sKey, searchFields) {
+    const url = cBuildStandbyUrl(sKey, searchFields, 'O--', 'OS-');
+    if (!url) return { dispatched: false, msg: 'URL 조립 실패(sKey 없음)' };
+    const body = new URLSearchParams();
+    body.set('idx', String(orderSeq == null ? '' : orderSeq));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const r = await fetch(url, { method: 'POST', credentials: 'include', cache: 'no-cache', signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: body.toString() });
+      return { dispatched: true, msg: ccRedirectMsg(r.url) };
+    } catch (e) {
+      ccLog('본사확인취소 POST 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    } finally { clearTimeout(timer); }
+  }
+  //  선택취소 GET(⚠ 쓰기) — 팝업 cancelForm 과 같은 URL(스펙 §1.3, sKey 없음). dispatch 규약은 ccDoCancel 과 같다.
+  async function ccDoUnassign(barcode, orderSeq, searchFields) {
+    const url = ccBuildUnassignUrl(barcode, orderSeq, searchFields);
+    if (!url) return { dispatched: false, msg: 'URL 조립 실패(바코드/seq 없음)' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, ASG_FETCH_MS);
+    try {
+      const r = await fetch(url, { method: 'GET', credentials: 'include', cache: 'no-cache', signal: ctrl.signal });
+      return { dispatched: true, msg: ccRedirectMsg(r.url) };
+    } catch (e) {
+      ccLog('선택취소 GET 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    } finally { clearTimeout(timer); }
+  }
+  //  출고전표에서 이 주문의 출고 건을 특정한다(읽기). idx 토큰 [1]==바코드 && [3]==orderSeq 정확히 1건 + 상태 셀 '출고완료' + 응답 sKey.
+  //  사이드바 출고취소의 dcmFindDeliv(바코드만·최신 1건)와 용도가 달라 따로 둔다. 열 인덱스는 dcmFindDeliv 와 같다(0 No·2 출고장번호·4 출고일·8 매장·14 상태).
+  async function ccFindDelivRow(barcode, orderSeq) {
+    try {
+      const { html, doc } = await dcmPostRaw('/jun/delivitem/delivItemList.do?tcode=deliv_item', new URLSearchParams(dcmSearchParams(barcode)));
+      const boxes = [...doc.querySelectorAll('input[name=idx]')];
+      const pick = ccPickDelivIdx(boxes.map((b) => b.value || ''), barcode, orderSeq);
+      if (!pick) return { ok: false, reason: '출고전표에 이 주문(' + orderSeq + ')의 ' + barcode + ' 출고 건이 없음' };
+      if (pick.ambiguous) return { ok: false, reason: '출고 건이 ' + pick.ambiguous + '건이라 특정 불가' };
+      const sKey = dcmHidden(html, 'sKey');
+      if (!sKey) return { ok: false, reason: '출고전표 sKey 추출 실패' };
+      const box = boxes.find((b) => (b.value || '') === pick.idx);
+      const tr = box && box.closest ? box.closest('tr') : null;
+      const c = tr ? [...tr.cells].map((x) => (x.textContent || '').replace(/\s+/g, ' ').trim()) : [];
+      const status = c[14] || '';
+      if (status !== '출고완료') return { ok: false, reason: '출고 건 상태가 출고완료가 아님(' + (status || '불명') + ')' };
+      return { ok: true, idx: pick.idx, sKey: sKey, junNum: c[2] || '', delivDate: c[4] || '', shop: (c[8] || '').slice(0, 30), status: status };
+    } catch (e) {
+      ccLog('출고전표 조회 실패', (e && e.message) || e);
+      return { ok: false, reason: '출고전표 조회 실패(네트워크/타임아웃)' };
+    }
+  }
+  //  출고장 삭제(⚠ 쓰기): 특정 → write-ahead 로그(UB_DCM_LOG, §5.5a 규칙: 못 남기면 지우지 않는다) → dcmDelete POST.
+  //  서버 msg 는 표시용 — 삭제됐는지는 호출부가 주문 재조회(I--)로만 판정한다.
+  async function ccDoDelivDelete(barcode, orderSeq) {
+    const f = await ccFindDelivRow(barcode, orderSeq);
+    if (!f.ok) return { dispatched: false, msg: f.reason };
+    if (!dcmAppendLog({ phase: 'before_delete', via: 'bulkcancel', orderSeq: orderSeq, barcode: barcode, junNum: f.junNum,
+                        delivDate: f.delivDate, shop: f.shop, status: f.status, idx: f.idx })) {
+      return { dispatched: false, msg: '처리 로그를 남길 수 없어 삭제하지 않음' };
+    }
+    try {
+      const d = await dcmDelete({ sKey: f.sKey, idx: f.idx }, barcode);
+      if (d.ok) dcmAppendLog({ phase: 'deleted', via: 'bulkcancel', orderSeq: orderSeq, barcode: barcode, junNum: f.junNum });
+      return { dispatched: true, msg: d.msg || '' };
+    } catch (e) {
+      ccLog('출고장 삭제 POST 오류(도달 여부 불명)', (e && e.message) || e);
+      return { dispatched: true, msg: '' };
+    }
+  }
+  //  단계 → 쓰기 하나. next 는 ccNextStep 의 write 결과, row 는 그 판정의 근거 응답(sKey 를 여기서 꺼낸다).
+  async function ccDoStep(next, row, searchFields) {
+    const step = next && next.step;
+    if (step === 'cancel') return ccDoCancel(row.orderSeq, row.sKey, searchFields);
+    if (step === 'standby-off') return ccDoStandbyOff(row.orderSeq, row.sKey, searchFields);
+    if (step === 'unassign') return ccDoUnassign(next.barcode, row.orderSeq, searchFields);
+    if (step === 'deliv-delete') return ccDoDelivDelete(next.barcode, row.orderSeq);
+    return { dispatched: false, msg: '알 수 없는 단계: ' + step };
+  }
   //  배치 오케스트레이터. 순차, 첫 실패·미확정에서 중단. progress(msg)=승인창 진행 표시,
   //  isAborted()=사용자 중단 요청(다음 건 경계에서 멈춤). cBatchBusy 는 작업C 와 공유한다.
   async function ccRunCancelBatch(targets, progress, isAborted) {

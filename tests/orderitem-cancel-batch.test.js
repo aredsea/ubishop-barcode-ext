@@ -31,7 +31,9 @@ function extractFn(src, name) {
 }
 
 const NAMES = ['ccTargetStatus', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome', 'ccRowCancelSeq',
-               'ccDoCancel', 'ccRunCancelBatch'];
+               'ccRequeryReason', 'ccRowCurrentSetting', 'parseCurrentSettingArgs', 'ccNextStep', 'ccStepOutcome',
+               'ccBuildUnassignUrl', 'cBuildStandbyUrl', 'ccDoCancel', 'ccDoStandbyOff', 'ccDoUnassign', 'ccDoDelivDelete', 'ccDoStep',
+               'ccRunCancelBatch'];
 
 //  샌드박스: deps 로 의존을 주입하고, 추출한 함수들을 같은 스코프에 둔다.
 //  setTimeout 은 판정 폴링의 1.5s 대기(정확히 1500ms)만 0 으로 줄인다 — ccDoCancel 의 8000ms abort 타이머는 실제.
@@ -43,11 +45,13 @@ function build(deps) {
     'let cBatchBusy = !!deps.busy;\n' +
     'const fetch = deps.fetch; const fetchOrderRow = deps.fetchOrderRow; const cFetchSKey = deps.cFetchSKey;\n' +
     'const cReadSearchFields = deps.cReadSearchFields; const cUpdateRow = deps.cUpdateRow;\n' +
+    'const ccFindDelivRow = deps.ccFindDelivRow; const dcmDelete = deps.dcmDelete; const dcmAppendLog = deps.dcmAppendLog;\n' +
+    'const CC_MAX_STEPS = 6;\n' +
     'const ccLog = () => {};\n' +
     'const setTimeout = (fn, ms) => globalThis.setTimeout(fn, ms === 1500 ? 0 : ms);\n' +
     'const clearTimeout = (id) => globalThis.clearTimeout(id);\n' +
     NAMES.map(n => extractFn(SRC, n)).join('\n') + '\n' +
-    'return { ccRunCancelBatch, ccDoCancel, busy: () => cBatchBusy };'
+    'return { ccRunCancelBatch, ccDoCancel, ccDoStep, ccDoStandbyOff, ccDoUnassign, ccDoDelivDelete, busy: () => cBatchBusy };'
   );
   return factory(deps);
 }
@@ -95,6 +99,9 @@ function baseDeps(over) {
     cFetchSKey: async () => '260911135039701',
     cReadSearchFields: () => ({ reqPage: '1', pageSize: '100' }),
     cUpdateRow: (seq, row) => { updates.push({ seq, code: row && row.code }); },
+    ccFindDelivRow: async () => ({ ok: false, reason: '스텁: 출고 건 없음' }),
+    dcmDelete: async () => ({ ok: true, msg: '' }),
+    dcmAppendLog: () => true,
     updates
   }, over || {});
 }
@@ -564,4 +571,71 @@ test('cReadCheckedRows: 행마다 배정 팝업 링크 여부와 바코드(cs)�
   assert.ok(/a\[href\*="currentSetting"\]/.test(src) && /parseCurrentSettingArgs\(/.test(src), '링크 인자를 파싱한다');
   assert.ok(/cs:\s*cs/.test(src) && /cs = \{ has: true, barcode: String\(args\.barcode \|\| ''\) \}/.test(src), 'cs 필드');
   assert.ok(/\\\(\(\[\^\(\)\]\+\)\\\)\\s\*\$/.test(src), '링크가 없으면 상태 셀 괄호값(출고완료 (250HHL))을 바코드로');
+});
+
+// ── 쓰기 4종 디스패치 (스펙 2026-09-16 §4.4) ────────────────────────────────
+const F = () => ({ reqPage: '1', pageSize: '100' });
+test('ccDoStandbyOff: POST orderItemStandby.do status1=O--&status2=OS-&sKey, 본문 idx=<seq>, dispatched=true', async () => {
+  const deps = baseDeps(); const sb = build(deps);
+  const d = await sb.ccDoStandbyOff('101', 'K1', F());
+  assert.equal(d.dispatched, true);
+  const c = deps.fetch.calls[0];
+  assert.ok(c.url.startsWith('/jun/orderitem/orderItemStandby.do?'));
+  const p = new URL('http://x' + c.url).searchParams;
+  assert.equal(p.get('status1'), 'O--'); assert.equal(p.get('status2'), 'OS-'); assert.equal(p.get('sKey'), 'K1'); assert.equal(p.get('pageSize'), '100');
+  assert.equal(c.opts.method, 'POST'); assert.equal(c.opts.credentials, 'include'); assert.equal(String(c.opts.body), 'idx=101');
+});
+test('ccDoStandbyOff: sKey 없으면 dispatched=false, fetch 없음 / fetch 예외는 dispatched=true(도달 불명)', async () => {
+  const deps = baseDeps(); const sb = build(deps);
+  assert.deepEqual(await sb.ccDoStandbyOff('101', '', F()), { dispatched: false, msg: 'URL 조립 실패(sKey 없음)' });
+  assert.equal(deps.fetch.calls.length, 0);
+  const deps2 = baseDeps({ fetch: async () => { throw new Error('net'); } }); const sb2 = build(deps2);
+  assert.deepEqual(await sb2.ccDoStandbyOff('101', 'K1', F()), { dispatched: true, msg: '' });
+});
+test('ccDoUnassign: GET orderItemPopCurrentSettingCancel.do barcode+orderSeq+검색조건, dispatched=true; 빈 바코드면 false', async () => {
+  const deps = baseDeps(); const sb = build(deps);
+  const d = await sb.ccDoUnassign('2608ET', '101', F());
+  assert.equal(d.dispatched, true);
+  const c = deps.fetch.calls[0];
+  assert.ok(c.url.startsWith('/jun/orderitem/orderItemPopCurrentSettingCancel.do?'));
+  const p = new URL('http://x' + c.url).searchParams;
+  assert.equal(p.get('barcode'), '2608ET'); assert.equal(p.get('orderSeq'), '101'); assert.equal(p.get('reqPage'), '1');
+  assert.equal(c.opts.method, 'GET'); assert.equal(c.opts.credentials, 'include');
+  assert.deepEqual(await sb.ccDoUnassign('', '101', F()), { dispatched: false, msg: 'URL 조립 실패(바코드/seq 없음)' });
+  assert.equal(deps.fetch.calls.length, 1);
+});
+test('ccDoDelivDelete: 출고 건 찾기 → write-ahead 로그 → 삭제 POST 순서, 찾기 실패·로그 실패면 삭제 없음', async () => {
+  const log = [], dels = [];
+  const found = { ok: true, idx: '426106,250HHL,47295,101', sKey: 'DK', junNum: '000000010HR', delivDate: '26-09-15', shop: 'FASHION', status: '출고완료' };
+  const deps = baseDeps({ ccFindDelivRow: async (bc, seq) => { log.push(['find', bc, seq]); return found; },
+                          dcmAppendLog: (e) => { log.push(['log', e.phase, e.via, e.orderSeq, e.barcode, e.junNum, e.idx]); return true; },
+                          dcmDelete: async (t, bc) => { dels.push([t.sKey, t.idx, bc]); log.push(['delete']); return { ok: true, msg: '' }; } });
+  const sb = build(deps);
+  assert.deepEqual(await sb.ccDoDelivDelete('250HHL', '101'), { dispatched: true, msg: '' });
+  assert.deepEqual(dels, [['DK', '426106,250HHL,47295,101', '250HHL']]);
+  assert.deepEqual(log.map(x => x[0]), ['find', 'log', 'delete', 'log'], '로그가 삭제보다 먼저(write-ahead), 뒤에 deleted 로그');
+  assert.deepEqual(log[1], ['log', 'before_delete', 'bulkcancel', '101', '250HHL', '000000010HR', '426106,250HHL,47295,101']);
+  // 찾기 실패
+  const d2 = build(baseDeps({ ccFindDelivRow: async () => ({ ok: false, reason: '출고 건이 2건이라 특정 불가' }), dcmDelete: async () => { throw new Error('must not'); } }));
+  assert.deepEqual(await d2.ccDoDelivDelete('250HHL', '101'), { dispatched: false, msg: '출고 건이 2건이라 특정 불가' });
+  // 로그 실패
+  const d3 = build(baseDeps({ ccFindDelivRow: async () => found, dcmAppendLog: () => false, dcmDelete: async () => { throw new Error('must not'); } }));
+  assert.deepEqual(await d3.ccDoDelivDelete('250HHL', '101'), { dispatched: false, msg: '처리 로그를 남길 수 없어 삭제하지 않음' });
+  // 삭제 POST 가 서버 msg 를 돌려주면 dispatched=true + msg(판정은 재조회가 한다)
+  const d4 = build(baseDeps({ ccFindDelivRow: async () => found, dcmDelete: async () => ({ ok: false, msg: '삭제할 수 없습니다' }) }));
+  assert.deepEqual(await d4.ccDoDelivDelete('250HHL', '101'), { dispatched: true, msg: '삭제할 수 없습니다' });
+  // 삭제 POST 예외 → 도달 불명 → dispatched=true
+  const d5 = build(baseDeps({ ccFindDelivRow: async () => found, dcmDelete: async () => { throw new Error('net'); } }));
+  assert.deepEqual(await d5.ccDoDelivDelete('250HHL', '101'), { dispatched: true, msg: '' });
+});
+test('ccDoStep: 단계별로 알맞은 쓰기 함수 하나만 부른다, 모르는 단계는 dispatched=false', async () => {
+  const deps = baseDeps({ ccFindDelivRow: async () => ({ ok: false, reason: 'x' }) }); const sb = build(deps);
+  const row = { orderSeq: '101', sKey: 'K9' };
+  await sb.ccDoStep({ kind: 'write', step: 'cancel', want: 'OC-' }, row, F());
+  await sb.ccDoStep({ kind: 'write', step: 'standby-off', want: 'O--' }, row, F());
+  await sb.ccDoStep({ kind: 'write', step: 'unassign', want: 'OS-', barcode: '2608ET' }, row, F());
+  assert.deepEqual(deps.fetch.calls.map(c => c.url.split('?')[0]), ['/jun/orderitem/orderItemCancel.do', '/jun/orderitem/orderItemStandby.do', '/jun/orderitem/orderItemPopCurrentSettingCancel.do']);
+  assert.equal(new URL('http://x' + deps.fetch.calls[0].url).searchParams.get('sKey'), 'K9');
+  assert.deepEqual(await sb.ccDoStep({ kind: 'write', step: 'deliv-delete', want: 'I--', barcode: '250HHL' }, row, F()), { dispatched: false, msg: 'x' });
+  assert.deepEqual(await sb.ccDoStep({ kind: 'write', step: 'nope' }, row, F()), { dispatched: false, msg: '알 수 없는 단계: nope' });
 });
