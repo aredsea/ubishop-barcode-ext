@@ -68,13 +68,14 @@ function makeRequery(script) {
     cursor[orderSeq] = (cursor[orderSeq] || 0) + 1;
     const r = seq[i];
     const sKey = '2609111512' + String(++requerySeq).padStart(5, '0');
-    // 서버처럼 주문완료(O--) 행에만 [취소] 링크 del('<seq>') 를 싣는다(2026-09-11 실측: 332/332, 취소된 행엔 없음)
-    const rowHtml = (r && r.code === 'O--')
-      ? '<tr><td>' + r.code + '</td><td><a href="javascript:del(\'' + orderSeq + '\');">취소</a></td></tr>'
-      : '<tr><td>' + (r ? r.code : '') + '</td></tr>';
+    // 서버처럼: O-- 행엔 [취소] 링크 del('<seq>')(2026-09-11 실측: 332/332, 취소된 행엔 없음), I--/OS- 행엔 배정 팝업 링크
+    //  currentSetting(...)(바코드 = r.assignedBarcode; r.link===false 면 발주주문처럼 링크 없음), T-- 는 링크 없음(2026-09-16 실측).
+    let rowHtml = '<tr><td>' + (r ? r.code : '') + '</td></tr>';
+    if (r && r.code === 'O--') rowHtml = '<tr><td>' + r.code + '</td><td><a href="javascript:del(\'' + orderSeq + '\');">취소</a></td></tr>';
+    else if (r && (r.code === 'I--' || r.code === 'OS-') && r.link !== false) rowHtml = '<tr><td>' + r.code + '</td><td><a href="javascript:currentSetting(\'7043\',\'' + orderSeq + '\',\'' + (r.assignedBarcode || '') + '\',\'NU\',\'1\',\'20260915\')">x</a></td></tr>';
     const ret = !r
-      ? { found: false, orderSeq, code: null, text: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml: '', sKey }
-      : Object.assign({ found: true, orderSeq, text: r.code, duplicate: false, hasMore: false, loginExpired: false, rowHtml, sKey }, r);
+      ? { found: false, orderSeq, code: null, text: '', assignedBarcode: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml: '', sKey }
+      : Object.assign({ found: true, orderSeq, text: r.code, assignedBarcode: '', duplicate: false, hasMore: false, loginExpired: false, rowHtml, sKey }, r);
     calls.push({ orderSeq, orderDate, ret });
     return ret;
   };
@@ -150,25 +151,24 @@ test('건마다 fresh sKey(원자성): 각 취소 URL 의 sKey 는 그 건의 �
   assert.notEqual(used[0], used[1], '건마다 다른(새) 키');
 });
 
-test('상태 부적합(재조회 OS-): 취소 GET 없이 실패 중단, 화면은 서버 상태로 갱신, 다음 건 미처리', async () => {
-  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'OS-', text: '본사확인' }] }) });
+test('재조회 OS-(본사확인): 이제 대상 — 본사확인취소 POST → O-- → 취소 GET → OC- (쓰기 2회, 각 sKey 는 직전 응답의 것)', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'OS-' }, { code: 'O--' }, { code: 'OC-' }] }) });
   const sb = build(deps);
-  const r = await sb.ccRunCancelBatch([T1, T2], () => {}, () => false);
-  assert.equal(deps.fetch.calls.length, 0, '쓰기가 나가면 안 된다');
-  assert.equal(r.success, 0);
-  assert.equal(r.failed.length, 1);
-  assert.equal(r.failed[0].orderSeq, '101');
-  assert.match(r.failed[0].reason, /^상태 부적합: 본사확인/);
-  assert.equal(r.processed, 1, '첫 실패에서 중단 — 102 는 손대지 않는다');
-  assert.deepEqual(deps.updates, [{ seq: '101', code: 'OS-' }]);
-  assert.equal(sb.busy(), false);
+  const r = await sb.ccRunCancelBatch([{ orderSeq: '101', code: 'OS-', orderDate: '20260911' }], () => {}, () => false);
+  assert.equal(r.success, 1); assert.deepEqual(r.failed, []); assert.deepEqual(r.uncertain, []);
+  assert.deepEqual(deps.fetch.calls.map(c => c.url.split('?')[0]), ['/jun/orderitem/orderItemStandby.do', '/jun/orderitem/orderItemCancel.do']);
+  const q = deps.fetchOrderRow.calls;
+  assert.equal(new URL('http://x' + deps.fetch.calls[0].url).searchParams.get('sKey'), q[0].ret.sKey, '본사확인취소 키 = OS- 를 본 응답');
+  assert.equal(new URL('http://x' + deps.fetch.calls[1].url).searchParams.get('sKey'), q[1].ret.sKey, '취소 키 = O-- 를 본(직전 확인) 응답');
+  assert.deepEqual(q.map(c => c.orderSeq), ['101', '101', '101'], '재조회 3회: 처음 + 단계 확인 2회(확인 응답이 다음 단계의 근거)');
+  assert.deepEqual(deps.updates, [{ seq: '101', code: 'OC-' }]);
 });
 
-test('이미 취소됨(재조회 OC-)도 대상이 아니다 — 쓰기 없이 실패', async () => {
-  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'OC-', text: '주문취소' }] }) });
+test('이미 취소됨(재조회 OC-): 목표 상태라 쓰기 없이 success', async () => {
+  const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'OC-' }] }) });
   const r = await build(deps).ccRunCancelBatch([T1], () => {}, () => false);
-  assert.equal(deps.fetch.calls.length, 0);
-  assert.match(r.failed[0].reason, /^상태 부적합: 주문취소/);
+  assert.equal(r.success, 1); assert.equal(deps.fetch.calls.length, 0);
+  assert.deepEqual(deps.updates, [{ seq: '101', code: 'OC-' }]);
 });
 
 test('미확정: dispatch 후 재조회가 계속 O-- 이면 uncertain(실패 아님) + 서버 msg 첨부, 중단', async () => {
@@ -182,7 +182,7 @@ test('미확정: dispatch 후 재조회가 계속 O-- 이면 uncertain(실패 �
   assert.deepEqual(r.failed, []);
   assert.equal(r.uncertain.length, 1);
   assert.equal(r.uncertain[0].orderSeq, '101');
-  assert.match(r.uncertain[0].reason, /^취소 미확정 — 수동 확인 필요 · 서버: 취소 불가$/);
+  assert.match(r.uncertain[0].reason, /^취소 처리 미확정 — 현재 상태: O-- · 수동 확인 필요 · 서버: 취소 불가$/);   // 문구에 단계·현재 상태(스펙 2026-09-16 §4.3)
   assert.equal(r.processed, 1);
   assert.deepEqual(deps.updates, [{ seq: '101', code: 'O--' }], '현재 서버 상태로 화면 갱신');
 });
@@ -242,8 +242,8 @@ test('게이트 OFF: 아무 건도 처리하지 않는다', async () => {
 test('중단 요청: 첫 건이 끝난 뒤 다음 건 경계에서 멈춘다', async () => {
   let aborted = false;
   const deps = baseDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'O--' }, { code: 'OC-' }], '102': [{ code: 'O--' }, { code: 'OC-' }] }) });
-  // dispatch 뒤 판정 단계('… · 확인', '상태 확인' 아님)에서 [중단] — 이미 쓴 건은 판정까지 마치고 다음 건은 시작하지 않는다
-  const r = await build(deps).ccRunCancelBatch([T1, T2], (msg) => { if (msg === '1/2 · 101 · 확인') aborted = true; }, () => aborted);
+  // dispatch 뒤 판정 단계('… · 취소 처리 확인', '상태 확인' 아님)에서 [중단] — 이미 쓴 건은 판정까지 마치고 다음 건은 시작하지 않는다
+  const r = await build(deps).ccRunCancelBatch([T1, T2], (msg) => { if (msg === '1/2 · 101 · 취소 처리 확인') aborted = true; }, () => aborted);
   assert.equal(r.success, 1);
   assert.equal(r.processed, 1);
   assert.equal(deps.fetch.calls.length, 1);
@@ -638,4 +638,89 @@ test('ccDoStep: 단계별로 알맞은 쓰기 함수 하나만 부른다, 모르
   assert.equal(new URL('http://x' + deps.fetch.calls[0].url).searchParams.get('sKey'), 'K9');
   assert.deepEqual(await sb.ccDoStep({ kind: 'write', step: 'deliv-delete', want: 'I--', barcode: '250HHL' }, row, F()), { dispatched: false, msg: 'x' });
   assert.deepEqual(await sb.ccDoStep({ kind: 'write', step: 'nope' }, row, F()), { dispatched: false, msg: '알 수 없는 단계: nope' });
+});
+
+// ── 사슬 (스펙 2026-09-16 §4.3) ──────────────────────────────────────────────
+const TT = { orderSeq: '101', code: 'T--', orderDate: '20260916' };
+function chainDeps(over) {
+  const dels = [], logs = [];
+  return Object.assign(baseDeps({
+    fetchOrderRow: makeRequery({ '101': [{ code: 'T--', assignedBarcode: '250HHL' }, { code: 'I--', assignedBarcode: '250HHL' }, { code: 'OS-', assignedBarcode: '' }, { code: 'O--' }, { code: 'OC-' }] }),
+    ccFindDelivRow: async (bc, seq) => { logs.push(['find', bc, seq]); return { ok: true, idx: '426106,250HHL,47295,101', sKey: 'DK', junNum: '000000010HR', delivDate: '26-09-15', shop: 'FASHION', status: '출고완료' }; },
+    dcmAppendLog: (e) => { logs.push(['log', e.phase]); return true; },
+    dcmDelete: async (t, bc) => { dels.push([t.sKey, t.idx, bc]); return { ok: true, msg: '' }; }
+  }), { dels, logs }, over || {});
+}
+test('사슬 전체: T-- → 출고장 삭제 → I-- → 선택취소 → OS- → 본사확인취소 → O-- → 취소 → OC- (요청 4개 순서·인자·sKey 원천)', async () => {
+  const deps = chainDeps(); const sb = build(deps);
+  const prog = [];
+  const r = await sb.ccRunCancelBatch([TT], (m) => prog.push(m), () => false);
+  assert.equal(r.success, 1, JSON.stringify(r)); assert.deepEqual(r.failed, []); assert.deepEqual(r.uncertain, []); assert.equal(r.processed, 1);
+  assert.deepEqual(deps.dels, [['DK', '426106,250HHL,47295,101', '250HHL']]);
+  assert.deepEqual(deps.logs, [['find', '250HHL', '101'], ['log', 'before_delete'], ['log', 'deleted']]);
+  assert.deepEqual(deps.fetch.calls.map(c => c.url.split('?')[0]), ['/jun/orderitem/orderItemPopCurrentSettingCancel.do', '/jun/orderitem/orderItemStandby.do', '/jun/orderitem/orderItemCancel.do']);
+  const u = new URL('http://x' + deps.fetch.calls[0].url).searchParams;
+  assert.equal(u.get('barcode'), '250HHL'); assert.equal(u.get('orderSeq'), '101');
+  const q = deps.fetchOrderRow.calls;
+  assert.deepEqual(q.map(c => c.ret.code), ['T--', 'I--', 'OS-', 'O--', 'OC-'], '재조회 5회: 처음 + 단계 확인 4회');
+  assert.equal(new URL('http://x' + deps.fetch.calls[1].url).searchParams.get('sKey'), q[2].ret.sKey, '본사확인취소 키 = OS- 확인 응답');
+  assert.equal(new URL('http://x' + deps.fetch.calls[2].url).searchParams.get('sKey'), q[3].ret.sKey, '취소 키 = O-- 확인 응답');
+  assert.deepEqual(deps.updates, [{ seq: '101', code: 'OC-' }], '화면 갱신은 끝 상태 1회');
+  assert.ok(prog.some(m => /출고장 삭제\(250HHL\)/.test(m)) && prog.some(m => /선택취소\(250HHL\)/.test(m)) && prog.some(m => /본사확인취소/.test(m)) && prog.some(m => /취소 처리/.test(m)), prog.join(' | '));
+  assert.equal(sb.busy(), false);
+});
+test('사슬: I-- 에서 시작하면 출고장 조회·삭제 없이 선택취소부터', async () => {
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'I--', assignedBarcode: '2608ET' }, { code: 'OS-' }, { code: 'O--' }, { code: 'OC-' }] }) });
+  const r = await build(deps).ccRunCancelBatch([{ orderSeq: '101', code: 'I--', orderDate: '20260916' }], () => {}, () => false);
+  assert.equal(r.success, 1); assert.deepEqual(deps.logs, []); assert.deepEqual(deps.dels, []);
+  assert.equal(new URL('http://x' + deps.fetch.calls[0].url).searchParams.get('barcode'), '2608ET');
+});
+test('사슬 미확정: 선택취소 뒤 재조회가 계속 I-- 면 uncertain — 문구에 단계·현재 상태, 다음 건은 손대지 않는다', async () => {
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'T--', assignedBarcode: '250HHL' }, { code: 'I--', assignedBarcode: '250HHL' }], '102': [{ code: 'O--' }, { code: 'OC-' }] }) });
+  const r = await build(deps).ccRunCancelBatch([TT, T2], () => {}, () => false);
+  assert.equal(r.success, 0); assert.equal(r.processed, 1); assert.deepEqual(r.failed, []);
+  assert.equal(r.uncertain.length, 1); assert.equal(r.uncertain[0].orderSeq, '101');
+  assert.match(r.uncertain[0].reason, /^선택취소\(250HHL\) 미확정 — 현재 상태: I--/);
+  assert.equal(deps.fetch.calls.length, 1, '선택취소 GET 1회, 그 뒤 쓰기 없음(102 도 안 감)');
+  assert.deepEqual(deps.updates, [{ seq: '101', code: 'I--' }], '미확정이라도 서버 상태로 화면 갱신');
+});
+test('사슬 실패: 출고 건을 특정 못 하면 삭제 없이 failed(사유), 중단', async () => {
+  const deps = chainDeps({ ccFindDelivRow: async () => ({ ok: false, reason: '출고 건이 2건이라 특정 불가' }) });
+  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => false);
+  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '출고장 삭제(250HHL) 실패: 출고 건이 2건이라 특정 불가' }]);
+  assert.deepEqual(deps.dels, []); assert.equal(deps.fetch.calls.length, 0); assert.equal(r.processed, 1);
+});
+test('사슬 실패: 발주주문 입고완료(링크 없음)는 쓰기 없이 failed', async () => {
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'I--', assignedBarcode: '2609AY', link: false }] }) });
+  const r = await build(deps).ccRunCancelBatch([{ orderSeq: '101', code: 'I--', orderDate: '20260916' }], () => {}, () => false);
+  assert.deepEqual(r.failed, [{ orderSeq: '101', reason: '입고완료(발주주문) — 배정 팝업이 없어 수동' }]);
+  assert.equal(deps.fetch.calls.length, 0); assert.deepEqual(deps.updates, [{ seq: '101', code: 'I--' }]);
+});
+test('사슬 실패: 링크 바코드와 상태 셀 바코드가 다르면 선택취소를 보내지 않는다', async () => {
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'I--', assignedBarcode: '2608ET', rowHtml: '<a href="javascript:currentSetting(\'1\',\'101\',\'2608EU\',\'NU\',\'1\',\'20260915\')">x</a>' }] }) });
+  const r = await build(deps).ccRunCancelBatch([{ orderSeq: '101', code: 'I--', orderDate: '20260916' }], () => {}, () => false);
+  assert.match(r.failed[0].reason, /배정 바코드 불일치/); assert.equal(deps.fetch.calls.length, 0);
+});
+test('사슬 중 중단: 한 단계 쓴 뒤 [중단] 이면 uncertain("중단 — 현재 상태") 로 남고 processed 는 줄지 않는다', async () => {
+  let n = 0;
+  const deps = chainDeps();
+  // isAborted 호출: ① 건 시작 ② 첫 쓰기(출고장 삭제) 직전 ③ 두 번째 쓰기(선택취소) 직전 → ③ 에서 true
+  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => (++n > 2));
+  assert.equal(r.processed, 1);
+  assert.equal(r.uncertain.length, 1); assert.match(r.uncertain[0].reason, /^중단 — 현재 상태: /);
+  assert.ok(deps.dels.length === 1, '첫 쓰기는 나갔다');
+});
+test('사슬 중 재조회 실패(found=false): 확인 재조회가 죽으면 그 단계 미확정(현재 상태 불명)', async () => {
+  const deps = chainDeps({ fetchOrderRow: makeRequery({ '101': [{ code: 'T--', assignedBarcode: '250HHL' }, { code: 'I--', assignedBarcode: '250HHL' }] }) });
+  const inner = deps.fetchOrderRow; let k = 0;
+  deps.fetchOrderRow = async (s, d) => { const r = await inner(s, d); k++; return k >= 3 ? Object.assign({}, r, { found: false, code: null }) : r; };
+  const r = await build(deps).ccRunCancelBatch([TT], () => {}, () => false);
+  // 출고장 삭제 확인(k=2, I--)은 성공이고 그 응답이 곧 다음 근거라 판정용 재조회는 없다 → 선택취소 GET 뒤 확인 재조회(k≥3)가 found=false → 미확정
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.uncertain.length, 1); assert.match(r.uncertain[0].reason, /^선택취소\(250HHL\) 미확정 — 현재 상태: 불명/);
+  assert.equal(deps.fetch.calls.length, 1);
+});
+test('단계 상한: 루프는 CC_MAX_STEPS(6) 로 막혀 있다(정상 전이로는 5회 안에 끝나 도달 불가 — 방어 상수 핀)', () => {
+  const src = extractFn(SRC, 'ccRunCancelBatch');
+  assert.ok(/step < CC_MAX_STEPS/.test(src) && /const CC_MAX_STEPS = 6;/.test(SRC), '상한 상수와 루프 조건');
 });

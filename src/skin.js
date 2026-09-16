@@ -6651,8 +6651,11 @@
     if (step === 'deliv-delete') return ccDoDelivDelete(next.barcode, row.orderSeq);
     return { dispatched: false, msg: '알 수 없는 단계: ' + step };
   }
-  //  배치 오케스트레이터. 순차, 첫 실패·미확정에서 중단. progress(msg)=승인창 진행 표시,
-  //  isAborted()=사용자 중단 요청(다음 건 경계에서 멈춤). cBatchBusy 는 작업C 와 공유한다.
+  //  건마다 최대 CC_MAX_STEPS 회: 재조회 → ccNextStep → 쓰기 1회 → 목표 상태 확인(폴링) → 그 확인 응답을 다음 단계의 근거로. 정상 전이는 5회 안에 끝난다.
+  const CC_MAX_STEPS = 6;
+  //  배치 오케스트레이터(스펙 2026-09-16 §4.3). 순차, 첫 실패·미확정에서 중단. progress(msg)=승인창 진행 표시,
+  //  isAborted()=사용자 중단 요청(매 쓰기 직전에 본다). cBatchBusy 는 작업C 와 공유한다.
+  //  한 건 = 상태기계: 재조회 row → ccNextStep(row) 가 고른 쓰기 하나 → 목표 상태를 재조회로 확인 → 그 응답(vRow)이 다음 단계의 근거(상태·sKey·링크가 한 응답).
   async function ccRunCancelBatch(targets, progress, isAborted) {
     const results = { success: 0, failed: [], uncertain: [], processed: 0, total: targets.length };
     if (cBatchBusy) return results;
@@ -6671,56 +6674,60 @@
         if (!orderDate) { results.failed.push({ orderSeq: orderSeq, reason: '주문일 파싱 실패' }); break; }
         // 1) 쓰기 직전 재조회 — 승인창의 상태는 승인용이지 쓰기 근거가 아니다
         progress(tag + '상태 확인');
-        const row = await fetchOrderRow(orderSeq, orderDate);
-        if (!row.found) {
-          results.failed.push({ orderSeq: orderSeq, reason:
-            row.loginExpired ? '로그인 만료' :
-            row.duplicate ? '중복 orderSeq(재조회)' :
-            row.hasMore ? '재조회 실패(결과 잘림 — 조건을 좁혀라)' : '재조회 실패(행 없음)' });
-          break;
+        let row = await fetchOrderRow(orderSeq, orderDate);
+        let written = 0;                                 // 이 건에 보낸 쓰기 수 — 중단 회계와 문구에 쓴다
+        let stop = false;                                // 이 건에서 배치를 멈춘다
+        let done = false;
+        const stateText = (r) => (r && r.found) ? (r.text || r.code || '불명') : '불명';
+        for (let step = 0; step < CC_MAX_STEPS && !stop && !done; step++) {
+          if (!row.found) {
+            results.failed.push({ orderSeq: orderSeq, reason: ccRequeryReason(row) + (written ? ' — ' + written + '단계 진행 뒤' : '') });
+            stop = true; break;
+          }
+          // 2) 다음 쓰기 하나(순수 판정). done 이면 이 건 성공, fail 이면 서버 진실로 화면 갱신 후 중단.
+          const next = ccNextStep(row);
+          if (next.kind === 'done') { results.success++; cUpdateRow(orderSeq, row); done = true; break; }
+          if (next.kind === 'fail') {
+            results.failed.push({ orderSeq: orderSeq, reason: (written ? '진행 중 실패 — 현재 상태: ' + stateText(row) + ' · ' : '') + next.reason });
+            cUpdateRow(orderSeq, row); stop = true; break;
+          }
+          // 3) 재조회를 기다리는 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1).
+          //    아직 아무 것도 안 쓴 건은 processed 에서 되돌리고(요약이 '처리 완료' 로 나오면 안 된다 — Opus P2-1),
+          //    이미 한 단계 이상 썼으면 중간 상태를 숨기지 않고 미확정으로 남긴다(스펙 §4.3).
+          if (!(state.ubSkin && state.ubHqConfirm) || (isAborted && isAborted())) {
+            if (!written) results.processed--;
+            else results.uncertain.push({ orderSeq: orderSeq, reason: '중단 — 현재 상태: ' + stateText(row) + ' · 수동 확인' });
+            ccLog('게이트 해제/중단 요청(쓰기 직전) → 중단'); stop = true; break;
+          }
+          progress(tag + next.label);
+          // 4) 쓰기 1회(⚠) — dispatch. 못 보냈으면(URL·특정·로그 실패) 쓰기 없었음 = 확정 실패.
+          const d = await ccDoStep(next, row, cReadSearchFields());
+          if (!d.dispatched) {
+            results.failed.push({ orderSeq: orderSeq, reason: next.label + ' 실패: ' + d.msg + (written ? ' — 현재 상태: ' + stateText(row) : '') });
+            stop = true; break;
+          }
+          written++;
+          // 5) 목표 상태를 재조회로만 판정 — 최대 ASG_VERIFY_MS. dispatch 뒤 재시도 없음.
+          progress(tag + next.label + ' 확인');
+          let vRow = null;
+          const dl = Date.now() + ASG_VERIFY_MS;
+          while (Date.now() < dl) {
+            vRow = await fetchOrderRow(orderSeq, orderDate);
+            if (ccStepOutcome(next, vRow) === 'success') break;
+            await new Promise(function (r) { setTimeout(r, 1500); });
+          }
+          if (ccStepOutcome(next, vRow) !== 'success') {
+            results.uncertain.push({ orderSeq: orderSeq, reason: next.label + ' 미확정 — 현재 상태: ' + stateText(vRow) + ' · 수동 확인 필요' + (d.msg ? ' · 서버: ' + d.msg : '') });
+            if (vRow && vRow.found) cUpdateRow(orderSeq, vRow);
+            stop = true; break;
+          }
+          row = vRow;                                    // 다음 단계의 근거 = 방금 목표를 확인한 그 응답(새 sKey·링크·상태)
         }
-        // 2) 정확히 주문완료(O--) 만 — 그 사이 남이 취소·본사확인한 건도 여기서 걸린다 (사슬 상태기계로 교체 전까지의 임시 EXACT 검사)
-        if (row.code !== 'O--') {
-          results.failed.push({ orderSeq: orderSeq, reason: '상태 부적합: ' + (row.text || row.code || '불명') });
-          cUpdateRow(orderSeq, row);                   // 화면을 서버 진실로
-          break;
+        if (!stop && !done) {
+          results.uncertain.push({ orderSeq: orderSeq, reason: '단계 상한(' + CC_MAX_STEPS + ') 초과 — 현재 상태: ' + stateText(row) + ' · 수동 확인' });
+          stop = true;
         }
-        // 3) sKey — 위 재조회 응답에 박힌 키를 그대로 쓴다. 상태와 키가 같은 응답이라 그 사이에 남이
-        //    상태를 바꿀 창이 없고(3R Terra P1), 네이티브(POST 렌더 목록의 키로 [취소] GET)와 같은 계약이다
-        //    (Opus P2-3 — 별도 GET 으로 받은 키와 중간 렌더의 상호작용 자체를 없앤다). 없으면 fail-closed.
-        const sKey = row.sKey;
-        if (!sKey) { results.failed.push({ orderSeq: orderSeq, reason: 'sKey 추출 실패' }); break; }
-        // 3-0) 같은 응답의 행에 서버가 렌더한 [취소] 링크가 있고 그 인자가 이 orderSeq 와 정확히 같아야 한다.
-        //      상태 라벨 판정이 틀려도(열 밀림·권한상 취소 불가 행·키 불일치) 여기서 fail-closed(Fable P1).
-        const linkSeq = ccRowCancelSeq(row.rowHtml);
-        if (linkSeq !== orderSeq) {
-          results.failed.push({ orderSeq: orderSeq, reason: linkSeq == null
-            ? '취소 링크 없음(서버 렌더 기준 취소 불가)' : '취소 링크 불일치(' + linkSeq + ')' });
-          break;
-        }
-        // 3-1) 재조회를 기다리는 동안 게이트가 꺼졌거나 [중단] 을 눌렀으면 쓰지 않는다(4R Terra P1).
-        //      이 건은 손대지 않은 것이므로 processed 에서 되돌린다 — 요약이 '처리 완료' 로 나오면 안 된다(Opus P2-1).
-        if (!(state.ubSkin && state.ubHqConfirm)) { results.processed--; ccLog('게이트 해제(쓰기 직전) → 중단'); break; }
-        if (isAborted && isAborted()) { results.processed--; ccLog('사용자 중단 요청(쓰기 직전) → 중단'); break; }
-        progress(tag + '취소 처리');
-        // 4) 취소 GET(⚠ 쓰기) — dispatch
-        const d = await ccDoCancel(orderSeq, sKey, cReadSearchFields());
-        if (!d.dispatched) { results.failed.push({ orderSeq: orderSeq, reason: d.msg }); break; }
-        // 5) 재조회로만 판정 — OC- 가 보일 때까지 최대 ASG_VERIFY_MS
-        progress(tag + '확인');
-        let vRow = null;
-        const dl = Date.now() + ASG_VERIFY_MS;
-        while (Date.now() < dl) {
-          vRow = await fetchOrderRow(orderSeq, orderDate);
-          if (vRow && vRow.found && vRow.code === 'OC-') break;
-          await new Promise(function (r) { setTimeout(r, 1500); });
-        }
-        const outcome = ccClassifyOutcome({ dispatched: true, requery: vRow });
-        if (outcome === 'success') { results.success++; cUpdateRow(orderSeq, vRow); continue; }
-        results.uncertain.push({ orderSeq: orderSeq,
-          reason: '취소 미확정 — 수동 확인 필요' + (d.msg ? ' · 서버: ' + d.msg : '') });
-        if (vRow && vRow.found) cUpdateRow(orderSeq, vRow);
-        break;
+        if (stop) break;
       }
     } catch (e) {
       ccLog('배치 실행 오류', e);
