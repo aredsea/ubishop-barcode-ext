@@ -51,7 +51,7 @@
     },
     {
       "path": "src/orderimport.js",
-      "sha256": "481cb04736b57be1772f753b96b2b43c2f143a35dfae9e58e5516b7204e23288"
+      "sha256": "761cac2d594b59eaf46ed96ac7cba7e49989a49eac0631e07c8a899fae5a72e3"
     },
     {
       "path": "src/orderimport-xls.js",

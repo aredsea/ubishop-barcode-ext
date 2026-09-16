@@ -327,13 +327,15 @@
     const o = S.orders[oi]; const l = o && o.lines[li]; if (!l) return;
     const q = String(inputEl ? inputEl.value : (l.q || '')).trim();   // 입력칸이 있으면 그 값만 — 비웠으면 빈 것(이전 검색어 재사용 금지, Luna 1R)
     l.q = q;
+    const gen = l.qGen = (l.qGen || 0) + 1;   // 줄 단위 세대 토큰 — 늦게 온 옛 응답이 새 검색을 덮지 않게(Luna 2R, 파일 선택의 fileGen 과 같은 이유)
     if (!q) { l.searchNote = ''; render(); return; }
     l.searchNote = '검색 중…'; render();
     try {
       const hits = await E.searchMaster(q.replace(/\s+/g, ''));
+      if (gen !== l.qGen) return;
       l.suggest = hits.slice(0, 10); l.suggestQuery = q;
       l.searchNote = hits.length ? hits.length + '건 — 위 목록에서 선택' : '검색 결과 0건 (공백 없이·부분일치)';
-    } catch (err) { l.searchNote = '검색 실패: ' + (err && err.message || err); }
+    } catch (err) { if (gen !== l.qGen) return; l.searchNote = '검색 실패: ' + (err && err.message || err); }
     render();
   }
   function onKeydown(e) {

@@ -173,6 +173,31 @@ test('searchLine 동작: 공백 제거해 검색·검색어 보존·0건 안내,
   assert.ok(renders >= 4, '검색 중·결과마다 다시 그린다');
 });
 
+//  Luna 2R(2026-09-16): 검색 A 진행 중 B 로 다시 검색하면 늦게 온 A 응답이 B 결과를 덮었다 → 줄 단위 세대 토큰.
+test('searchLine 경합: 응답 순서가 뒤집혀도 마지막 검색어의 결과만 남고, 비운 뒤 온 옛 응답은 버린다', async () => {
+  const ui = read('src/orderimport.js');
+  const pending = {};
+  const E = { searchMaster(q) { return new Promise((res) => { pending[q] = res; }); } };
+  const line = { q: '', suggest: null, suggestQuery: '', searchNote: '' };
+  const S = { orders: [{ lines: [line] }], running: false, starting: false };
+  const searchLine = new Function('S', 'E', 'render', extractFn(ui, 'searchLine') + '\nreturn searchLine;')(S, E, () => {});
+  const pA = searchLine(0, 0, { value: 'AAA' });
+  const pB = searchLine(0, 0, { value: 'BBB' });
+  pending.BBB([{ seq: '2', code: 'B', name: 'b' }]);   // B 가 먼저 도착
+  await pB;
+  assert.equal(line.suggestQuery, 'BBB'); assert.equal(line.suggest[0].code, 'B');
+  pending.AAA([{ seq: '1', code: 'A', name: 'a' }]);   // A 가 늦게 도착 — 버려야 한다
+  await pA;
+  assert.equal(line.suggestQuery, 'BBB', '옛 응답이 새 결과를 덮었다');
+  assert.equal(line.suggest[0].code, 'B');
+  const pC = searchLine(0, 0, { value: 'CCC' });
+  await searchLine(0, 0, { value: '' });                // 비움
+  pending.CCC([{ seq: '3', code: 'C', name: 'c' }]);
+  await pC;
+  assert.equal(line.searchNote, '', '비운 뒤 온 옛 응답의 안내가 남으면 안 된다');
+  assert.equal(line.suggestQuery, 'BBB', '비운 뒤 온 옛 응답이 목록을 바꾸면 안 된다');
+});
+
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
   const core = read('src/orderimport-core.js');
   assert.ok(core.includes('globalThis.ubOi = api;'));
