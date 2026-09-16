@@ -46,7 +46,10 @@ function build(deps) {
     'let cBatchBusy = !!deps.busy;\n' +
     'const fetch = deps.fetch; const fetchOrderRow = deps.fetchOrderRow; const cFetchSKey = deps.cFetchSKey;\n' +
     'const cReadSearchFields = deps.cReadSearchFields; const cUpdateRow = deps.cUpdateRow;\n' +
-    'const ccFindDelivRow = deps.ccFindDelivRow; const dcmDelete = deps.dcmDelete; const dcmAppendLog = deps.dcmAppendLog; const dcmPostRaw = deps.dcmPostRaw;\n' +
+    'const ccFindDelivRow = deps.ccFindDelivRow; const dcmAppendLog = deps.dcmAppendLog; const dcmPostRaw = deps.dcmPostRaw;\n' +
+    //  realDelete: 실제 dcmDelete(추출본)를 쓴다 — 삭제 POST 의 signal 배선을 스텁이 아니라 실물로 검사(Opus O2 P2)
+    'const dcmDelete = deps.realDelete ? dcmDeleteReal : deps.dcmDelete;\n' +
+    'const DOMParser = class { parseFromString() { return {}; } };\n' +
     'const dateParams = () => ({ syear: "2000", smonth: "01", sday: "01", eyear: "2026", emonth: "09", eday: "16" });\n' +
     'const CC_MAX_STEPS = 6;\n' +
     'const ccLog = () => {};\n' +
@@ -54,7 +57,9 @@ function build(deps) {
     'const clearTimeout = (id) => globalThis.clearTimeout(id);\n' +
     NAMES.map(n => extractFn(SRC, n)).join('\n') + '\n' +
     extractFn(SRC, 'ccFindDelivRow').replace('async function ccFindDelivRow(', 'async function ccFindDelivRowReal(') + '\n' +
-    'return { ccRunCancelBatch, ccDoCancel, ccDoStep, ccDoStandbyOff, ccDoUnassign, ccDoDelivDelete, ccFindDelivRowReal, busy: () => cBatchBusy };'
+    extractFn(SRC, 'dcmDelete').replace('async function dcmDelete(', 'async function dcmDeleteReal(') + '\n' +
+    extractFn(SRC, 'dcmPostRaw').replace('async function dcmPostRaw(', 'async function dcmPostRawReal(') + '\n' +
+    'return { ccRunCancelBatch, ccDoCancel, ccDoStep, ccDoStandbyOff, ccDoUnassign, ccDoDelivDelete, ccFindDelivRowReal, dcmDeleteReal, dcmPostRawReal, busy: () => cBatchBusy };'
   );
   return factory(deps);
 }
@@ -799,4 +804,36 @@ test('ccDoDelivDelete: 삭제 POST 에 abort signal 을 넘긴다', async () => 
   const deps = baseDeps({ ccFindDelivRow: async () => found, dcmDelete: async (t, bc, signal) => { seen = signal; return { ok: true, msg: '' }; } });
   await build(deps).ccDoDelivDelete('250HHL', '101');
   assert.ok(seen && typeof seen.addEventListener === 'function', 'AbortSignal 전달');
+});
+
+// ── Opus O2 P2: 삭제 POST 타임아웃 배선 3지점을 실물로 고정 ───────────────────
+test('ccDoDelivDelete → 실제 dcmDelete → dcmPostRaw: signal 이 끝까지 전달되고 ASG_FETCH_MS 에 abort 된다(정체해도 도달 불명으로 돌아온다)', async () => {
+  const found = { ok: true, idx: '426106,250HHL,47295,101', sKey: 'DK', junNum: '000000010HR', delivDate: '26-09-15', shop: 'FASHION', status: '출고완료' };
+  let seen = null, action = '', params = null;
+  const deps = baseDeps({ realDelete: true, fetchMs: 30, ccFindDelivRow: async () => found,
+    dcmPostRaw: (a, p, signal) => new Promise((resolve, reject) => {
+      action = a; params = p;
+      //  abort 가 안 오면 3초 뒤 정상 응답으로 풀린다 — 배선이 하나라도 끊기면 아래 시간·aborted 단언이 깨진다
+      const late = globalThis.setTimeout(() => resolve({ html: '', url: 'http://h/jun/delivitem/delivItemList.do?tcode=deliv_item', doc: {} }), 3000);
+      if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', () => { seen = signal; globalThis.clearTimeout(late); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+    }) });
+  const sb = build(deps);
+  const t0 = Date.now();
+  const d = await sb.ccDoDelivDelete('250HHL', '101');
+  assert.deepEqual(d, { dispatched: true, msg: '' }, '보낸 뒤의 abort 는 도달 불명');
+  assert.ok(Date.now() - t0 < 1000, 'ASG_FETCH_MS(30ms) 안에 abort 로 돌아온다 — 3초 응답을 기다리지 않는다');
+  assert.ok(seen && seen.aborted === true, 'dcmDelete 가 넘긴 signal 이 실제로 abort 됐다');
+  assert.equal(action, '/jun/delivitem/delivItemDelete.do?tcode=deliv_item');
+  assert.equal(params.get('sKey'), 'DK'); assert.equal(params.get('idx'), found.idx); assert.equal(params.get('searchBarcode'), '250HHL');
+});
+test('dcmPostRaw: signal 을 주면 fetch init.signal 로 그대로, 안 주면 undefined(사이드바 출고취소 경로 무변경)', async () => {
+  const inits = [];
+  const fetchStub = async (url, init) => { inits.push(init); return { url: 'http://h/x', arrayBuffer: async () => new Uint8Array([]).buffer }; };
+  const sb = build(baseDeps({ fetch: fetchStub }));
+  const ctrl = new AbortController();
+  await sb.dcmPostRawReal('/x.do', new URLSearchParams({ a: '1' }), ctrl.signal);
+  await sb.dcmPostRawReal('/x.do', new URLSearchParams({ a: '1' }));
+  assert.equal(inits[0].signal, ctrl.signal, '같은 객체가 fetch 에 실린다');
+  assert.equal(inits[0].method, 'POST'); assert.equal(inits[0].credentials, 'include'); assert.equal(inits[0].body, 'a=1');
+  assert.equal(inits[1].signal, undefined, '인자 없으면 미지정과 동일');
 });
