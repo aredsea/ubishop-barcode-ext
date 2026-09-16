@@ -205,6 +205,8 @@ test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-
   const ui = read('src/orderimport.js');
   const c0 = ui.indexOf('const CSS = `'); const css = ui.slice(c0, ui.indexOf('`;', c0));
   assert.ok(/#\$\{PANEL_ID\} input,#\$\{PANEL_ID\} select,#\$\{PANEL_ID\} button,#\$\{PANEL_ID\} label\{font:inherit/.test(css), 'font: inherit');
+  //  2026-09-16 사장님 지적: 유비샵 pamas_main.css 의 body,td{font-family:돋움;font-size:12px} 가 표의 td 를 직접 때려 셀 안이 전부 돋움이었다.
+  assert.ok(/#\$\{PANEL_ID\} td,#\$\{PANEL_ID\} th\{font:inherit\}/.test(css), 'td/th 도 font: inherit (페이지 CSS 의 td 규칙 무력화)');
   assert.ok(/--ub-on:#35C5F0/.test(css) && /@keyframes oiSpin/.test(css) && /@media \(prefers-reduced-motion: reduce\)/.test(css), '사이드바 토큰·스피너·reduced-motion');
   assert.ok(!/transition:\s*all/.test(css), 'transition: all 금지');
   assert.equal((ui.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B50}\u{23F3}]/gu) || []).length, 0, '이모지 0(SVG 만)');

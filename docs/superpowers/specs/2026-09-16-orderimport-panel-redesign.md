@@ -9,6 +9,7 @@
 |---|---|---|
 | 디자인 언어 | `src/skin.js` 사이드바 토큰을 그대로 쓴다: 시안 `#35C5F0`(hover `#2bb5e0`, soft `#e0f4fc`) · `--ub-bg #fff / --ub-bg2 #f7f9fc / --ub-fg #1b1b1b / --ub-sub #6b7280 / --ub-line #e5e7eb / --ub-soft #f9fafb` · Pretendard → 맑은 고딕 · 8/12px 그리드 · 이모지 없음(SVG) | 사장님 선택. 신규 토큰 0 |
 | 폰트 불일치의 원인 제거 | 패널 안 **모든 `input/select/button/label` 에 `font: inherit`** + 패널 루트에 폰트 스택·`-webkit-font-smoothing: antialiased` | 지금은 폼 컨트롤이 브라우저 기본 UI 폰트로 찍혀 같은 행 안에서 글꼴이 갈린다 |
+| (4.2.5 추가) 표 셀도 `font: inherit` | `#ub-oi-panel td, th { font: inherit }` | 4.2.4 배포 뒤에도 셀 안 글자·칩·입력칸이 돋움이었다(사장님 지적). 원인: 유비샵 `pamas_main.css` 의 `body,td{font-family:"돋움";font-size:12px}` 가 td 를 **직접** 때려 상속(패널 루트 Pretendard)을 이긴다. 폼 컨트롤은 `font: inherit` 라 td 의 돋움을 그대로 물려받았다. 하네스에 그 규칙을 넣어 재현(td 이하 전부 돋움 12px)·수정 후 전부 Pretendard 12.5px 확인 |
 | 표 구조 | 한 표 유지. 주문장 행 = 그룹 헤더, 줄 행 = 데이터 행. 헤더 sticky | 사장님 선택(스크롤 적고 훑기 좋음) |
 | 로딩 표시 | 툴바 아래 **진행 스트립** 하나로 세 단계(파일 읽기·유비샵 조회·등록)를 표시 + 조회 중인 셀은 스켈레톤, 등록 중인 주문장 행은 스피너 칩 | 요청 ② |
 | 다크모드 | 패널 다크 없음. 확장 전체 다크모드 제거(§5) | 사장님 지시 |

@@ -217,6 +217,8 @@
   position:fixed;inset:24px;z-index:2147483647;display:flex;flex-direction:column;overflow:hidden;background:var(--ub-bg);color:var(--ub-fg);border:1px solid var(--ub-line);border-radius:12px;box-shadow:0 8px 24px rgba(15,20,25,.12),0 24px 64px rgba(15,20,25,.18);font:13px/1.45 'Pretendard','Malgun Gothic',sans-serif;-webkit-font-smoothing:antialiased}
 #${PANEL_ID} *{box-sizing:border-box}
 #${PANEL_ID} input,#${PANEL_ID} select,#${PANEL_ID} button,#${PANEL_ID} label{font:inherit;color:inherit}
+/* 유비샵 pamas_main.css 의 body,td{font-family:"돋움";font-size:12px} 가 표의 모든 td 를 직접 때려(상속보다 우선) 셀 안 글자·칩·입력칸이 전부 돋움이 됐다(2026-09-16 실측). td/th 는 패널 글꼴을 다시 물려받는다. */
+#${PANEL_ID} td,#${PANEL_ID} th{font:inherit}
 #${PANEL_ID} svg.oi-ico{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 #${PANEL_ID} .oi-h{display:flex;align-items:center;gap:16px;padding:12px 16px;background:var(--ub-bg2);border-bottom:1px solid var(--ub-line)}
 #${PANEL_ID} .oi-title{font-size:15px;font-weight:700;letter-spacing:-.01em}

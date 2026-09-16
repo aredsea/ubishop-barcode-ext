@@ -1,9 +1,9 @@
 {
-  "version": "4.2.4",
+  "version": "4.2.5",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "2efa09b18a5d8ed3d6ceb798dfd3a6ad9b6e657382e7d9f2bcc9d9b4cd188c15"
+      "sha256": "69fd10c1920deb7c1399e804eb65086fb61a4c771bb9b9829beb0d8ba0e34c49"
     },
     {
       "path": "src/loader.js",
@@ -51,7 +51,7 @@
     },
     {
       "path": "src/orderimport.js",
-      "sha256": "7b38d69bedadf94c3b5ced625bd9a3d539a294371cf2a07b5091948f7335152c"
+      "sha256": "50fe312f2da00e3db65d51d21e1965a3711148501c617a96a0a93f850e510f52"
     },
     {
       "path": "src/orderimport-xls.js",
