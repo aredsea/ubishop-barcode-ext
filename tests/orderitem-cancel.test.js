@@ -29,7 +29,8 @@ function extractFn(src, name) {
 }
 
 const NAMES = ['ccTargetStatus', 'ccClassifyChecked', 'ccBuildCancelUrl', 'ccRedirectMsg', 'ccClassifyOutcome',
-               'ccChainLabel', 'ccRequeryReason'];
+               'ccChainLabel', 'ccRequeryReason',
+               'ccRowCancelSeq', 'parseCurrentSettingArgs', 'ccRowCurrentSetting', 'ccNextStep', 'ccStepOutcome', 'ccPickDelivIdx', 'ccBuildUnassignUrl'];
 const sandbox = {};
 
 // eslint-disable-next-line no-new-func
@@ -38,7 +39,8 @@ new Function('exports',
   NAMES.map(n => 'exports.' + n + ' = ' + n + ';').join('\n')
 )(sandbox);
 
-const { ccTargetStatus, ccClassifyChecked, ccBuildCancelUrl, ccRedirectMsg, ccClassifyOutcome, ccChainLabel, ccRequeryReason } = sandbox;
+const { ccTargetStatus, ccClassifyChecked, ccBuildCancelUrl, ccRedirectMsg, ccClassifyOutcome, ccChainLabel, ccRequeryReason,
+        ccRowCurrentSetting, ccNextStep, ccStepOutcome, ccPickDelivIdx, ccBuildUnassignUrl } = sandbox;
 
 // ── ccTargetStatus ───────────────────────────────────────────────────────────
 test('ccTargetStatus: O--/OS-/I--/T-- 만 true (사슬 대상, 스펙 2026-09-16 §4.1)', () => {
@@ -170,4 +172,78 @@ test('ccRequeryReason: found=false 사유 구분 — 로그인 만료 > 중복 >
   assert.equal(ccRequeryReason({ found: false, hasMore: true }), '재조회 실패(결과 잘림 — 조건을 좁혀라)');
   assert.equal(ccRequeryReason({ found: false }), '재조회 실패(행 없음)');
   assert.equal(ccRequeryReason(null), '재조회 실패(행 없음)');
+});
+
+// ── ccNextStep / ccStepOutcome (스펙 2026-09-16 §4.5) ──────────────────────
+const CS = (seq, bc) => '<a href="javascript:currentSetting(\'7043\',\'' + seq + '\',\'' + bc + '\',\'NU\',\'123426\',\'20260915\')">x</a>';
+const ROW = (o) => Object.assign({ found: true, orderSeq: '101', code: null, text: '', assignedBarcode: '', rowHtml: '', sKey: '260916125809911' }, o);
+test('ccNextStep: OC- 는 done', () => { assert.deepEqual(ccNextStep(ROW({ code: 'OC-' })), { kind: 'done' }); });
+test('ccNextStep: O-- 는 del 링크 인자 EXACT 일치 + sKey 있을 때만 cancel', () => {
+  assert.deepEqual(ccNextStep(ROW({ code: 'O--', rowHtml: '<tr><td><a href="javascript:del(\'101\');">취소</a></td></tr>' })), { kind: 'write', step: 'cancel', label: '취소 처리', want: 'OC-' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'O--', rowHtml: '<tr><td>주문완료</td></tr>' })), { kind: 'fail', reason: '취소 링크 없음(서버 렌더 기준 취소 불가)' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'O--', rowHtml: '<a href="javascript:del(\'102\')">x</a>' })), { kind: 'fail', reason: '취소 링크 불일치(102)' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'O--', sKey: null, rowHtml: '<a href="javascript:del(\'101\')">x</a>' })), { kind: 'fail', reason: 'sKey 추출 실패' });
+});
+test('ccNextStep: OS- 는 standby-off(sKey 필수)', () => {
+  assert.deepEqual(ccNextStep(ROW({ code: 'OS-', rowHtml: CS('101', '') })), { kind: 'write', step: 'standby-off', label: '본사확인취소', want: 'O--' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'OS-', sKey: '' })), { kind: 'fail', reason: 'sKey 추출 실패' });
+});
+test('ccNextStep: I-- 는 링크 바코드 == 상태 셀 바코드 일 때만 unassign, 링크 없으면 발주주문', () => {
+  assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: CS('101', '2608ET') })), { kind: 'write', step: 'unassign', label: '선택취소(2608ET)', want: 'OS-', barcode: '2608ET' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: '<tr><td>입고완료 (2608ET)</td></tr>' })), { kind: 'fail', reason: '입고완료(발주주문) — 배정 팝업이 없어 수동' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '2608ET', rowHtml: CS('101', '2608EU') })), { kind: 'fail', reason: '배정 바코드 불일치(링크 2608EU / 상태 2608ET)' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'I--', assignedBarcode: '', rowHtml: CS('101', '') })), { kind: 'fail', reason: '배정 바코드 불일치(링크 없음 / 상태 없음)' });
+  assert.equal(ccNextStep(ROW({ code: 'I--', sKey: null, assignedBarcode: '2608ET', rowHtml: CS('101', '2608ET') })).kind, 'write', '선택취소는 sKey 가 없어도 된다(팝업 GET 계약)');
+});
+test('ccNextStep: T-- 는 상태 셀 바코드가 있을 때만 deliv-delete', () => {
+  assert.deepEqual(ccNextStep(ROW({ code: 'T--', assignedBarcode: '250HHL' })), { kind: 'write', step: 'deliv-delete', label: '출고장 삭제(250HHL)', want: 'I--', barcode: '250HHL' });
+  assert.deepEqual(ccNextStep(ROW({ code: 'T--', assignedBarcode: '' })), { kind: 'fail', reason: '출고 바코드를 읽지 못함' });
+});
+test('ccNextStep: 그 외 상태·미지·found=false 는 fail', () => {
+  assert.deepEqual(ccNextStep(ROW({ code: 'TS-', text: '출고확인(2609DH)' })), { kind: 'fail', reason: '상태 부적합: 출고확인(2609DH)' });
+  for (const c of ['TE-', 'S--', 'B--', null, 'ZZZ']) assert.equal(ccNextStep(ROW({ code: c })).kind, 'fail', String(c));
+  assert.deepEqual(ccNextStep({ found: false }), { kind: 'fail', reason: '재조회 실패(행 없음)' });
+  assert.deepEqual(ccNextStep(null), { kind: 'fail', reason: '재조회 실패(행 없음)' });
+});
+test('ccStepOutcome: 단계별 목표 상태, unassign 은 바코드까지 비어야 success, 나머지는 uncertain', () => {
+  const W = (step, want) => ({ kind: 'write', step, want });
+  assert.equal(ccStepOutcome(W('cancel', 'OC-'), ROW({ code: 'OC-' })), 'success');
+  assert.equal(ccStepOutcome(W('cancel', 'OC-'), ROW({ code: 'O--' })), 'uncertain');
+  assert.equal(ccStepOutcome(W('standby-off', 'O--'), ROW({ code: 'O--' })), 'success');
+  assert.equal(ccStepOutcome(W('deliv-delete', 'I--'), ROW({ code: 'I--', assignedBarcode: '250HHL' })), 'success');
+  assert.equal(ccStepOutcome(W('unassign', 'OS-'), ROW({ code: 'OS-', assignedBarcode: '' })), 'success');
+  assert.equal(ccStepOutcome(W('unassign', 'OS-'), ROW({ code: 'OS-', assignedBarcode: '2608ET' })), 'uncertain', '상태만 바뀌고 바코드가 남으면 미확정');
+  assert.equal(ccStepOutcome(W('unassign', 'OS-'), ROW({ code: 'I--' })), 'uncertain');
+  assert.equal(ccStepOutcome(W('cancel', 'OC-'), { found: false }), 'uncertain');
+  assert.equal(ccStepOutcome(W('cancel', 'OC-'), null), 'uncertain');
+  assert.equal(ccStepOutcome(null, ROW({ code: 'OC-' })), 'uncertain');
+});
+// ── ccRowCurrentSetting ─────────────────────────────────────────────────────
+test('ccRowCurrentSetting: 행 HTML 의 currentSetting 6인자 파싱, 없거나 인자 수 다르면 null', () => {
+  assert.deepEqual(ccRowCurrentSetting('<tr><td>' + CS('389520', '2608ET') + '</td></tr>'), { master: '7043', orderSeq: '389520', barcode: '2608ET', shop: 'NU', client: '123426', orderDate: '20260915' });
+  assert.equal(ccRowCurrentSetting('<tr><td>출고완료 (250HHL)</td></tr>'), null);
+  assert.equal(ccRowCurrentSetting('<a href="javascript:currentSetting(\'1\',\'2\')">x</a>'), null);
+  assert.equal(ccRowCurrentSetting(''), null); assert.equal(ccRowCurrentSetting(null), null);
+});
+// ── ccPickDelivIdx (스펙 §1.2·§4.5) ─────────────────────────────────────────
+test('ccPickDelivIdx: 2번째=바코드 && 4번째=orderSeq 인 값 정확히 1건만 {idx}', () => {
+  const vals = ['426106,250HHL,47295,389513', '426105,250HHL,47290,0', '426054,2609DH,47281,389336'];
+  assert.deepEqual(ccPickDelivIdx(vals, '250HHL', '389513'), { idx: '426106,250HHL,47295,389513' });
+  assert.deepEqual(ccPickDelivIdx(vals, '250hhl', ' 389513 '), { idx: '426106,250HHL,47295,389513' }, '바코드 대소문자·공백 무시');
+  assert.equal(ccPickDelivIdx(vals, '250HHL', '389514'), null, '바코드만 맞고 주문이 다르면 없음');
+  assert.deepEqual(ccPickDelivIdx(vals, '250HHL', '0'), { idx: '426105,250HHL,47290,0' }, 'orderSeq 0(주문 없는 출고)도 값으로는 특정된다 — 호출부가 0 을 넘길 일은 없다');
+  assert.deepEqual(ccPickDelivIdx(vals.concat(['999,250HHL,1,389513']), '250HHL', '389513'), { ambiguous: 2 });
+  assert.equal(ccPickDelivIdx(vals, '', '389513'), null); assert.equal(ccPickDelivIdx(vals, '250HHL', ''), null);
+  assert.equal(ccPickDelivIdx(['bad', '1,250HHL', null], '250HHL', '389513'), null, '토큰 4개 미만은 무시');
+  assert.equal(ccPickDelivIdx(null, '250HHL', '389513'), null);
+});
+// ── ccBuildUnassignUrl (스펙 §1.3) ──────────────────────────────────────────
+test('ccBuildUnassignUrl: 팝업 cancelForm 과 같은 모양 — tcode·barcode·orderSeq + 검색조건, 고정 키는 덮이지 않음', () => {
+  const url = ccBuildUnassignUrl('2608ET', '389520', { reqPage: '1', pageSize: '100', searchSortType: 'seq', barcode: 'HACK', tcode: 'x' });
+  assert.ok(url.startsWith('/jun/orderitem/orderItemPopCurrentSettingCancel.do?'));
+  const p = new URL('http://x' + url).searchParams;
+  assert.equal(p.get('tcode'), 'order_item'); assert.equal(p.get('barcode'), '2608ET'); assert.equal(p.get('orderSeq'), '389520');
+  assert.equal(p.get('reqPage'), '1'); assert.equal(p.get('pageSize'), '100'); assert.equal(p.get('searchSortType'), 'seq');
+  assert.equal(ccBuildUnassignUrl('', '389520', {}), null); assert.equal(ccBuildUnassignUrl('2608ET', '', {}), null);
+  assert.equal(ccBuildUnassignUrl(' 2608ET ', 389520, null), '/jun/orderitem/orderItemPopCurrentSettingCancel.do?tcode=order_item&barcode=2608ET&orderSeq=389520');
 });

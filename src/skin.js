@@ -6407,6 +6407,82 @@
     }
     return { targets: targets, excluded: excluded, duplicate: duplicate };
   }
+  //  행 HTML 의 배정 팝업 링크 currentSetting(master, orderSeq, barcode, shop, client, orderDate) 인자. 없거나 6개가 아니면 null(§5.4 parseCurrentSettingArgs 재사용).
+  function ccRowCurrentSetting(rowHtml) {
+    const m = String(rowHtml == null ? '' : rowHtml).match(/currentSetting\s*\([^)]*\)/);
+    return m ? parseCurrentSettingArgs(m[0]) : null;
+  }
+  //  재조회 행(fetchOrderRow 결과) → 다음 쓰기 하나. 스펙 2026-09-16 §4.5 표. 전부 fail-closed — 조건이 하나라도 안 맞으면 write 를 내지 않는다.
+  //   반환 {kind:'done'} | {kind:'fail', reason} | {kind:'write', step, label, want[, barcode]}; want = 목표 상태(재조회로 확인할 코드).
+  function ccNextStep(row) {
+    const fail = (reason) => ({ kind: 'fail', reason: reason });
+    if (!row || row.found !== true) return fail(ccRequeryReason(row));
+    const code = row.code, seq = String(row.orderSeq == null ? '' : row.orderSeq);
+    if (code === 'OC-') return { kind: 'done' };
+    if (code === 'O--') {
+      if (!row.sKey) return fail('sKey 추출 실패');
+      const linkSeq = ccRowCancelSeq(row.rowHtml);
+      if (linkSeq !== seq) return fail(linkSeq == null ? '취소 링크 없음(서버 렌더 기준 취소 불가)' : '취소 링크 불일치(' + linkSeq + ')');
+      return { kind: 'write', step: 'cancel', label: '취소 처리', want: 'OC-' };
+    }
+    if (code === 'OS-') {
+      if (!row.sKey) return fail('sKey 추출 실패');
+      return { kind: 'write', step: 'standby-off', label: '본사확인취소', want: 'O--' };
+    }
+    if (code === 'I--') {
+      const args = ccRowCurrentSetting(row.rowHtml);
+      if (!args) return fail('입고완료(발주주문) — 배정 팝업이 없어 수동');
+      const bc = String(row.assignedBarcode == null ? '' : row.assignedBarcode);
+      if (!bc || args.barcode !== bc) return fail('배정 바코드 불일치(링크 ' + (args.barcode || '없음') + ' / 상태 ' + (bc || '없음') + ')');
+      return { kind: 'write', step: 'unassign', label: '선택취소(' + bc + ')', want: 'OS-', barcode: bc };
+    }
+    if (code === 'T--') {
+      const bc = String(row.assignedBarcode == null ? '' : row.assignedBarcode);
+      if (!bc) return fail('출고 바코드를 읽지 못함');
+      return { kind: 'write', step: 'deliv-delete', label: '출고장 삭제(' + bc + ')', want: 'I--', barcode: bc };
+    }
+    return fail('상태 부적합: ' + (row.text || code || '불명'));
+  }
+  //  dispatch 뒤 목표 확인 재조회의 판정. found 아님·다른 상태·null 은 전부 'uncertain'(재시도 금지 신호 — ccClassifyOutcome 과 같은 규약).
+  //   선택취소는 상태(OS-)와 바코드 빈 값이 둘 다 보여야 success(바코드가 남아 있으면 떼어지지 않은 것).
+  function ccStepOutcome(next, vRow) {
+    if (!next || !vRow || vRow.found !== true) return 'uncertain';
+    if (vRow.code !== next.want) return 'uncertain';
+    if (next.step === 'unassign' && String(vRow.assignedBarcode == null ? '' : vRow.assignedBarcode) !== '') return 'uncertain';
+    return 'success';
+  }
+  //  출고전표 idx 값(`<출고seq>,<바코드>,<?>,<주문 orderSeq>`, 실측 2026-09-16 9/9) 중 바코드와 주문이 둘 다 맞는 것.
+  //   정확히 1건이면 {idx}, 2건 이상이면 {ambiguous:n}, 없으면 null — 바코드만 맞는 건(4번째 0·다른 주문)은 절대 고르지 않는다.
+  function ccPickDelivIdx(values, barcode, orderSeq) {
+    const bc = String(barcode == null ? '' : barcode).trim().toUpperCase();
+    const seq = String(orderSeq == null ? '' : orderSeq).trim();
+    if (!bc || !seq) return null;
+    const hits = (Array.isArray(values) ? values : []).filter((v) => {
+      const t = String(v == null ? '' : v).split(',');
+      return t.length >= 4 && t[1].trim().toUpperCase() === bc && t[3].trim() === seq;
+    });
+    if (hits.length === 1) return { idx: hits[0] };
+    return hits.length ? { ambiguous: hits.length } : null;
+  }
+  //  팝업 [선택취소] cancelForm 과 같은 모양(스펙 §1.3): tcode·barcode·orderSeq + 검색조건. sKey 없음(팝업에도 없다).
+  //   빈 값이면 null(빈 값이 쓰기로 흘러가지 않게). 고정 키는 searchFields 가 덮지 못한다. ⚠⚠ 이 URL 의 GET 이 쓰기다 — 조회 목적으로 부르지 마라.
+  function ccBuildUnassignUrl(barcode, orderSeq, searchFields) {
+    const bc = String(barcode == null ? '' : barcode).trim();
+    const seq = String(orderSeq == null ? '' : orderSeq).trim();
+    if (!bc || !seq) return null;
+    const p = new URLSearchParams();
+    p.set('tcode', 'order_item');
+    p.set('barcode', bc);
+    p.set('orderSeq', seq);
+    if (searchFields) {
+      const keys = Object.keys(searchFields);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (!p.has(k)) p.set(k, String(searchFields[k] == null ? '' : searchFields[k]));
+      }
+    }
+    return '/jun/orderitem/orderItemPopCurrentSettingCancel.do?' + p.toString();
+  }
   //  취소 URL — 네이티브 del(seq) 가 만드는 것과 같은 모양(tcode·seq·sKey + CONST_URL 검색조건).
   //  seq·sKey 가 비면 null(빈 값이 쓰기로 흘러가지 않게). 고정 키는 searchFields 가 덮지 못한다.
   //  ⚠⚠ 이 URL 의 GET 이 쓰기다 — 조회 목적으로 부르지 마라.
