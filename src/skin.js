@@ -6350,19 +6350,40 @@
     .ub-cc-go:disabled { background: #e7a4a4; cursor: default; }
   `;
   // ── 일괄취소 순수 판정부 — DOM·네트워크·chrome.*·타이머 미접촉. tests/orderitem-cancel.test.js ──
-  //  취소 가능 상태 = 정확히 주문완료(O--) 하나뿐. EXACT, prefix 아님(cTargetStatus 와 같은 규율).
+  //  사슬 대상 = 주문완료(O--)·본사확인(OS-)·입고완료(I--)·출고완료(T--) 넷. EXACT, prefix 아님(스펙 2026-09-16 §4.1).
   function ccTargetStatus(code) {
-    return code === 'O--';
+    return code === 'O--' || code === 'OS-' || code === 'I--' || code === 'T--';
+  }
+  //  승인창 표시 문구(판정에 쓰지 않는다). cs = { has: currentSetting 링크 유무, barcode: 링크 3번째 인자 또는 상태 셀 괄호값 }.
+  //  표는 함수 안에 둔다 — 테스트 하네스가 함수 하나만 추출한다.
+  function ccChainLabel(code, cs) {
+    const CHAIN = {
+      'O--': '주문완료 → 취소',
+      'OS-': '본사확인 → 본사확인취소 · 취소',
+      'I--': '입고완료%s → 선택취소 · 본사확인취소 · 취소',
+      'T--': '출고완료%s → 출고장 삭제 · 선택취소 · 본사확인취소 · 취소'
+    };
+    const s = CHAIN[code];
+    if (!s) return '';
+    const bc = cs && cs.barcode ? ' (' + cs.barcode + ')' : '';
+    return s.replace('%s', bc);
+  }
+  //  fetchOrderRow 가 found=false 를 낸 사유(표시용). 우선순위: 로그인 만료 > 중복 > 잘림 > 행 없음.
+  function ccRequeryReason(row) {
+    if (row && row.loginExpired) return '로그인 만료';
+    if (row && row.duplicate) return '중복 orderSeq(재조회)';
+    if (row && row.hasMore) return '재조회 실패(결과 잘림 — 조건을 좁혀라)';
+    return '재조회 실패(행 없음)';
   }
   //  체크된 행 → 대상/제외. excluded 는 {orderSeq, code, reason}. 같은 orderSeq 둘 이상이면
   //  duplicate=true — 조용히 합치지 않고 호출부가 중단한다(cClassifyChecked 와 같은 규약).
+  //  입고완료는 배정 팝업 링크(currentSetting)가 있고 바코드가 있을 때만 대상 — 발주주문(공장 발주→입고)은 팝업이 없어
+  //  선택취소 경로가 없다(실측 2026-09-16). 출고확인(TS-)은 매장이 입고 확인한 재고라 제외(사장님 결정).
   function ccClassifyChecked(rows) {
     const list = Array.isArray(rows) ? rows : [];
     const REASON = new Map([
-      ['OS-', '본사확인 상태 — [본사확인취소] 후 다시'], ['OC-', '이미 취소됨'],
-      ['B--', '취소 불가 상태(발주완료)'], ['I--', '취소 불가 상태(입고완료)'],
-      ['T--', '취소 불가 상태(출고완료)'], ['TS-', '취소 불가 상태(출고확인)'],
-      ['TE-', '취소 불가 상태(출고오확인)'], ['S--', '취소 불가 상태(판매완료)']
+      ['OC-', '이미 취소됨'], ['TS-', '출고확인(매장재고) — 매장이 입고 확인한 건, 수동'],
+      ['B--', '취소 불가 상태(발주완료)'], ['TE-', '취소 불가 상태(출고오확인)'], ['S--', '취소 불가 상태(판매완료)']
     ]);
     const seen = new Set();
     let duplicate = false;
@@ -6374,7 +6395,13 @@
     const excluded = [];
     for (const r of list) {
       const code = r ? r.code : undefined;
-      if (ccTargetStatus(code)) { targets.push(r); continue; }
+      if (ccTargetStatus(code)) {
+        if (code === 'I--' && !(r.cs && r.cs.has && r.cs.barcode)) {
+          excluded.push({ orderSeq: r.orderSeq, code: code, reason: '입고완료(발주주문) — 배정 팝업이 없어 수동' });
+          continue;
+        }
+        targets.push(r); continue;
+      }
       excluded.push({ orderSeq: r ? r.orderSeq : undefined, code: code,
                       reason: REASON.get(code) || '상태 불명' });
     }
@@ -6479,8 +6506,8 @@
             row.hasMore ? '재조회 실패(결과 잘림 — 조건을 좁혀라)' : '재조회 실패(행 없음)' });
           break;
         }
-        // 2) 정확히 주문완료(O--) 만 — 그 사이 남이 취소·본사확인한 건도 여기서 걸린다
-        if (!ccTargetStatus(row.code)) {
+        // 2) 정확히 주문완료(O--) 만 — 그 사이 남이 취소·본사확인한 건도 여기서 걸린다 (사슬 상태기계로 교체 전까지의 임시 EXACT 검사)
+        if (row.code !== 'O--') {
           results.failed.push({ orderSeq: orderSeq, reason: '상태 부적합: ' + (row.text || row.code || '불명') });
           cUpdateRow(orderSeq, row);                   // 화면을 서버 진실로
           break;
