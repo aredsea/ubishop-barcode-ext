@@ -81,8 +81,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 상품 서명 | `oiOrderSig(order)`(core, 순수): 줄마다 `norm(상품명)\|norm(옵션)\|수량`(norm = 공백 하나로·trim·소문자)을 만들어 정렬해 `
-` 으로 이은 문자열 |
+| 상품 서명 | `oiOrderSig(order)`(core, 순수): 줄마다 `norm(상품명)\|norm(옵션)\|수량`(norm = 공백 하나로·trim·소문자)을 만들어 정렬해 줄바꿈(`\n`)으로 이은 문자열 |
 | 판정 | `oiDupCheck(order, entry)`(core, 순수) → `{dup, kind, entry}`: 장부 항목 없음 → `dup:false` · 항목에 `sig` 가 있고 같음 → `dup:true, kind:'same'` · 다름 → `dup:false, kind:'diff'`(주문번호는 같지만 상품이 다름 — 사은품 추가처럼 정상 재등록 가능, 기존 '이전에 넣음' 안내만) · 옛 항목(`sig` 없음) → `dup:true, kind:'legacy'`(보수적) |
 | 장부 | `toRunOrder` 가 `sig` 를 실행 주문에 싣고, `oiRunOrder` 결과 `res.sig` → `oiPostRunState` 의 장부 항목(`done`·`unverified` 둘 다)에 `sig` 저장. 옛 항목은 그대로 |
 | 기본 체크 | `refreshOrder`: 처음 판정할 때(`o.checked == null`) `o.checked = o.ready && !dup`. 이후엔 사용자의 체크가 우선(실행 불가면 해제) |
