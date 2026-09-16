@@ -241,11 +241,12 @@
         + '<div style="margin-top:3px"><input class="oi-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"' + dis + '></div>'
       : '<select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"' + dis + '><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
         + (l.suggest || []).map((s) => '<option value="' + esc(s.seq + '|' + s.code + '|' + s.name) + '">' + esc(s.name) + ' · ' + esc(s.code) + '</option>').join('')
-        + '</select><div style="display:flex;gap:4px;margin-top:3px"><input class="oi-in" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '"' + dis + '><button class="oi-btn" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>검색</button></div>';
+        + '</select><div style="display:flex;gap:4px;margin-top:3px"><input class="oi-in" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '><button class="oi-btn" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>검색</button></div>';
     const inp = (f, v, cls) => '<input class="oi-in ' + (cls || 'sm') + '" data-f="' + f + '" data-o="' + oi + '" data-l="' + li + '" value="' + esc(v == null ? '' : v) + '"' + dis + '>';
     const issues = l.issues.length ? '<div class="oi-issue">' + l.issues.map(esc).join('<br>') + '</div>' : '';
+    const note = (!e && l.searchNote) ? '<div class="oi-muted">' + esc(l.searchNote) + '</div>' : '';
     return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + '"><td></td><td colspan="2">' + esc(l.productName) + '<br><span class="oi-muted">' + esc(l.optionText || '(옵션 없음)') + '</span>' + issues + '</td>'
-      + '<td>' + prod + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
+      + '<td>' + prod + note + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
       + '<td>' + inp('qty', l.spec.qty) + '</td><td>' + inp('price', l.spec.price) + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
   }
   function orderRow(o, oi) {
@@ -283,6 +284,7 @@
     document.body.appendChild(p);
     p.addEventListener('click', onClick);
     p.addEventListener('change', onChange);
+    p.addEventListener('keydown', onKeydown);
     render();
   }
   function closePanel() {
@@ -317,13 +319,29 @@
       const e = l.mapping && l.mapping.entry; if (e) l.priorMeta = { seq: String(e.seq), remarkSuffix: e.remarkSuffix || '', colorFallback: e.colorFallback || '' };
       l.keys.forEach((k) => { delete S.map[k]; }); l.suggest = null; await saveMap(); S.orders.forEach(refreshOrder); await enrich(); render();
     }
-    else if (act === 'search') {
-      const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l];
-      const q = (btn.parentElement.querySelector('input[data-f="q"]') || {}).value || '';
-      if (!q.trim()) return;
-      try { l.suggest = (await E.searchMaster(q.replace(/\s+/g, ''))).slice(0, 10); l.suggestQuery = q; } catch (err) { alert('검색 실패: ' + err.message); }
-      render();
-    }
+    else if (act === 'search') await searchLine(+btn.dataset.o, +btn.dataset.l, btn.parentElement.querySelector('input[data-f="q"]'));
+  }
+  //  직접 검색 — 버튼 클릭과 입력칸 Enter 가 같은 함수를 부른다. 친 검색어는 줄(l.q)에 남겨 재렌더에도 살아남게.
+  //  (2026-09-16 사장님 제보: 검색칸 change 가 표 전체를 다시 그려 글자가 사라지고 클릭이 떨어져 나간 옛 버튼에 붙어 아무 반응이 없었다)
+  async function searchLine(oi, li, inputEl) {
+    const o = S.orders[oi]; const l = o && o.lines[li]; if (!l) return;
+    const q = String((inputEl && inputEl.value) || l.q || '').trim();
+    l.q = q;
+    if (!q) return;
+    l.searchNote = '검색 중…'; render();
+    try {
+      const hits = await E.searchMaster(q.replace(/\s+/g, ''));
+      l.suggest = hits.slice(0, 10); l.suggestQuery = q;
+      l.searchNote = hits.length ? hits.length + '건 — 위 목록에서 선택' : '검색 결과 0건 (공백 없이·부분일치)';
+    } catch (err) { l.searchNote = '검색 실패: ' + (err && err.message || err); }
+    render();
+  }
+  function onKeydown(e) {
+    const el = e.target;
+    if (!el || el.dataset.f !== 'q' || e.key !== 'Enter') return;
+    e.preventDefault();
+    if (S.running || S.starting) return;
+    searchLine(+el.dataset.o, +el.dataset.l, el);
   }
   async function onChange(e) {
     if (S.running || S.starting) return;   // 실행 중(시작 대기 포함) 조작 차단(Fable F2·F3 Nit)
@@ -334,6 +352,7 @@
     if (f === 'chk') { const o = S.orders[+el.dataset.o]; o.checked = el.checked && o.ready; render(); return; }
     if (f === 'chkall') { S.orders.forEach((o) => { o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장은 원래대로 제외
     const o = S.orders[+el.dataset.o]; const l = o.lines[+el.dataset.l];
+    if (f === 'q') { l.q = el.value; return; }   // 검색어는 줄에만 남기고 다시 그리지 않는다 — 그리면 글자가 사라진다
     if (f === 'pick') {
       if (!el.value) return;
       const [seq, code, name] = el.value.split('|');

@@ -118,6 +118,22 @@ test('UI 배선: 실행 중에는 onClick/onChange/enrich 가 조작을 받지 �
   assert.ok(/await saveMap\(\); S\.orders\.forEach\(refreshOrder\); await enrich\(\); render\(\);\s*\/\/ 새로 매핑된 줄/.test(ui), 'importMap 뒤 enrich(Fable F5)');
 });
 
+//  2026-09-16 사장님 제보: 직접 검색에 키워드를 치고 [검색]을 눌러도 반응이 없었다 — 검색칸 change 가 표 전체를 다시 그려
+//  친 글자가 사라지고 클릭이 떨어져 나간 옛 버튼에 붙었다. Enter 처리도 없었다.
+test('UI 배선: 직접 검색 — 검색칸 change 는 재렌더하지 않고, 클릭·Enter 가 같은 searchLine 을 부르며, 검색어·결과 안내가 렌더에 남는다', () => {
+  const ui = read('src/orderimport.js');
+  assert.ok(/if \(f === 'q'\) \{ l\.q = el\.value; return; \}\s*\/\/[^\n]*\n\s*if \(f === 'pick'\) \{/.test(ui), "onChange 가 'q' 를 재렌더 없이 끝낸다(pick 분기보다 먼저)");
+  assert.ok(/else if \(act === 'search'\) await searchLine\(\+btn\.dataset\.o, \+btn\.dataset\.l, btn\.parentElement\.querySelector\('input\[data-f="q"\]'\)\);/.test(ui), '클릭 → searchLine');
+  assert.ok(/function onKeydown\(e\) \{[\s\S]{0,300}?e\.key !== 'Enter'\) return;[\s\S]{0,200}?searchLine\(\+el\.dataset\.o, \+el\.dataset\.l, el\);/.test(ui), 'Enter → searchLine');
+  assert.ok(/if \(S\.running \|\| S\.starting\) return;\s*searchLine\(/.test(ui), 'Enter 검색도 실행 중 게이트');
+  assert.ok(ui.includes("p.addEventListener('keydown', onKeydown);"), '패널에 keydown 배선');
+  assert.ok(ui.includes(`data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '>`), '검색어가 재렌더에 살아남는다');
+  const fn = ui.slice(ui.indexOf('async function searchLine('), ui.indexOf('function onKeydown('));
+  assert.ok(/l\.q = q;/.test(fn) && /E\.searchMaster\(q\.replace\(\/\\s\+\/g, ''\)\)/.test(fn), '검색어 보존 + 공백 제거 검색');
+  assert.ok(/검색 결과 0건/.test(fn) && /검색 실패: /.test(fn), '0건·실패도 안내(무반응 금지)');
+  assert.ok(/const note = \(!e && l\.searchNote\)/.test(ui) && ui.includes("'<td>' + prod + note + '</td><td>'"), '안내가 상품 셀에 렌더된다');
+});
+
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
   const core = read('src/orderimport-core.js');
   assert.ok(core.includes('globalThis.ubOi = api;'));
