@@ -238,6 +238,12 @@ test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-
   assert.ok(/\['22', '오늘룩'\]\]/.test(ui), 'MARKET_OPTS 오늘룩(Opus O1 P2-1 회귀)');
 });
 //  Opus O1 P2-4(2026-09-16): 새 배선의 핵심 분기가 소스 대조에 없어 변이 11종이 살아남았다 → toRunOrder 를 실제로 실행.
+//  Opus 5 P2-1(2026-09-16): 비고가 서버로 가는 마지막 고리(어댑터)가 테스트 밖이었다 — 소스 핀(원장 #93 선례: DOM/네트워크 하네스는 과함).
+test('registerClient 어댑터: 4번째 인자 remark 가 고객관리 폼의 비 고(remark, 200자) 로 실린다', () => {
+  const erp = read('src/orderimport-erp.js');
+  assert.ok(/async function registerClient\(name, phone, clientJob, remark\)/.test(erp), '시그니처');
+  assert.ok(/remark: String\(remark == null \? '' : remark\)\.slice\(0, 200\)/.test(erp), 'fixed.remark 에 실린다(200자 절단)');
+});
 //  사장님 규칙 2026-09-16 ②: 카페24 정산 차 60% 이상이면 실행 주문의 마켓 clientJob 만 지인소개(19). 접미(고객명)는 그대로.
 test('toRunOrder 동작: 카페24 정산 차 60% 이상이면 market.clientJob 만 19, 미만이면 6, 접미·고객명 불변', () => {
   const ui = read('src/orderimport.js');

@@ -384,6 +384,7 @@ test('oiReferralRatio / oiClientJob: 카페24 60% 이상만 19, 나머지는 원
   assert.equal(C.oiClientJob(cafe([L(100000, 40001)])), '6', '59.999% 는 카페24');
   assert.equal(C.oiClientJob(cafe([L(82000, 44138)])), '6', '46% 는 카페24');
   assert.equal(C.oiClientJob(cafe([L(100000, 30000), L(0, 0)])), '19', '사은품(0/0) 줄은 합계에 영향 없음');
+  assert.equal(C.oiClientJob(cafe([L(100000, 41000), L(3000, 0)])), '19', '사은품 줄에 판매가가 있으면 파일 값 그대로 합산(103,000 vs 41,000 → 60.2%) — Opus Nit-1, 파일 합계 행과 같은 셈');
   assert.equal(C.oiClientJob(cafe([L(100000, 30000), L(100000, 90000)])), '6', '주문장 합계로 본다(줄 하나만 60% 넘어도 합계가 40% 면 아님)');
   assert.equal(C.oiClientJob(cafe([L(50000, 40000, 2)])), '19', '수량 반영: 50,000×2 = 100,000 vs 정산 40,000 → 60%');
   assert.equal(C.oiClientJob(cafe([L(50000, 45000, 2)])), '6', '100,000 vs 45,000 → 55%');
