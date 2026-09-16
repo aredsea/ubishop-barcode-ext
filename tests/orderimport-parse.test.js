@@ -364,3 +364,35 @@ test('사은품 줄: 판매가가 비었거나 0 이면 0 으로 읽고 검토�
   assert.ok(issues(ls[2]).includes('판매가 없음')); assert.ok(issues(ls[3]).includes('판매가 없음'));
   assert.equal(C.oiMoney0('0'), 0); assert.equal(C.oiMoney0(''), null);
 });
+
+//  사장님 규칙 2026-09-16 ①: 서버가 '휴대폰이 전화번호와 중복' 으로 거부한 경우만 재시도 대상.
+test('oiPhoneDupMsg: 실측 문구(리터럴 \\n 포함)는 true, 다른 거부·빈값·null 은 false', () => {
+  assert.equal(C.oiPhoneDupMsg('휴대폰이 전화번호와 중복인 고객이 되었습니다.\\n\\n다시 입력하세요!'), true);
+  assert.equal(C.oiPhoneDupMsg('휴대폰이 전화번호와 중복인 고객이 되었습니다.\n\n다시 입력하세요!'), true);
+  assert.equal(C.oiPhoneDupMsg('휴대폰 중복'), true);
+  assert.equal(C.oiPhoneDupMsg('등록 실패'), false);
+  assert.equal(C.oiPhoneDupMsg('전화번호가 중복입니다'), false);
+  assert.equal(C.oiPhoneDupMsg(''), false); assert.equal(C.oiPhoneDupMsg(null), false); assert.equal(C.oiPhoneDupMsg(undefined), false);
+});
+
+//  사장님 규칙 2026-09-16 ②: 카페24 주문 중 판매금액 대비 정산금액 차이 60% 이상 → 등록 마켓만 지인소개(19).
+test('oiReferralRatio / oiClientJob: 카페24 60% 이상만 19, 나머지는 원래 마켓', () => {
+  const cafe = (lines) => ({ market: { name: '카페24', suffix: '카', clientJob: '6' }, lines });
+  const L = (price, settle, qty) => ({ price, settle, qty: qty == null ? 1 : qty });
+  assert.equal(C.oiReferralRatio(cafe([L(100000, 40000)])), 0.6);
+  assert.equal(C.oiClientJob(cafe([L(100000, 40000)])), '19', '정확히 60% 도 지인소개');
+  assert.equal(C.oiClientJob(cafe([L(100000, 40001)])), '6', '59.999% 는 카페24');
+  assert.equal(C.oiClientJob(cafe([L(82000, 44138)])), '6', '46% 는 카페24');
+  assert.equal(C.oiClientJob(cafe([L(100000, 30000), L(0, 0)])), '19', '사은품(0/0) 줄은 합계에 영향 없음');
+  assert.equal(C.oiClientJob(cafe([L(100000, 30000), L(100000, 90000)])), '6', '주문장 합계로 본다(줄 하나만 60% 넘어도 합계가 40% 면 아님)');
+  assert.equal(C.oiClientJob(cafe([L(50000, 40000, 2)])), '19', '수량 반영: 50,000×2 = 100,000 vs 정산 40,000 → 60%');
+  assert.equal(C.oiClientJob(cafe([L(50000, 45000, 2)])), '6', '100,000 vs 45,000 → 55%');
+  assert.equal(C.oiClientJob(cafe([L(50000, 30000, 3)])), '19', '150,000 vs 30,000 → 80%');
+  assert.equal(C.oiClientJob(cafe([L(100000, null)])), '6', '정산금액 없는 줄이 있으면 판정 불가 → 원래 마켓');
+  assert.equal(C.oiClientJob(cafe([L(null, 0)])), '6', '판매가 없는 줄도 판정 불가');
+  assert.equal(C.oiClientJob(cafe([L(0, 0)])), '6', '판매금액 0 → 판정 불가');
+  assert.equal(C.oiClientJob(cafe([])), '6');
+  assert.equal(C.oiClientJob({ market: { name: '아몬즈', suffix: '아', clientJob: '18' }, lines: [L(100000, 10000)] }), '18', '카페24 아니면 90% 차이라도 원래 마켓');
+  assert.equal(C.oiClientJob({ market: { name: 'cafe24', suffix: '카', clientJob: '6', sessionOnly: true }, lines: [L(100000, 10000)] }), '19', '세션 마켓이라도 마켓 코드가 카페24(6) 면 적용');
+  assert.equal(C.oiClientJob({ market: null, lines: [L(100000, 10000)] }), '');
+});
