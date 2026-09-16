@@ -1,6 +1,6 @@
 /* 팝업 메뉴 — 유비샵 스킨모드(마스터) + 세부옵션.
  * 상태: chrome.storage.local
- *   { ubSkin:OFF, ubDark:OFF, ubAutoSync:OFF, ubEditPopup:OFF, ubHqConfirm:OFF, ubOrderImport:ON }
+ *   { ubSkin:OFF, ubAutoSync:OFF, ubEditPopup:OFF, ubHqConfirm:OFF, ubOrderImport:ON }
  *   ubSidebar·ubPageSize·ubThumbEdit·ubFactoryInfo 는 상시 기능(skin.js 가 항상 ON) — 팝업 옵션에서 제외.
  * 적용은 skin.js 가 ubSkin && 개별옵션 으로 게이팅.
  */
@@ -8,13 +8,12 @@
   'use strict';
 
   const D = {
-    ubSkin: false, ubDark: false, ubAutoSync: false,
+    ubSkin: false, ubAutoSync: false,
     ubEditPopup: false, ubHqConfirm: false, ubOrderImport: true
   };
 
   const $ = id => document.getElementById(id);
   const skin = $('skin');
-  const dark = $('dark');
   const autoSync = $('autoSync');
   const editPopup = $('editPopup');
   const hqConfirm = $('hqConfirm');
@@ -25,13 +24,12 @@
 
   function render(s) {
     skin.checked = !!s.ubSkin;
-    dark.checked = !!s.ubDark;
     autoSync.checked = !!s.ubAutoSync;
     editPopup.checked = !!s.ubEditPopup;
     hqConfirm.checked = !!s.ubHqConfirm;
     orderImport.checked = !!s.ubOrderImport;
     sub.classList.toggle('hidden', !s.ubSkin);
-    [dark, autoSync, editPopup, hqConfirm, orderImport].forEach(el => { el.disabled = !s.ubSkin; });
+    [autoSync, editPopup, hqConfirm, orderImport].forEach(el => { el.disabled = !s.ubSkin; });
   }
 
   function load(cb) { chrome.storage.local.get(D, cb); }
@@ -40,7 +38,6 @@
   load(render);
 
   skin.addEventListener('change', () => { save({ ubSkin: skin.checked }); load(render); });
-  dark.addEventListener('change',     () => save({ ubDark: dark.checked }));
   autoSync.addEventListener('change', () => save({ ubAutoSync: autoSync.checked }));
   editPopup.addEventListener('change',   () => save({ ubEditPopup: editPopup.checked }));
   hqConfirm.addEventListener('change',   () => save({ ubHqConfirm: hqConfirm.checked }));

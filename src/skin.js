@@ -2,7 +2,6 @@
  *  skin.js — 유비샵 스킨모드. ISOLATED, all_frames, document_start.
  *
  *  세부옵션 (모두 ubSkin 게이팅, ubSkin은 마스터):
- *    ubDark        : 다크 테마(실제 색상 매핑)
  *    ubThumbEdit   : 기초상품관리 이미지보기 썸네일 클릭 → 상품수정 새 창
  *    ubSidebar     : 좌측/플로팅 D102 도구 사이드바
  *    ubPageSize    : 리스트 페이지 기본 100 + 옵션 100/300/500
@@ -74,7 +73,7 @@
   }
 
   const D = {
-    ubSkin: false, ubDark: false, ubThumbEdit: true,
+    ubSkin: false, ubThumbEdit: true,
     ubSidebar: true, ubPageSize: true, ubAutoSync: false,
     ubSbMode: 'docked', ubSbX: 24, ubSbY: 24, ubSbCollapsed: false,
     ubSbWidth: 256, ubSbHeight: 440, ubSbLocked: false,
@@ -254,70 +253,7 @@
     } catch (_) {}
   }
 
-  /* ==========================================================================
-   *  1) 다크 테마 — invert 폐기, 실제 색상 매핑.
-   * ========================================================================== */
-  const DARK_STYLE_ID = 'ub-dark-style';
-  const DARK_CSS = `
-    html.ub-dark, html.ub-dark body { background-color: #0d1117 !important; color: #c9d1d9 !important; }
-    html.ub-dark body, html.ub-dark td, html.ub-dark th, html.ub-dark div, html.ub-dark span,
-    html.ub-dark p, html.ub-dark li, html.ub-dark dt, html.ub-dark dd, html.ub-dark label,
-    html.ub-dark fieldset, html.ub-dark legend, html.ub-dark form, html.ub-dark center {
-      background-color: transparent !important; color: #c9d1d9 !important;
-      border-color: #30363d !important;
-    }
-    html.ub-dark table { background-color: #161b22 !important; border-color: #30363d !important; }
-    html.ub-dark th { background-color: #21262d !important; color: #e6edf3 !important; border-color: #30363d !important; }
-    html.ub-dark tr { background-color: transparent !important; }
-    html.ub-dark tr:hover > td { background-color: #1f242c !important; }
-    html.ub-dark td { border-color: #30363d !important; }
-    html.ub-dark input, html.ub-dark select, html.ub-dark textarea {
-      background-color: #0d1117 !important; color: #e6edf3 !important;
-      border: 1px solid #30363d !important; outline-color: #35C5F0 !important;
-    }
-    html.ub-dark input[type=button], html.ub-dark input[type=submit], html.ub-dark button {
-      background: linear-gradient(180deg, #21262d, #161b22) !important;
-      color: #e6edf3 !important; border: 1px solid #30363d !important;
-      box-shadow: 0 1px 0 rgba(255,255,255,.04) inset !important; cursor: pointer !important;
-    }
-    html.ub-dark input[type=button]:hover, html.ub-dark input[type=submit]:hover, html.ub-dark button:hover {
-      background: #30363d !important; border-color: #35C5F0 !important;
-    }
-    html.ub-dark a, html.ub-dark a:visited { color: #58c5f0 !important; }
-    html.ub-dark a:hover { color: #35C5F0 !important; }
-    html.ub-dark img { opacity: 0.92; }
-    html.ub-dark hr { border-color: #30363d !important; background-color: #30363d !important; }
-    html.ub-dark [bgcolor], html.ub-dark [style*="background-color"], html.ub-dark [style*="background:"] {
-      background-color: #161b22 !important;
-    }
-    html.ub-dark [bgcolor="#EFEFEF"], html.ub-dark [bgcolor="#efefef"] { background-color: #1f242c !important; }
-    html.ub-dark [bgcolor="#FFFFFF"], html.ub-dark [bgcolor="#ffffff"], html.ub-dark [bgcolor="white"] {
-      background-color: #161b22 !important;
-    }
-    html.ub-dark div.tooltip2, html.ub-dark .tooltip2 {
-      background-color: #21262d !important; color: #e6edf3 !important;
-      border: 1px solid #30363d !important; box-shadow: 0 8px 24px rgba(0,0,0,.4) !important;
-    }
-    html.ub-dark option { background-color: #161b22 !important; color: #e6edf3 !important; }
-    html.ub-dark ::placeholder { color: #6e7681 !important; opacity: 1 !important; }
-    html.ub-dark b, html.ub-dark strong { color: #e6edf3 !important; }
-    html.ub-dark ::selection { background: rgba(53,197,240,.35) !important; color: #fff !important; }
-    html.ub-dark .ub-sidebar, html.ub-dark .ub-sidebar *, html.ub-dark .ub-sb-handle, html.ub-dark .ub-sb-handle * {
-      background-color: initial; color: initial; border-color: initial;
-    }
-  `;
-  function ensureDarkStyle() {
-    if (document.getElementById(DARK_STYLE_ID)) return;
-    const s = document.createElement('style');
-    s.id = DARK_STYLE_ID; s.textContent = DARK_CSS;
-    (document.head || document.documentElement).appendChild(s);
-  }
-  function applyDark() {
-    ensureDarkStyle();
-    const el = document.documentElement;
-    if (!el) return;
-    el.classList.toggle('ub-dark', on('ubDark'));
-  }
+  //  (다크 테마는 2026-09-16 사장님 지시로 걷어냈다 — 스펙 2026-09-16-orderimport-panel-redesign §5)
 
   /* ==========================================================================
    *  2) 썸네일 → 상품수정 새 창
@@ -2817,16 +2753,6 @@
       position: fixed; max-height: calc(100vh - 48px);
     }
     .ub-sidebar.ub-collapsed { display: none; }
-    html.ub-dark .ub-sidebar {
-      --ub-bg: #161b22;
-      --ub-bg2: #0d1117;
-      --ub-fg: #c9d1d9;
-      --ub-sub: #8b949e;
-      --ub-line: #30363d;
-      --ub-soft: #161b22;
-      --ub-on-soft: #1c2733;
-      box-shadow: 0 8px 24px rgba(0,0,0,.5) !important;
-    }
     html.ub-sidebar-docked body { margin-left: var(--ub-sb-w, 256px) !important; }
     @media (max-width: 900px) { html.ub-sidebar-docked body { margin-left: 0 !important; } }
 
@@ -3702,7 +3628,6 @@
    *  적용 / 구독
    * ========================================================================== */
   function applyAll() {
-    applyDark();
     renderSidebar();
     injectPageSizeOptions();
     document.querySelectorAll('img[data-ub-edit]').forEach(img => {
@@ -3951,8 +3876,6 @@
    *  요구 3: 표 디자인 — Pretendard / 세로 패딩 7px / 12px / line-height 1.5 / 짝수행 줄무늬 /
    *    hover 시안 / 헤더 position:fixed 복제본(쿼크모드라 sticky 불가) /
    *    매입처명 700(크기 유지) · 코드 11px 회색 / 숫자 tabular-nums / 거래상태 빨강 유지.
-   *  🔴 다크모드: DARK_STYLE_ID 가 html.ub-dark td·tr:hover>td 에 !important 로 색을 박한다.
-   *    라이트 전용 규칙을 그냥 쓰면 다크에서 깨지므로 html.ub-dark 전용 규칙을 별도로 명시.
    * ========================================================================== */
   const FL_STYLE_ID = 'ub-fl-style';
   const FL_SCOPE_CLASS = 'ub-fl';
@@ -3998,24 +3921,6 @@
       // 거래상태 빨강(f_red) 유지 — 덮지 않음.
       // position:fixed 헤더 복제본 — 클릭 가로채기 방지.
       'html.' + FL_SCOPE_CLASS + ' #ub-fl-fixhdr { pointer-events: none; }',
-      // ── 다크모드 🔴 — DARK_STYLE_ID 가 html.ub-dark td/tr:hover>td 에 !important 로 색을 박하므로 별도 명시.
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list tbody tr:not(.title_line_tax):nth-child(even) > td {',
-      '  background-color: #1f242c !important;',
-      '}',
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list tbody tr:not(.title_line_tax):hover > td {',
-      '  background-color: #1f242c !important;',
-      '}',
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list thead tr th,',
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list tr.title_line_tax > td {',
-      '  background-color: #161b22 !important;',
-      '  box-shadow: inset 0 -1px 0 #30363d !important;',
-      '}',
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td { color: #c9d1d9 !important; }',
-      //  ⚠ td[ub-code] 도 같이 걸어야 한다 — 바로 위 `td { color: … !important }` 가
-      //    A 화면 코드칸(span 이 없어 td 속성으로 표시)의 회색을 도로 덮어쓴다(실측).
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td[ub-code],',
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td span.f_gray { color: #8b949e !important; }',
-      'html.' + FL_SCOPE_CLASS + '.ub-dark table.t_list td a { color: #58c5f0 !important; }',
       // 필터 중 숨길 둘째 t_paging(페이지번호 링크)
       'html.' + FL_SCOPE_CLASS + ' table.t_paging.ub-fl-hidden { display: none; }'
     ].join('\n');
@@ -5823,11 +5728,10 @@
       white-space: nowrap; box-sizing: border-box; cursor: pointer; }
     #${HQ_BTN_ID} { border: 1px solid #35C5F0; background: #35C5F0; color: #fff; }
     #${HQ_BTN_ID}:hover { background: #2bb5e0; border-color: #2bb5e0; }
-    a.${HQ_STANDBY_CLS}, a.${HQ_STANDBY_CLS}:visited,
-    html.ub-dark a.${HQ_STANDBY_CLS}, html.ub-dark a.${HQ_STANDBY_CLS}:visited {
+    a.${HQ_STANDBY_CLS}, a.${HQ_STANDBY_CLS}:visited {
       border: 1px solid #bfe6f4 !important; background: #f7fbfd !important;
       color: #0f8fb8 !important; text-decoration: none !important; }
-    a.${HQ_STANDBY_CLS}:hover, html.ub-dark a.${HQ_STANDBY_CLS}:hover {
+    a.${HQ_STANDBY_CLS}:hover {
       background: #e8f6fc !important; border-color: #35C5F0 !important; color: #0b7ba0 !important; }
     .ub-hq-ov { position: fixed; inset: 0; z-index: 2147483647; background: rgba(15,23,42,.38);
       display: flex; align-items: center; justify-content: center; }
