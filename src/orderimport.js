@@ -67,6 +67,7 @@
     line.keys = C.oiMapKeys(line.productName, line.parsed);
     line.mapping = C.oiLookupMap(S.map, line.keys);
     const entry = line.mapping ? line.mapping.entry : null;
+    line.excluded = !!(line.gift && entry && C.oiIsExcludedEntry(entry));
     if (!line.spec) line.spec = {};
     const sp = line.spec;
     if (sp.k == null) sp.k = line.parsed.k;
@@ -74,13 +75,13 @@
     if (sp.itemSize == null) sp.itemSize = line.parsed.itemSize;
     if (sp.qty == null) sp.qty = line.qty;
     if (sp.price == null) sp.price = line.price;
-    if (sp.remark == null || sp.remarkAuto !== false) { sp.remark = C.oiRemark(line.settle, entry && entry.remarkSuffix); sp.remarkAuto = true; }
-    const form = entry ? S.masters[entry.seq] : null;
+    if (sp.remark == null || sp.remarkAuto !== false) { sp.remark = C.oiRemark(line.settle, !line.excluded && entry && entry.remarkSuffix); sp.remarkAuto = true; }
+    const form = entry && !line.excluded ? S.masters[entry.seq] : null;
     line.issues = C.oiLineIssues(Object.assign({}, line, { price: sp.price, qty: sp.qty }), { mapping: line.mapping, parsed: Object.assign({}, line.parsed, { k: sp.k, color: sp.color, itemSize: sp.itemSize }), form, optOverride: !!sp.optOverride });
   }
   function refreshOrder(o) {
     o.lines.forEach(refreshLine);
-    o.ready = o.lines.every((l) => !l.issues.length) && !!o.market && o.phone.ok;
+    o.ready = C.oiOrderReady(o);
     o.prev = S.ledger[o.key] || null;
     //  장부와 주문번호·상품이 완전히 같으면 기본 체크를 풀어 두고 사람이 정하게 한다(스펙 2026-09-16 §5b). 첫 판정 때만 — 그 뒤는 사용자의 체크가 우선.
     const wasDup = !!(o.dup && o.dup.dup);
@@ -112,7 +113,7 @@
   async function enrichBody() {
     progInit(C.oiEnrichTotal(S.orders, S.masters)); renderSoft();
     const seqs = new Set();
-    S.orders.forEach((o) => o.lines.forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
+    S.orders.forEach((o) => C.oiActiveLines(o).forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
     for (const seq of seqs) {
       if (S.masters[seq]) continue;
       if (S.running) return;
@@ -132,7 +133,7 @@
       } catch (e) { o.customer = { mode: 'unknown', error: e.message }; }
       progStep('c');
     }
-    for (const o of S.orders) for (const l of o.lines) {
+    for (const o of S.orders) for (const l of C.oiActiveLines(o)) {
       if (l.mapping || l.suggest) continue;
       l.suggest = [];
       for (const q of C.oiSuggestQueries(l.productName).slice(0, 3)) {
@@ -154,7 +155,7 @@
       key: o.key, seller: o.seller, orderNo: o.orderNo, buyer: o.buyer, phone: o.phone, clientName: o.clientName,
       market: Object.assign({}, o.market, { clientJob: C.oiClientJob(o) }),   // 카페24 정산 차 60%↑ → 등록 마켓만 지인소개(스펙 §5d)
       sig: C.oiOrderSig(o),                                     // 장부에 남겨 다음 파일에서 "완전히 같은 주문장" 을 가린다(스펙 §5b)
-      lines: o.lines.map((l) => ({
+      lines: C.oiActiveLines(o).map((l) => ({
         master: { seq: l.mapping.entry.seq, code: l.mapping.entry.code, name: l.mapping.entry.name, colorFallback: l.mapping.entry.colorFallback || '' },
         spec: { k: l.spec.k || null, color: l.spec.color || null, itemSize: l.spec.itemSize == null ? '' : String(l.spec.itemSize), qty: Number(l.spec.qty), price: Number(l.spec.price), gift: !!l.gift, remark: l.spec.remark || '' }
       }))
@@ -171,7 +172,7 @@
       const targets = S.orders.filter((o) => o.checked && o.ready);
       if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
       const nDup = targets.filter((o) => o.dup && o.dup.dup).length;
-      if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + o.lines.length, 0) + '줄)을 유비샵에 등록합니다.'
+      if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + C.oiActiveLines(o).length, 0) + '줄)을 유비샵에 등록합니다.'
         + (nDup ? '\n※ 이미 등록된 것과 같은 주문장 ' + nDup + '개가 포함돼 있습니다(중복 등록).' : '')
         + '\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
       jobs = targets.map(toRunOrder);                          // confirm 한 집합을 그대로 실행한다 — 조회 대기 뒤 다시 거르지 않는다(Fable F3 Nit)
@@ -290,6 +291,9 @@
 #${PANEL_ID} tr.oi-l.oi-cur td{background:#fffbf1}
 #${PANEL_ID} .oi-name{font-weight:500}
 #${PANEL_ID} .oi-opt{color:var(--ub-sub);font-size:12px;margin-top:1px}
+#${PANEL_ID} .oi-raw{display:grid;gap:4px}
+#${PANEL_ID} .oi-raw .oi-in{height:26px}
+#${PANEL_ID} .oi-source{display:block;color:var(--ub-sub);font-size:11px;margin-top:3px;font-weight:400}
 #${PANEL_ID} .oi-issue{display:inline-flex;align-items:center;gap:4px;color:var(--oi-err);font-weight:600;font-size:12px;margin-top:3px}
 #${PANEL_ID} .oi-issue svg.oi-ico{width:13px;height:13px}
 #${PANEL_ID} .oi-muted{color:var(--ub-sub)}
@@ -362,20 +366,24 @@
   }
   function lineRow(o, oi, l, li) {
     const dis = S.running ? ' disabled' : '';   // 실행 중엔 줄 컨트롤 전부 잠금(Fable F2)
-    const e = l.mapping ? l.mapping.entry : null;
+    const e = l.mapping && !l.excluded ? l.mapping.entry : null;
     const pending = !e && l.suggest == null && S.phase === 'enriching';   // 추천 조회 전 → 스켈레톤
-    const prod = e
+    const prod = l.excluded
+      ? '<div class="oi-mapped"><span class="nm">사은품 등록 제외</span><button class="oi-btn sm icon quiet" aria-label="제외 해제" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="제외 해제"' + dis + '>' + ico('x') + '</button></div>'
+      : e
       ? '<div class="oi-mapped"><span class="nm">' + esc(e.name) + '</span><span class="cd">' + esc(e.code) + '</span><button class="oi-btn sm icon quiet" aria-label="매핑 지우기" data-act="unmap" data-o="' + oi + '" data-l="' + li + '" title="매핑 지우기"' + dis + '>' + ico('x') + '</button></div>'
         + '<input class="oi-in oi-sub-in" data-f="suffix" data-o="' + oi + '" data-l="' + li + '" placeholder="비고 접미 (매핑표에 저장, 예: /블루칼세도니)" value="' + esc(e.remarkSuffix || '') + '"' + dis + '>'
       : pending ? '<span class="oi-skel w2"></span>'
       : '<div class="oi-prod"><select class="oi-in" data-f="pick" data-o="' + oi + '" data-l="' + li + '"' + dis + '><option value="">— 유비샵 상품 선택' + (l.suggestQuery ? ' (검색어: ' + esc(l.suggestQuery) + ')' : '') + ' —</option>'
         + (l.suggest || []).map((s) => '<option value="' + esc(s.seq + '|' + s.code + '|' + s.name) + '">' + esc(s.name) + ' · ' + esc(s.code) + '</option>').join('')
-        + '</select><input class="oi-in q" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '><button class="oi-btn sm icon" aria-label="검색" title="검색" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>' + ico('search') + '</button></div>';
+        + '</select><input class="oi-in q" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '><button class="oi-btn sm icon" aria-label="검색" title="검색" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>' + ico('search') + '</button>'
+        + (l.gift ? '<button class="oi-btn sm" data-act="gift-exclude" data-o="' + oi + '" data-l="' + li + '"' + dis + '>사은품 등록 제외</button>' : '') + '</div>';
     const inp = (f, v, cls) => '<input class="oi-in ' + (cls || 'sm') + '" data-f="' + f + '" data-o="' + oi + '" data-l="' + li + '" value="' + esc(v == null ? '' : v) + '"' + dis + '>';
     const issues = l.issues.length ? '<div class="oi-issue">' + ico('warn') + l.issues.map(esc).join(' · ') + '</div>' : '';
     const note = (!e && l.searchNote) ? '<div class="oi-note">' + esc(l.searchNote) + '</div>' : '';
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
-    return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-name">' + esc(l.productName) + '</div><div class="oi-opt">' + esc(l.optionText || '(옵션 없음)') + '</div>' + issues + '</td>'
+    const rawDis = l.excluded ? ' disabled' : dis;
+    return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + issues + '</td>'
       + '<td>' + prod + note + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
       + '<td>' + inp('qty', l.spec.qty, 'sm num') + '</td><td>' + inp('price', Number.isInteger(l.spec.price) ? C.oiComma(l.spec.price) : l.spec.price, 'sm num') + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
   }
@@ -400,7 +408,7 @@
     //  이번 실행의 결과가 있으면 그 칩만 — 방금 등록한 주문장이 장부에 오르며 '이미 등록' 으로도 보이는 중복 표시를 막는다.
     const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : '') + (o.ledgered ? '' : ' ' + prevChip(o)) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
     return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.dup && o.dup.dup ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
-      + '<td><span class="oi-key"><span class="seller">' + esc(o.seller) + '</span>' + esc(o.orderNo) + '</span></td><td><span class="oi-cust">' + (o.clientName ? esc(o.clientName) : '<span class="oi-muted">(' + esc(o.seller) + ' 미등록)</span>') + '<br><span class="oi-muted">' + esc(o.phone.phone || o.phone.raw) + '</span></span></td>'
+      + '<td><span class="oi-key"><span class="seller">' + esc(o.seller) + '</span>' + esc(o.orderNo) + '</span></td><td><span class="oi-cust"><input class="oi-in" aria-label="수령자 이름" data-f="buyer" data-o="' + oi + '" value="' + esc(o.buyer) + '"' + (S.running ? ' disabled' : '') + '><input class="oi-in oi-sub-in" aria-label="연락처" data-f="phone" data-o="' + oi + '" value="' + esc(o.phone.phone || o.phone.raw) + '"' + (S.running ? ' disabled' : '') + '>' + (o.phoneSource === '수령자전화' ? '<small class="oi-source">수령자전화 자동 사용</small>' : '') + '</span></td>'
       + '<td colspan="7">' + chips + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
   }
   //  진행 스트립(스펙 §3). 세 단계에서만 그려지고, 실행 중엔 log 훅이 progPatch 로 문구만 갱신한다.
@@ -525,6 +533,12 @@
       const e = l.mapping && l.mapping.entry; if (e) l.priorMeta = { seq: String(e.seq), remarkSuffix: e.remarkSuffix || '', colorFallback: e.colorFallback || '' };
       l.keys.forEach((k) => { delete S.map[k]; }); l.suggest = null; await saveMap(); S.orders.forEach(refreshOrder); await enrich(); render();
     }
+    else if (act === 'gift-exclude') {
+      const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l];
+      if (!l || !l.gift) return;
+      S.map = C.oiLearn(S.map, l.keys, { exclude: 'gift', name: '사은품 등록 제외' }, new Date().toISOString());
+      await saveMap(); S.orders.forEach(refreshOrder); render();
+    }
     else if (act === 'search') await searchLine(+btn.dataset.o, +btn.dataset.l, btn.parentElement.querySelector('input[data-f="q"]'));
   }
   //  직접 검색 — 버튼 클릭과 입력칸 Enter 가 같은 함수를 부른다. 친 검색어는 줄(l.q)에 남겨 재렌더에도 살아남게.
@@ -559,7 +573,12 @@
     const f = el.dataset.f; if (!f) return;
     if (f === 'chk') { const o = S.orders[+el.dataset.o]; o.checked = el.checked && o.ready; render(); return; }
     if (f === 'chkall') { S.orders.forEach((o) => { if (o.dup.dup) return; o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장과 중복 주문장(§5b, 개별 체크로만)은 제외
-    const o = S.orders[+el.dataset.o]; const l = o && o.lines[+el.dataset.l];
+    const o = S.orders[+el.dataset.o];
+    if (f === 'buyer' || f === 'phone') {
+      C.oiApplyCustomer(o, f === 'buyer' ? el.value : o.buyer, f === 'phone' ? el.value : (o.phone.phone || o.phone.raw));
+      refreshOrder(o); render(); await enrich(); render(); return;
+    }
+    const l = o && o.lines[+el.dataset.l];
     if (f === 'q') { l.q = el.value; return; }   // 검색어는 줄에만 남기고 다시 그리지 않는다 — 그리면 글자가 사라진다
     if (f === 'mkt-suffix' || f === 'mkt-job') return;   // 미등록 판매처 접미·마켓 — [적용] 이 DOM 에서 읽는다. 재렌더하면 값이 사라져 적용이 절대 안 됐다(Opus O1 P2-3, 검색 버그와 같은 종류)
     if (f === 'pick') {
@@ -571,6 +590,11 @@
       await saveMap();
       S.orders.forEach(refreshOrder);        // 같은 키의 다른 줄에도 즉시 전파
       await enrich(); render(); return;
+    }
+    if (f === 'productName' || f === 'optionText') {
+      l[f] = el.value; l.suggest = null; l.suggestQuery = ''; l.searchNote = ''; l.q = '';
+      if (f === 'optionText') { l.spec.k = null; l.spec.color = null; l.spec.itemSize = null; l.spec.optOverride = false; }
+      refreshOrder(o); render(); await enrich(); render(); return;
     }
     if (f === 'k' || f === 'color') {
       l.spec[f] = el.value.trim() || null; l.spec.optOverride = true;     // 사람이 보정 → 원문 미해석 토큰은 차단 사유에서 제외(Terra 4R P2)

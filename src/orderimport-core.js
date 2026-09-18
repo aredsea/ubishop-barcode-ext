@@ -37,9 +37,9 @@
   /* --------------------------------------------------------------- §2.1 헤더 */
   const COLS = Object.freeze({
     seller: '판매처', orderNo: '주문번호', name: '상품명', option: '옵션명', price: '판매가',
-    settle: '정산금액', buyer: '수령자이름', phone: '수령자휴대폰', qty: '수량', status: '상태'
+    settle: '정산금액', buyer: '수령자이름', phone: '수령자휴대폰', recipientPhone: '수령자전화', qty: '수량', status: '상태'
   });
-  const REQUIRED = ['seller', 'orderNo', 'name', 'price', 'buyer', 'phone'];
+  const REQUIRED = ['seller', 'orderNo', 'name', 'price', 'buyer'];
 
   //  첫 행(헤더) → 열 인덱스. 이름으로만 찾는다(순서·추가 열 무관). 공백은 무시.
   function oiHeaderMap(headerRow) {
@@ -47,6 +47,7 @@
     const idx = {};
     Object.keys(COLS).forEach((key) => { const i = cells.indexOf(COLS[key]); if (i >= 0) idx[key] = i; });
     const missing = REQUIRED.filter((k) => !(k in idx)).map((k) => COLS[k]);
+    if (!('phone' in idx) && !('recipientPhone' in idx)) missing.push('수령자휴대폰/수령자전화');
     return { idx, missing };
   }
 
@@ -115,13 +116,16 @@
       if (!seller && !orderNo) return;                      // 빈 행·'합계' 행(판매처·주문번호가 없다)
       //  주문번호만 빈 행은 버리지도 합치지도 않는다 — 검토 표에 '주문번호 없음' 으로 올려 사람이 보게 한다(Terra 2R P2).
       const qtyRaw = cell('qty'), priceRaw = cell('price');
+      const mobile = cell('phone'), recipientPhone = cell('recipientPhone');
+      const phoneSource = mobile ? '수령자휴대폰' : '수령자전화';
       const gift = /사은품/.test(cell('name'));               // 사은품은 판매가 0 으로 주문한다(사장님 2026-09-16 — 유비샵도 0 주문 가능)
       lines.push({
         row: i + 2,                                          // 엑셀 행 번호(헤더=1)
         seller, orderNo,
         market: oiMarket(seller),
         buyer: cell('buyer'),
-        phone: oiNormPhone(cell('phone')),
+        phone: oiNormPhone(mobile || recipientPhone),
+        phoneSource,
         phoneNumericCell: numericPhone.has(i + 1),
         productName: cell('name'),
         optionText: cell('option'),
@@ -195,8 +199,9 @@
   }
   //  매핑 항목은 seq·code 문자열이 둘 다 있어야 실행에 쓸 수 있다(가져온 JSON 이 불완전할 수 있다 — Terra 8R P2).
   function oiValidMapEntry(e) {
-    return !!e && typeof e.seq === 'string' && !!e.seq.trim() && typeof e.code === 'string' && !!e.code.trim();
+    return oiIsExcludedEntry(e) || (!!e && typeof e.seq === 'string' && !!e.seq.trim() && typeof e.code === 'string' && !!e.code.trim());
   }
+  function oiIsExcludedEntry(e) { return !!e && e.exclude === 'gift'; }
   function oiLookupMap(map, keys) {
     for (const k of keys || []) if (map && map[k]) return { key: k, entry: map[k] };
     return null;
@@ -237,7 +242,7 @@
       const key = ln.orderNo ? ln.seller + '|' + ln.orderNo : ln.seller + '|(row ' + ln.row + ')';
       if (!map.has(key)) {
         map.set(key, {
-          key, seller: ln.seller, orderNo: ln.orderNo, market: ln.market, buyer: ln.buyer, phone: ln.phone,
+          key, seller: ln.seller, orderNo: ln.orderNo, market: ln.market, buyer: ln.buyer, phone: ln.phone, phoneSource: ln.phoneSource,
           clientName: ln.market ? oiClientName(ln.buyer, ln.phone.last4, ln.market.suffix) : '',
           lines: []
         });
@@ -286,6 +291,18 @@
     return true;
   }
 
+  //  검토 화면에서 고친 고객 정보를 주문장 전체에 반영한다. 기존 고객 조회 결과는 입력값과 맞지 않으므로 폐기한다.
+  function oiApplyCustomer(order, buyer, rawPhone) {
+    if (!order) return false;
+    order.buyer = String(buyer == null ? '' : buyer).trim();
+    order.phone = oiNormPhone(rawPhone);
+    order.phoneSource = '수정';
+    order.clientName = order.market ? oiClientName(order.buyer, order.phone.last4, order.market.suffix) : '';
+    order.customer = null;
+    (order.lines || []).forEach((l) => { l.buyer = order.buyer; l.phone = order.phone; l.phoneSource = order.phoneSource; l.phoneNumericCell = false; l.groupMismatch = false; });
+    return true;
+  }
+
   //  품위 '14'/'18'/'925' → k 셀렉트 옵션(텍스트 '14K'/'18K'/'925' 대조). 없으면 null.
   function oiResolveK(k, kOpts) {
     if (!k) return null;
@@ -298,6 +315,7 @@
   //  줄 하나의 문제 목록. resolved = { mapping, parsed, form:{kOpts,colorOpts,defaults} } (form 은 있을 때만 대조).
   function oiLineIssues(line, resolved) {
     const issues = [];
+    if (line && line.gift && line.excluded) return issues;
     if (!line.market) issues.push('판매처 미등록: ' + line.seller);
     if (!line.orderNo) issues.push('주문번호 없음');
     if (line.groupMismatch) issues.push('수령자 불일치: 같은 주문번호의 첫 줄과 수령자/휴대폰이 다름');
@@ -322,6 +340,12 @@
       if (!fb) issues.push('색상 없음(마스터 기본값 빈값)');
     }
     return issues;
+  }
+
+  function oiActiveLines(order) { return ((order && order.lines) || []).filter((l) => !l.excluded); }
+  function oiOrderReady(order) {
+    const lines = oiActiveLines(order);
+    return !!(lines.length && order && order.market && order.phone && order.phone.ok && lines.every((l) => !l.issues.length));
   }
 
   /* ------------------------------------------------------- §4 폼 추출 */
@@ -814,9 +838,9 @@
   //  enrich 가 보낼 요청 수(진행 바 분모) — enrichBody 의 세 루프와 같은 조건.
   function oiEnrichTotal(orders, masters) {
     const seqs = new Set();
-    (orders || []).forEach((o) => (o.lines || []).forEach((l) => { if (l.mapping && !(masters || {})[l.mapping.entry.seq]) seqs.add(String(l.mapping.entry.seq)); }));
+    (orders || []).forEach((o) => oiActiveLines(o).forEach((l) => { if (l.mapping && !(masters || {})[l.mapping.entry.seq]) seqs.add(String(l.mapping.entry.seq)); }));
     const customers = (orders || []).filter((o) => !o.customer && o.market && o.phone && o.phone.ok).length;
-    const suggests = (orders || []).reduce((n, o) => n + (o.lines || []).filter((l) => !l.mapping && !l.suggest).length, 0);
+    const suggests = (orders || []).reduce((n, o) => n + oiActiveLines(o).filter((l) => !l.mapping && !l.suggest).length, 0);
     return { masters: seqs.size, customers, suggests, total: seqs.size + customers + suggests };
   }
 
@@ -855,7 +879,7 @@
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
-    oiGroupOrders, oiApplyMarket, oiLineIssues, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
+    oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineIssues, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,

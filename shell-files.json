@@ -1,9 +1,9 @@
 {
-  "version": "4.2.7",
+  "version": "4.2.8",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "68d0ed8540e8053acb5a9d34bf7f027aaaf5599855c45acef8111d16305ef9fe"
+      "sha256": "744c161be933accc3531fed2fe5b316164c068662b5f35ca375218358b9d89c5"
     },
     {
       "path": "src/loader.js",
@@ -43,7 +43,7 @@
     },
     {
       "path": "src/orderimport-core.js",
-      "sha256": "fe5c5f66134545da4b8b1e8573fc90a2fd12b419ef816a0df099003d3bef2017"
+      "sha256": "e280df04a05a33bb703512585833b58206ddc2e6aba0ce7f6cf9850c2e0856d0"
     },
     {
       "path": "src/orderimport-erp.js",
@@ -51,11 +51,11 @@
     },
     {
       "path": "src/orderimport.js",
-      "sha256": "15265b4976233839dc0e698fd5841a4b725466f049cc728d67b0a6d8c6fadc74"
+      "sha256": "27f8b59bf03b892c2cb2acbcd65fce414973c29d3c246bf658d2fe511bdedc20"
     },
     {
       "path": "src/orderimport-xls.js",
-      "sha256": "062cc70c503514f4e368a9ed575064a85a57c63151955920a83b080bb215195f"
+      "sha256": "6f3990c21b7687d5743b14385068cb3b8baefea5b5e65b073402bee0ded2e307"
     },
     {
       "path": "vendor/xlsx.full.min.js",

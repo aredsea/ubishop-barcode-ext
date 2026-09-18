@@ -44,6 +44,25 @@ test('oiParseRows: 개선 양식 9줄, 합계·빈 행 제외, 판매가·정산
   assert.deepEqual(C.oiParseRows([]).lines, []);
 });
 
+test('oiParseRows: 수령자휴대폰이 비면 수령자전화로 대체하고 사용한 열을 표시한다', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자전화', '수령자휴대폰'],
+    ['GS샵', '3473031135', '14K 목걸이', '[14K-로즈골드-38cm]', 1492000, 1044400, '이주', '0504-2185-5122', ''],
+    ['스마트스토어', '2', 'Silver925 목걸이', '', 1000, 500, '김혜진', '02-123-4567', '010-8518-3509']];
+  const r = C.oiParseRows(rows);
+  assert.equal(r.error, null);
+  assert.equal(r.lines[0].phone.phone, '0504-2185-5122');
+  assert.equal(r.lines[0].phoneSource, '수령자전화');
+  assert.equal(C.oiGroupOrders(r.lines)[0].phoneSource, '수령자전화', '주문 묶기 뒤에도 자동 대체 출처를 유지한다');
+  assert.equal(r.lines[1].phone.phone, '010-8518-3509', '휴대폰 값이 있으면 수령자전화보다 우선한다');
+  assert.equal(r.lines[1].phoneSource, '수령자휴대폰');
+});
+
+test('oiHeaderMap: 휴대폰 열이 없어도 수령자전화 열이 있으면 읽을 수 있다', () => {
+  const h = C.oiHeaderMap(['판매처', '주문번호', '상품명', '옵션명', '판매가', '수령자이름', '수령자전화']);
+  assert.deepEqual(h.missing, []);
+  assert.equal(h.idx.recipientPhone, 6);
+});
+
 //  Terra 2R P2 (2026-09-15): 주문번호만 빈 행이 '판매처|' 키로 한 주문장에 합쳐져 실행될 수 있었다.
 test('oiParseRows/oiGroupOrders: 주문번호가 빈 행은 검토 대상이 되고 서로 묶이지 않는다', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
@@ -95,6 +114,22 @@ test('oiApplyMarket: 미등록 판매처에 세션 한정 접미·마켓을 넣�
   assert.equal(C.oiApplyMarket(g[0], '', '12'), false, '접미가 비면 적용하지 않는다');
 });
 
+test('oiApplyCustomer: 검토 화면에서 바꾼 수령자와 전화가 주문 전체와 고객명에 반영된다', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['GS샵', '1', 'A', '', 1000, 100, '홍길동', '010-1234-5678'],
+    ['GS샵', '1', 'B', '', 2000, 200, '홍길동', '010-1234-5678']];
+  const o = C.oiGroupOrders(C.oiParseRows(rows).lines)[0];
+  o.customer = { mode: 'reuse', seq: '9' };
+  C.oiApplyCustomer(o, '김수정', '010 9999 0000');
+  assert.equal(o.buyer, '김수정');
+  assert.equal(o.phone.phone, '010-9999-0000');
+  assert.equal(o.clientName, '김수정0000/G');
+  assert.equal(o.customer, null, '수정 전 고객 조회 결과는 폐기한다');
+  assert.deepEqual(o.lines.map((l) => [l.buyer, l.phone.phone, l.groupMismatch]), [
+    ['김수정', '010-9999-0000', false], ['김수정', '010-9999-0000', false]
+  ]);
+});
+
 //  Terra 8R P2 (2026-09-15): code 없는 매핑({seq}만)이 실행까지 통과해 POST 뒤 code 대조에서 fatal 로 끝났다 — POST 전에 막아야 한다.
 test('oiLineIssues: 매핑 항목에 seq·code 가 없으면 매핑 불완전으로 차단', () => {
   const line = C.oiParseRows(ROWS_B).lines[0];
@@ -105,6 +140,19 @@ test('oiLineIssues: 매핑 항목에 seq·code 가 없으면 매핑 불완전으
   assert.deepEqual(C.oiValidMapEntry({ seq: '7083', code: 'F-RF-I-WG-PA-00F6', name: 'x' }), true);
   assert.deepEqual(C.oiValidMapEntry({ seq: '7083' }), false);
   assert.deepEqual(C.oiValidMapEntry({ seq: 7083, code: 'F-RF-I-WG-PA-00F6' }), false, 'seq 는 문자열');
+});
+
+test('사은품 제외 매핑은 유효하며 해당 줄 문제와 실행 대상에서 빠진다', () => {
+  const gift = { gift: true, excluded: true, productName: '[사은품] 미등록 귀걸이', optionText: '', price: 0, qty: 1,
+    market: C.oiMarket('GS샵'), orderNo: '1', buyer: '홍길동', phone: C.oiNormPhone('010-1234-5678') };
+  const main = { gift: false, excluded: false, issues: [], productName: '14K 반지' };
+  const excluded = { exclude: 'gift', name: '사은품 등록 제외' };
+  assert.equal(C.oiValidMapEntry(excluded), true);
+  assert.equal(C.oiIsExcludedEntry(excluded), true);
+  assert.deepEqual(C.oiLineIssues(gift, { mapping: { entry: excluded }, parsed: C.oiParseOption('') }), []);
+  assert.deepEqual(C.oiActiveLines({ lines: [main, gift] }), [main]);
+  assert.equal(C.oiOrderReady({ lines: [main, gift], market: C.oiMarket('GS샵'), phone: C.oiNormPhone('010-1234-5678') }), true);
+  assert.equal(C.oiOrderReady({ lines: [gift], market: C.oiMarket('GS샵'), phone: C.oiNormPhone('010-1234-5678') }), false, '제외 줄만 있는 주문은 실행하지 않는다');
 });
 
 //  Terra 9R P1 (2026-09-15): 주문폼 목록은 기본 pageSize 20 이라 21줄부터 행 수 대조가 깨진다 → 쓰기 전에 막는다.
@@ -347,6 +395,15 @@ test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
   ];
   assert.deepStrictEqual(C.oiEnrichTotal(orders, {}), { masters: 1, customers: 1, suggests: 1, total: 3 });
   assert.deepStrictEqual(C.oiEnrichTotal(orders, { 7: {} }), { masters: 0, customers: 1, suggests: 1, total: 2 });
+});
+
+test('oiEnrichTotal: 등록 제외 사은품은 마스터·추천 조회 수에서 빠진다', () => {
+  const orders = [{ market: C.oiMarket('GS샵'), phone: C.oiNormPhone('010-1234-5678'), customer: {}, lines: [
+    { excluded: true, mapping: { entry: { exclude: 'gift' } } },
+    { excluded: true, mapping: null },
+    { excluded: false, mapping: null, suggest: null }
+  ] }];
+  assert.deepStrictEqual(C.oiEnrichTotal(orders, {}), { masters: 0, customers: 0, suggests: 1, total: 1 });
 });
 
 //  사장님 요청(2026-09-16): 사은품이라 표기된 항목은 판매가가 비어 있거나 0 이어도 주문이 되게(유비샵도 판매가 0 주문 가능).

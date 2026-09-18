@@ -19,14 +19,17 @@
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
       const numericPhoneRows = [];
       const hdr = rows[0] || [];
-      const phoneCols = hdr.map((h, i) => (String(h).replace(/\s+/g, '') === '수령자휴대폰' ? i : -1)).filter((i) => i >= 0);   // 파싱이 쓰는 열만(Opus 5 Nit)
-      if (phoneCols.length && ws['!ref']) {
+      const normalizedHeader = hdr.map((h) => String(h).replace(/\s+/g, ''));
+      const mobileCol = normalizedHeader.indexOf('수령자휴대폰');
+      const recipientPhoneCol = normalizedHeader.indexOf('수령자전화');
+      if ((mobileCol >= 0 || recipientPhoneCol >= 0) && ws['!ref']) {
         const range = XLSX.utils.decode_range(ws['!ref']);
         for (let r = range.s.r + 1; r <= range.e.r; r++) {
-          for (const c of phoneCols) {
-            const cell = ws[XLSX.utils.encode_cell({ r: r, c: c })];
-            if (cell && cell.t === 'n') { numericPhoneRows.push(r - range.s.r); break; }
-          }
+          const row = rows[r - range.s.r] || [];
+          const chosenCol = mobileCol >= 0 && String(row[mobileCol] == null ? '' : row[mobileCol]).trim() ? mobileCol : recipientPhoneCol;
+          if (chosenCol < 0) continue;
+          const cell = ws[XLSX.utils.encode_cell({ r: r, c: chosenCol })];
+          if (cell && cell.t === 'n') numericPhoneRows.push(r - range.s.r);
         }
       }
       out = { ok: true, rows: rows, sheet: name, numericPhoneRows: numericPhoneRows };

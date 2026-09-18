@@ -136,6 +136,28 @@ test('UI 배선: 직접 검색 — 검색칸 change 는 재렌더하지 않고, 
   assert.ok(/const note = \(!e && l\.searchNote\)/.test(ui) && ui.includes("'<td>' + prod + note + '</td><td>'"), '안내가 상품 셀에 렌더된다');
 });
 
+test('UI 배선: 고객·상품·옵션 원문을 직접 수정하고 다시 검증한다', () => {
+  const ui = read('src/orderimport.js');
+  for (const field of ['buyer', 'phone', 'productName', 'optionText']) assert.ok(ui.includes('data-f="' + field + '"'), field + ' 편집 필드');
+  assert.ok(/if \(f === 'buyer' \|\| f === 'phone'\)[\s\S]{0,500}?C\.oiApplyCustomer\(o/.test(ui), '고객 수정은 주문 전체에 반영');
+  assert.ok(/if \(f === 'productName' \|\| f === 'optionText'\)[\s\S]{0,500}?l\[f\] = el\.value[\s\S]{0,500}?refreshOrder\(o\)/.test(ui), '상품·옵션 수정 뒤 재검증');
+  assert.ok(/if \(f === 'optionText'\) \{ l\.spec\.k = null; l\.spec\.color = null; l\.spec\.itemSize = null; l\.spec\.optOverride = false; \}/.test(ui), '옵션 원문 수정 시 기존 파싱값 초기화');
+});
+
+test('UI 배선: 미등록 사은품을 등록 제외 매핑으로 저장하고 다시 해제할 수 있다', () => {
+  const ui = read('src/orderimport.js');
+  assert.ok(ui.includes('data-act="gift-exclude"'), '미등록 사은품 제외 버튼');
+  assert.ok(/act === 'gift-exclude'[\s\S]{0,700}?exclude: 'gift'[\s\S]{0,700}?await saveMap\(\)/.test(ui), '제외 항목을 매핑표에 저장');
+  assert.ok(/line\.excluded = !!\(line\.gift && entry && C\.oiIsExcludedEntry\(entry\)\)/.test(ui), '저장된 제외 매핑을 줄 상태로 복원');
+  assert.ok(/C\.oiOrderReady\(o\)/.test(ui), '제외 줄만 있는 주문 차단');
+});
+
+test('xls 브리지: 휴대폰이 비면 수령자전화 셀의 숫자형 여부를 검사한다', () => {
+  const xls = read('src/orderimport-xls.js');
+  assert.ok(/수령자전화/.test(xls));
+  assert.ok(/mobileCol/.test(xls) && /recipientPhoneCol/.test(xls) && /chosenCol/.test(xls), '행마다 실제 사용할 연락처 열을 선택');
+});
+
 //  Luna 1R(2026-09-16): 소스 대조만으론 "빈 칸 + Enter 가 이전 검색어로 재검색" 같은 동작 회귀를 못 잡는다 → searchLine 을 잘라 실제로 돌린다.
 function extractFn(src, name) {
   const kw = src.indexOf('function ' + name + '(');
@@ -267,6 +289,18 @@ test('toRunOrder 동작: 서명·사은품 플래그·판매가 0 이 실행 주
   assert.equal(r.sig, C.oiOrderSig(o));
   assert.equal(r.lines[0].spec.gift, true); assert.equal(r.lines[0].spec.price, 0);
   assert.equal(r.lines[1].spec.gift, false); assert.equal(r.lines[1].spec.price, 17000); assert.equal(r.lines[1].master.colorFallback, 'WG');
+});
+
+test('toRunOrder 동작: 등록 제외한 사은품 줄은 실행 페이로드에서 빠진다', () => {
+  const ui = read('src/orderimport.js');
+  const C = require(path.join(ROOT, 'src', 'orderimport-core.js'));
+  const toRunOrder = new Function('C', extractFn(ui, 'toRunOrder') + '\nreturn toRunOrder;')(C);
+  const o = { key: '카페24|59', seller: '카페24', orderNo: '59', market: { name: '카페24', clientJob: '6' }, buyer: '홍', phone: { ok: true, phone: '010-1234-5678' }, clientName: '홍5678/카',
+    lines: [{ productName: '[사은품] 미등록 귀걸이', optionText: '', qty: 1, gift: true, excluded: true },
+            { productName: '피어싱', optionText: '[14K-로즈골드]', qty: 1, gift: false, excluded: false, mapping: { entry: { seq: '8', code: 'D', name: 'M' } }, spec: { k: '14', color: 'PG', itemSize: '', qty: 1, price: 17000, remark: '' } }] };
+  const r = toRunOrder(o);
+  assert.equal(r.lines.length, 1);
+  assert.equal(r.lines[0].master.seq, '8');
 });
 
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
