@@ -303,6 +303,36 @@ test('toRunOrder 동작: 등록 제외한 사은품 줄은 실행 페이로드�
   assert.equal(r.lines[0].master.seq, '8');
 });
 
+//  사장님 지시 2026-09-22: 중복이 아닌 신상 주문은 여러 오류로 체크를 거부하지 않는다 — 경고(warnings)는 표시만, 실행 가능(ready)에 끼지 않는다.
+test('UI 배선: 판정은 oiLineReview 로 issues/warnings 를 나눠 싣고, 경고는 주황색 표시만 하며 ready·기본 체크·전체 체크에 끼지 않는다', () => {
+  const ui = read('src/orderimport.js');
+  assert.ok(/const rv = C\.oiLineReview\(Object\.assign\(\{\}, line, \{ price: sp\.price, qty: sp\.qty \}\), \{ mapping: line\.mapping, parsed: Object\.assign\(\{\}, line\.parsed, \{ k: sp\.k, color: sp\.color, itemSize: sp\.itemSize \}\), form, optOverride: !!sp\.optOverride \}\);\s*line\.issues = rv\.issues; line\.warnings = rv\.warnings;/.test(ui), 'refreshLine 이 두 목록을 싣는다');
+  assert.ok(!/C\.oiLineIssues\(/.test(ui) && !/C\.oiLineWarnings\(/.test(ui), 'UI 는 oiLineReview 하나만 부른다(두 절반을 따로 계산하지 않는다)');
+  assert.ok(/l\.issues\.map\(esc\)\.join\(' · '\)/.test(ui) && /<div class="oi-issue warn">' \+ ico\('warn'\) \+ l\.warnings\.map\(esc\)\.join\(' · '\)/.test(ui), '차단은 빨강(oi-issue), 경고는 주황(oi-issue warn)');
+  assert.ok(/'<tr class="oi-l' \+ \(l\.issues\.length \? ' oi-bad' : l\.warnings\.length \? ' oi-warn' : ''\)/.test(ui), '줄 테두리: 차단 빨강 · 경고 주황');
+  assert.ok(/\.oi-issue\.warn\{color:var\(--oi-warn\)\}/.test(ui) && /tr\.oi-l\.oi-bad td:first-child\{box-shadow:inset 3px 0 0 var\(--oi-err\)\}/.test(ui) && /tr\.oi-o\.warn td:first-child\{box-shadow:inset 3px 0 0 #f0c36d\}/.test(ui), 'CSS');
+  assert.ok(/const hasWarn = \(o\) => C\.oiActiveLines\(o\)\.some\(\(l\) => l\.warnings && l\.warnings\.length\);/.test(ui), '주문장 경고 = 제외하지 않은 줄의 경고');
+  assert.ok(/\(o\.ready \? '' : ' bad'\) \+ \(o\.ready && hasWarn\(o\) \? ' warn' : ''\)/.test(ui), '주문장 행 클래스');
+  //  ready·기본 체크·전체 체크 판정은 그대로(경고가 끼지 않는다) — 사장님 결정: 경고 주문장은 일반 주문장과 같이 기본 체크·전체 체크 포함.
+  assert.ok(/o\.ready = C\.oiOrderReady\(o\);/.test(ui) && !/warnings[^\n]*o\.ready =/.test(ui) && !/o\.ready =[^\n]*warnings/.test(ui), 'ready 는 core 판정 그대로');
+  assert.ok(/if \(o\.checked == null \|\| \(o\.dup\.dup && !wasDup && !o\.ledgered\)\) o\.checked = o\.ready && !o\.dup\.dup;/.test(ui), '기본 체크 규칙 불변');
+  assert.ok(/if \(f === 'chkall'\) \{ S\.orders\.forEach\(\(o\) => \{ if \(o\.dup\.dup\) return; o\.checked = el\.checked && o\.ready; \}\);/.test(ui), '전체 체크 규칙 불변');
+  //  경고는 사람에게 두 번 보인다: 표 위 배너(체크된 경고 주문장 수) + 등록 직전 확인창.
+  assert.ok(/const nWarnChk = S\.orders\.filter\(\(o\) => o\.checked && o\.ready && hasWarn\(o\)\)\.length;/.test(ui), '체크된 경고 주문장 집계');
+  assert.ok(/if \(nWarnChk\) banners\.push\(\{ cls: 'warn', text: '경고 있는 주문장 ' \+ nWarnChk \+ '개가 체크돼 있습니다 — 주황색 경고를 확인하고 등록하세요\.' \}\);/.test(ui), '배너(집계가 0 이 아닐 때만 — 변이 핀), 주황 변형');
+  assert.ok(/if \(nDup\) banners\.push\(\{ cls: 'dup', text: nDupUnchecked === nDup/.test(ui) && /\.oi-banner\.warn\{background:var\(--oi-warn-bg\);color:#7a4b00\}/.test(ui), '중복 배너는 빨강 그대로, 경고 배너 CSS');
+  assert.ok(/const nWarn = targets\.filter\(hasWarn\)\.length;/.test(ui) && /경고 있는 주문장 ' \+ nWarn \+ '개가 포함돼 있습니다\(색상 빈칸·옵션 미해석 등 — 표의 주황색 경고 참고\)/.test(ui), '확인창 경고');
+  assert.ok(/banners\.map\(\(b\) => '<div class="oi-banner ' \+ b\.cls \+ '">' \+ ico\('warn'\) \+ b\.text \+ '<\/div>'\)\.join\(''\)/.test(ui), '배너는 중복·경고 각각 한 줄');
+  //  휴대폰 형식 불가 주문장도 실행되므로 고객 판정을 미리 보인다: 이름 검색 → 재사용, 없으면 휴대폰 빈칸 신규(형식 사유). 휴대폰 검색은 하지 않는다(실행기와 같은 경로).
+  assert.ok(/if \(o\.customer \|\| !o\.market\) continue;/.test(ui) && !/!o\.phone\.ok\) continue;/.test(ui), 'enrich 가 휴대폰 형식 불가 주문장을 건너뛰지 않는다');
+  assert.ok(/if \(!o\.phone\.ok\) \{ o\.customer = \{ mode: 'new_nophone', why: o\.phone\.raw \? 'format' : 'none' \}; progStep\('c'\); continue; \}/.test(ui), '형식 불가면 휴대폰 검색 없이 new_nophone(format/none)');
+  assert.ok(/o\.customer\.why === 'format' \? '신규 등록 · 휴대폰 비움\(형식 불가·숫자 셀 — 번호는 비고에\)' : o\.customer\.why === 'none' \? '신규 등록 · 휴대폰 없음'/.test(ui), '칩 문구가 사유를 말한다(형식/숫자 셀 · 아예 없음)');
+  assert.ok(/why: o\.phone\.raw \? 'format' : 'none'/.test(ui), '번호가 아예 없으면 none');
+  //  Opus 5 P2-2 (2026-09-22): "경고 주문장도 체크 가능" 은 체크박스 disabled 조건에 달려 있다 — 경고가 그 조건에 끼어들면 잡히도록 핀.
+  assert.ok(ui.includes(`<td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'`), '체크박스는 ready 와 실행 중 여부만 본다(경고 무관)');
+  assert.ok(/\(S\.phase === 'enriching' && o\.market\) \? '<span class="oi-skel w1"><\/span>'/.test(ui), '스켈레톤 조건도 phone\.ok 를 보지 않는다');
+});
+
 test('core 는 ISOLATED 에서 globalThis.ubOi, node 에서 module.exports 로 같은 api 를 낸다', () => {
   const core = read('src/orderimport-core.js');
   assert.ok(core.includes('globalThis.ubOi = api;'));

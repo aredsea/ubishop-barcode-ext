@@ -104,8 +104,11 @@ test('oiLinePayload: 스펙 덮어쓰기, 색상 폴백, orgOrderPrice 는 마�
   //  색상 폴백: 마스터 기본 색상이 빈값이면 코드 4번째 토막
   const f2 = Object.assign({}, f, { values: Object.assign({}, f.values, { color: '' }) });
   assert.equal(Object.fromEntries(C.oiLinePayload(f2, master, { qty: 1, price: 82000, remark: '' }).fields).color, 'WG');
-  const f3 = Object.assign({}, f2, { colorOpts: [{ value: '' }, { value: 'PG' }] });
-  assert.ok(C.oiLinePayload(f3, master, { qty: 1, price: 82000, remark: '' }).issues.includes('색상 없음'));
+  //  폴백까지 없으면 색상 빈칸으로 등록한다(2026-09-22 사장님 지시 — 스펙 §4.2: 서버는 color 빈값도 받는다). 셀렉트에 없는 코드는 여전히 issue.
+  const f3 = Object.assign({}, f2, { colorOpts: [{ value: 'PG' }] });   // 빈 옵션이 없는 셀렉트라도 빈 색상은 issue 가 아니다(변이 핀)
+  const p3 = C.oiLinePayload(f3, master, { qty: 1, price: 82000, remark: '' });
+  assert.deepEqual(p3.issues, []); assert.equal(Object.fromEntries(p3.fields).color, '');
+  assert.ok(C.oiLinePayload(f3, master, { color: 'ZZ', qty: 1, price: 82000, remark: '' }).issues.includes('색상 없음: ZZ'));
   //  사이즈 미지정이면 마스터 기본값(문자열 그대로)
   const f4 = Object.assign({}, f, { values: Object.assign({}, f.values, { itemSize: '40+5' }) });
   assert.equal(Object.fromEntries(C.oiLinePayload(f4, master, { qty: 1, price: 42000, remark: '' }).fields).itemSize, '40+5');
@@ -120,12 +123,15 @@ test('oiLinePayload / oiLineIssues: 매핑의 colorFallback(색상 코드)이 �
   const noColor = Object.assign({}, f, { values: Object.assign({}, f.values, { color: '' }) });
   const master = { seq: '7083', code: 'F-AF-Z-XY-ZZ-004E', colorFallback: 'PG' };   // 코드 4번째 토막 XY 는 셀렉트에 있지만 폴백이 우선
   assert.equal(Object.fromEntries(C.oiLinePayload(noColor, master, { qty: 1, price: 1400, remark: '' }).fields).color, 'PG');
-  const bad = { seq: '7083', code: 'F-AF-Z-QQ-ZZ-004E', colorFallback: 'ZZ' };      // 폴백이 셀렉트에 없고 코드 토막도 없음 → 이슈
-  assert.ok(C.oiLinePayload(noColor, bad, { qty: 1, price: 1400, remark: '' }).issues.includes('색상 없음'));
+  const bad = { seq: '7083', code: 'F-AF-Z-QQ-ZZ-004E', colorFallback: 'ZZ' };      // 폴백이 셀렉트에 없고 코드 토막도 없음 → 색상 빈칸(2026-09-22)
+  const pBad = C.oiLinePayload(noColor, bad, { qty: 1, price: 1400, remark: '' });
+  assert.deepEqual(pBad.issues, []); assert.equal(Object.fromEntries(pBad.fields).color, '');
   const line = { market: { suffix: 'a' }, phone: { ok: true }, buyer: 'x', orderNo: '1', price: 1, qty: 1, seller: 's' };
   const form = { kOpts: [{ value: '5', text: '925' }], colorOpts: f.colorOpts, defaults: { color: '' } };
-  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: master }, parsed: C.oiParseOption(''), form }), []);
-  assert.ok(C.oiLineIssues(line, { mapping: { entry: bad }, parsed: C.oiParseOption(''), form }).some((s) => s.startsWith('색상 없음')));
+  assert.deepEqual(C.oiLineReview(line, { mapping: { entry: master }, parsed: C.oiParseOption(''), form }), { issues: [], warnings: [] });
+  //  폴백까지 없으면 2026-09-22 부터 차단이 아니라 경고(색상 빈칸으로 등록 — 사장님 지시).
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: bad }, parsed: C.oiParseOption(''), form }), []);
+  assert.ok(C.oiLineWarnings(line, { mapping: { entry: bad }, parsed: C.oiParseOption(''), form }).some((s) => s.startsWith('색상 없음(마스터 기본값 빈값)')));
 });
 
 test('oiLinePayload: 품위를 바꾸면 kchange 처럼 배열에서 weight/orgOrderPrice/inputPrice 를 다시 뽑는다', () => {

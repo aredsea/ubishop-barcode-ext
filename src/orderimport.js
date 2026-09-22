@@ -77,8 +77,13 @@
     if (sp.price == null) sp.price = line.price;
     if (sp.remark == null || sp.remarkAuto !== false) { sp.remark = C.oiRemark(line.settle, !line.excluded && entry && entry.remarkSuffix); sp.remarkAuto = true; }
     const form = entry && !line.excluded ? S.masters[entry.seq] : null;
-    line.issues = C.oiLineIssues(Object.assign({}, line, { price: sp.price, qty: sp.qty }), { mapping: line.mapping, parsed: Object.assign({}, line.parsed, { k: sp.k, color: sp.color, itemSize: sp.itemSize }), form, optOverride: !!sp.optOverride });
+    //  issues = 차단(체크 불가: 등록 자체가 안 되거나 매칭 문제) · warnings = 경고(표시만, 체크 가능) — 사장님 지시 2026-09-22
+    //  "중복이 아닌 신상 주문은 여러 오류로 체크를 거부하지 말고, 제품 매칭만 제대로 됐으면 등록할 수 있게".
+    const rv = C.oiLineReview(Object.assign({}, line, { price: sp.price, qty: sp.qty }), { mapping: line.mapping, parsed: Object.assign({}, line.parsed, { k: sp.k, color: sp.color, itemSize: sp.itemSize }), form, optOverride: !!sp.optOverride });
+    line.issues = rv.issues; line.warnings = rv.warnings;
   }
+  //  주문장에 경고가 있나 — 등록 제외한 사은품 줄은 세지 않는다.
+  const hasWarn = (o) => C.oiActiveLines(o).some((l) => l.warnings && l.warnings.length);
   function refreshOrder(o) {
     o.lines.forEach(refreshLine);
     o.ready = C.oiOrderReady(o);
@@ -121,12 +126,14 @@
       progStep('m');
     }
     for (const o of S.orders) {
-      if (o.customer || !o.market || !o.phone.ok) continue;
+      if (o.customer || !o.market) continue;
       if (S.running) return;
       try {
         const byName = await E.searchClient('clientName', o.clientName);
         const exact = byName.find((c) => c.name === o.clientName);
         if (exact) { o.customer = { mode: 'reuse', seq: exact.seq }; progStep('c'); continue; }
+        //  형식 불가 번호(경고)는 실행기가 휴대폰 검색 없이 빈칸+비고로 등록한다 — 판정도 같은 경로(2026-09-22).
+        if (!o.phone.ok) { o.customer = { mode: 'new_nophone', why: o.phone.raw ? 'format' : 'none' }; progStep('c'); continue; }
         if (S.running) return;
         const byPhone = await E.searchClient('phone', o.phone.phone);
         o.customer = { mode: byPhone.some((c) => c.phone === o.phone.phone) ? 'new_nophone' : 'new' };
@@ -172,8 +179,10 @@
       const targets = S.orders.filter((o) => o.checked && o.ready);
       if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
       const nDup = targets.filter((o) => o.dup && o.dup.dup).length;
+      const nWarn = targets.filter(hasWarn).length;
       if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + C.oiActiveLines(o).length, 0) + '줄)을 유비샵에 등록합니다.'
         + (nDup ? '\n※ 이미 등록된 것과 같은 주문장 ' + nDup + '개가 포함돼 있습니다(중복 등록).' : '')
+        + (nWarn ? '\n※ 경고 있는 주문장 ' + nWarn + '개가 포함돼 있습니다(색상 빈칸·옵션 미해석 등 — 표의 주황색 경고 참고).' : '')
         + '\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
       jobs = targets.map(toRunOrder);                          // confirm 한 집합을 그대로 실행한다 — 조회 대기 뒤 다시 거르지 않는다(Fable F3 Nit)
       while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
@@ -271,6 +280,7 @@
 #${PANEL_ID} .oi-b{flex:1;overflow:auto;padding:0 16px 16px}
 #${PANEL_ID} .oi-empty{padding:48px 16px;text-align:center;color:var(--ub-sub)}
 #${PANEL_ID} .oi-banner{display:flex;align-items:center;gap:8px;margin-top:12px;padding:8px 12px;border-radius:8px;background:var(--oi-err-bg);color:#9f1d17;font-weight:600}
+#${PANEL_ID} .oi-banner.warn{background:var(--oi-warn-bg);color:#7a4b00}
 #${PANEL_ID} table.oi-t{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px;margin-top:12px}
 #${PANEL_ID} table.oi-t th{position:sticky;top:0;z-index:1;background:var(--ub-bg2);color:var(--ub-sub);font-weight:600;font-size:12px;text-align:left;padding:8px 8px;border-bottom:1px solid var(--ub-line);white-space:nowrap}
 #${PANEL_ID} table.oi-t td{padding:8px 8px;border-bottom:1px solid var(--ub-line);vertical-align:top}
@@ -278,6 +288,7 @@
 #${PANEL_ID} col.c-chk{width:36px}#${PANEL_ID} col.c-k{width:64px}#${PANEL_ID} col.c-color{width:72px}#${PANEL_ID} col.c-size{width:64px}#${PANEL_ID} col.c-qty{width:56px}#${PANEL_ID} col.c-price{width:96px}#${PANEL_ID} col.c-remark{width:180px}#${PANEL_ID} col.c-prod{width:34%}
 #${PANEL_ID} tr.oi-o td{background:var(--ub-bg2);padding-top:10px;padding-bottom:10px}
 #${PANEL_ID} tr.oi-o td:first-child{box-shadow:inset 3px 0 0 var(--ub-on)}
+#${PANEL_ID} tr.oi-o.warn td:first-child{box-shadow:inset 3px 0 0 #f0c36d}
 #${PANEL_ID} tr.oi-o.bad td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
 #${PANEL_ID} tr.oi-o.dup td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
 #${PANEL_ID} tr.oi-o.res-done td:first-child{box-shadow:inset 3px 0 0 var(--oi-ok)}
@@ -288,6 +299,7 @@
 #${PANEL_ID} .oi-cust .oi-muted{font-weight:400;font-variant-numeric:tabular-nums}
 #${PANEL_ID} tr.oi-l td:first-child{box-shadow:inset 3px 0 0 transparent}
 #${PANEL_ID} tr.oi-l.oi-warn td:first-child{box-shadow:inset 3px 0 0 #f0c36d}
+#${PANEL_ID} tr.oi-l.oi-bad td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
 #${PANEL_ID} tr.oi-l.oi-cur td{background:#fffbf1}
 #${PANEL_ID} .oi-name{font-weight:500}
 #${PANEL_ID} .oi-opt{color:var(--ub-sub);font-size:12px;margin-top:1px}
@@ -295,6 +307,7 @@
 #${PANEL_ID} .oi-raw .oi-in{height:26px}
 #${PANEL_ID} .oi-source{display:block;color:var(--ub-sub);font-size:11px;margin-top:3px;font-weight:400}
 #${PANEL_ID} .oi-issue{display:inline-flex;align-items:center;gap:4px;color:var(--oi-err);font-weight:600;font-size:12px;margin-top:3px}
+#${PANEL_ID} .oi-issue.warn{color:var(--oi-warn)}
 #${PANEL_ID} .oi-issue svg.oi-ico{width:13px;height:13px}
 #${PANEL_ID} .oi-muted{color:var(--ub-sub)}
 #${PANEL_ID} .oi-note{color:var(--ub-sub);font-size:12px;margin-top:4px}
@@ -356,12 +369,12 @@
   }
   //  고객 처리 칩. 조회 전(enrich 중)은 스켈레톤 — 조회 대상이 아니면(마켓 없음·휴대폰 불량) 안내만.
   function custChip(o) {
-    if (!o.customer) return (S.phase === 'enriching' && o.market && o.phone.ok) ? '<span class="oi-skel w1"></span>' : '<span class="oi-muted">조회 전</span>';
+    if (!o.customer) return (S.phase === 'enriching' && o.market) ? '<span class="oi-skel w1"></span>' : '<span class="oi-muted">조회 전</span>';
     const m = o.customer.mode;
     if (m === 'reuse') return chip('reuse', '재사용 #' + o.customer.seq);
     const ref = (o.market && C.oiClientJob(o) !== String(o.market.clientJob)) ? ' · 마켓 지인소개(정산 차 60%↑)' : '';
     if (m === 'new') return chip('new', '신규 등록' + ref);
-    if (m === 'new_nophone') return chip('nophone', '신규 등록 · 휴대폰 비움(다른 고객이 사용 중)' + ref);
+    if (m === 'new_nophone') return chip('nophone', (o.customer.why === 'format' ? '신규 등록 · 휴대폰 비움(형식 불가·숫자 셀 — 번호는 비고에)' : o.customer.why === 'none' ? '신규 등록 · 휴대폰 없음' : '신규 등록 · 휴대폰 비움(다른 고객이 사용 중)') + ref);
     return chip('fail', '조회 실패', 'warn');
   }
   function lineRow(o, oi, l, li) {
@@ -379,11 +392,13 @@
         + '</select><input class="oi-in q" placeholder="직접 검색(공백 없이)" data-f="q" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.q || '') + '"' + dis + '><button class="oi-btn sm icon" aria-label="검색" title="검색" data-act="search" data-o="' + oi + '" data-l="' + li + '"' + dis + '>' + ico('search') + '</button>'
         + (l.gift ? '<button class="oi-btn sm" data-act="gift-exclude" data-o="' + oi + '" data-l="' + li + '"' + dis + '>사은품 등록 제외</button>' : '') + '</div>';
     const inp = (f, v, cls) => '<input class="oi-in ' + (cls || 'sm') + '" data-f="' + f + '" data-o="' + oi + '" data-l="' + li + '" value="' + esc(v == null ? '' : v) + '"' + dis + '>';
-    const issues = l.issues.length ? '<div class="oi-issue">' + ico('warn') + l.issues.map(esc).join(' · ') + '</div>' : '';
+    //  차단은 빨강(oi-issue), 경고는 주황(oi-issue warn) — 경고는 체크를 막지 않으니 색으로 구분한다(2026-09-22).
+    const issues = (l.issues.length ? '<div class="oi-issue">' + ico('warn') + l.issues.map(esc).join(' · ') + '</div>' : '')
+      + (l.warnings.length ? '<div class="oi-issue warn">' + ico('warn') + l.warnings.map(esc).join(' · ') + '</div>' : '');
     const note = (!e && l.searchNote) ? '<div class="oi-note">' + esc(l.searchNote) + '</div>' : '';
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
     const rawDis = l.excluded ? ' disabled' : dis;
-    return '<tr class="oi-l' + (l.issues.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + issues + '</td>'
+    return '<tr class="oi-l' + (l.issues.length ? ' oi-bad' : l.warnings.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + issues + '</td>'
       + '<td>' + prod + note + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
       + '<td>' + inp('qty', l.spec.qty, 'sm num') + '</td><td>' + inp('price', Number.isInteger(l.spec.price) ? C.oiComma(l.spec.price) : l.spec.price, 'sm num') + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
   }
@@ -407,7 +422,7 @@
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
     //  이번 실행의 결과가 있으면 그 칩만 — 방금 등록한 주문장이 장부에 오르며 '이미 등록' 으로도 보이는 중복 표시를 막는다.
     const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : '') + (o.ledgered ? '' : ' ' + prevChip(o)) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
-    return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.dup && o.dup.dup ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
+    return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.ready && hasWarn(o) ? ' warn' : '') + (o.dup && o.dup.dup ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
       + '<td><span class="oi-key"><span class="seller">' + esc(o.seller) + '</span>' + esc(o.orderNo) + '</span></td><td><span class="oi-cust"><input class="oi-in" aria-label="수령자 이름" data-f="buyer" data-o="' + oi + '" value="' + esc(o.buyer) + '"' + (S.running ? ' disabled' : '') + '><input class="oi-in oi-sub-in" aria-label="연락처" data-f="phone" data-o="' + oi + '" value="' + esc(o.phone.phone || o.phone.raw) + '"' + (S.running ? ' disabled' : '') + '>' + (o.phoneSource === '수령자전화' ? '<small class="oi-source">수령자전화 자동 사용</small>' : '') + '</span></td>'
       + '<td colspan="7">' + chips + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
   }
@@ -454,8 +469,9 @@
     const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.ledgered).length, nDupUnchecked = S.orders.filter((o) => o.dup && o.dup.dup && !o.ledgered && !o.checked).length;
     //  머리글 체크 상태는 '중복 아닌 실행 가능' 주문장만 센다 — 손으로 켠 중복이 섞이면 양방향으로 틀린다(Opus O2 Nit-C).
     const nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length, nChkAll = S.orders.filter((o) => o.checked && o.ready && !(o.dup && o.dup.dup)).length;
+    const nWarnChk = S.orders.filter((o) => o.checked && o.ready && hasWarn(o)).length;   // 경고는 체크를 막지 않으니 체크된 것을 센다(2026-09-22)
     const nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
-    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nAll, nChkAll, nLines };
+    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nAll, nChkAll, nWarnChk, nLines };
   }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
@@ -475,13 +491,15 @@
   //  표·결과만 다시 그린다(툴바 제외). 배너 문구는 실제 체크 상태를 말한다(Opus O1 P2-5 — 체크된 채 남은 중복이 있으면 "풀어 두었다" 고 하지 않는다).
   function renderBody() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
-    const { nOrd, nDup, nDupUnchecked, nAll, nChkAll } = counts();
+    const { nOrd, nDup, nDupUnchecked, nAll, nChkAll, nWarnChk } = counts();
     const done = S.results.filter((r) => r.status === 'done').length, skipped = S.results.filter((r) => r.status !== 'done').length;
-    const banner = !nDup ? '' : (nDupUnchecked === nDup
+    const banners = [];   // 중복은 빨강(dup), 경고는 주황(warn) — 줄의 경고 색과 맞춘다
+    if (nDup) banners.push({ cls: 'dup', text: nDupUnchecked === nDup
       ? '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.'
-      : '이미 등록된 것과 같은 주문장 ' + nDup + '개 중 ' + (nDup - nDupUnchecked) + '개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다.');
+      : '이미 등록된 것과 같은 주문장 ' + nDup + '개 중 ' + (nDup - nDupUnchecked) + '개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다.' });
+    if (nWarnChk) banners.push({ cls: 'warn', text: '경고 있는 주문장 ' + nWarnChk + '개가 체크돼 있습니다 — 주황색 경고를 확인하고 등록하세요.' });
     p.querySelector('.oi-b').innerHTML =
-      (banner ? '<div class="oi-banner">' + ico('warn') + banner + '</div>' : '')
+      banners.map((b) => '<div class="oi-banner ' + b.cls + '">' + ico('warn') + b.text + '</div>').join('')
       + (nOrd ? '<table class="oi-t"><colgroup><col class="c-chk"><col><col><col class="c-prod"><col class="c-k"><col class="c-color"><col class="c-size"><col class="c-qty"><col class="c-price"><col class="c-remark"></colgroup>'
         + '<thead><tr><th><input type="checkbox" class="oi-chk" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제(중복 제외)"' + (nAll && nChkAll === nAll ? ' checked' : '') + (nAll && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th class="num">수량</th><th class="num">판매가</th><th>비고</th></tr></thead><tbody>'
         + S.orders.map(orderRow).join('') + '</tbody></table>' : (S.phase === 'reading' ? '' : '<div class="oi-empty">파일을 선택하면 주문장 검토 표가 여기에 뜹니다.</div>'))

@@ -51,7 +51,7 @@ function makeErp(opts) {
       if (opts.phoneDup && phone) { if (opts.phoneDupCreates) srv.clients.push({ seq: '777', name, phone: '' }); return { ok: false, msg: '휴대폰이 전화번호와 중복인 고객이 되었습니다.\\n\\n다시 입력하세요!', client: null }; }
       const c = { seq: '123784', name, phone }; srv.clients.push(c); return { ok: true, msg: '', client: c }; },
     //  실제 서버처럼: tradeJun 을 **명시**해 GET 하면 이미 완료된 주문장의 줄도 계속 보인다(srv.closed). 세션의 열린 주문장은 srv.tradeJun/srv.rows.
-    async getWriteForm(p) { calls.push(['getWriteForm', p.tradeJun, p.master, p.client]); if (opts.foreignRowAt != null && !srv.injected && srv.rows.length === opts.foreignRowAt) { srv.injected = true; srv.rows.push(Object.assign(row('999999', srv.tradeJun || '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); } const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; const tj = closed ? p.tradeJun : srv.tradeJun; const rows = closed ? closed.slice() : srv.rows.slice(); return { values: formValues({ tradeJun: tj, client: p.client, master: p.master }), missing: [], kOpts: KOPTS, colorOpts: COLOR, arrays: { arr_weight: [0, 0], arr_salePrice: [19000, 0], arr_inputSupply: [4500, 0] }, rows, defaults: { k: '5', color: 'WG', itemSize: '11' } }; },
+    async getWriteForm(p) { calls.push(['getWriteForm', p.tradeJun, p.master, p.client]); if (opts.foreignRowAt != null && !srv.injected && srv.rows.length === opts.foreignRowAt) { srv.injected = true; srv.rows.push(Object.assign(row('999999', srv.tradeJun || '141236', '40', ''), { code: 'T-EF-I-WG-ZZ-00H8' })); } const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; const tj = closed ? p.tradeJun : srv.tradeJun; const rows = closed ? closed.slice() : srv.rows.slice(); const color = opts.emptyColor ? '' : 'WG'; return { values: formValues({ tradeJun: tj, client: p.client, master: p.master, color }), missing: [], kOpts: KOPTS, colorOpts: opts.emptyColor ? COLOR.filter((c) => c.value !== 'WG') : COLOR, arrays: { arr_weight: [0, 0], arr_salePrice: [19000, 0], arr_inputSupply: [4500, 0] }, rows, defaults: { k: '5', color, itemSize: '11' } }; },
     async postLine(fields) { calls.push(['postLine', Object.fromEntries(fields)]); if (opts.lineFailsAt != null && srv.rows.length === opts.lineFailsAt) return { ok: false, msg: '실패', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; if (!srv.tradeJun) srv.tradeJun = '141236'; const f = Object.fromEntries(fields); srv.rows.push(row(String(++srv.seqNo), srv.tradeJun, f.itemSize, f.shopRemark)); return { ok: true, msg: '', tradeJun: srv.tradeJun, rows: srv.rows.slice() }; },
     async getForm10(p) { calls.push(['getForm10', p.tradeJun]); const closed = p.tradeJun && srv.closed && srv.closed[p.tradeJun]; return { values: form10Values({ tradeJun: closed ? p.tradeJun : srv.tradeJun, client: p.client }), missing: opts.form10Missing || [], rows: closed ? closed.slice() : srv.rows.slice() }; },
     async postComplete(fields) { calls.push(['postComplete', Object.fromEntries(fields)]); if (opts.completeFails) return { ok: false, msg: '완료 실패' }; srv.closed = srv.closed || {}; srv.closed[srv.tradeJun] = srv.rows.slice(); srv.tradeJun = ''; srv.rows = []; return { ok: true, msg: '' }; },
@@ -96,6 +96,55 @@ test('예물고객 충돌: 다른 이름이 같은 휴대폰이면 휴대폰 빈
   assert.equal(reg[2], '', '휴대폰이 비어야 한다'); assert.equal(reg[3], '18');
   assert.equal(reg[4], '106-0000-2567', '비고에 번호(사장님 규칙 2026-09-16)');
   assert.equal(r.client.mode, 'new_nophone');
+});
+//  사장님 지시 2026-09-22: 휴대폰 형식 불가(국가코드 등)는 경고라 실행까지 온다 → 휴대폰 빈칸 + 원문 번호를 고객 비고에(2026-09-16 규칙과 같은 자리).
+test('휴대폰 형식 불가: 휴대폰 빈칸·원문 번호는 비고로 등록하고(휴대폰 검색은 건너뜀) 줄 등록까지 진행', async () => {
+  const erp = makeErp();
+  const o = order();
+  o.phone = C.oiNormPhone('+82 10-0000-2567');
+  assert.equal(o.phone.ok, false);
+  const r = await C.oiRunOrder(o, erp, hooks);
+  assert.equal(r.status, 'done');
+  const reg = erp.calls.find((c) => c[0] === 'registerClient');
+  assert.equal(reg[1], '차카타2567/아'); assert.equal(reg[2], '', '휴대폰이 비어야 한다');
+  assert.equal(reg[4], '+82 10-0000-2567', '원문 번호를 비고에');
+  assert.ok(!erp.calls.some((c) => c[0] === 'searchClient' && c[1] === 'phone'), '빈 휴대폰으로 검색하지 않는다');
+  assert.equal(r.client.mode, 'new_nophone');
+  assert.equal(erp.calls.filter((c) => c[0] === 'postLine').length, 2);
+});
+//  Opus 5 P2-1 (2026-09-22): 숫자 셀(앞 0 소실)은 oiParseRows 가 ok=false 로 내리므로 실행기는 형식 불가와 같이 빈칸 + 원문 숫자를 비고에 싣는다.
+test('숫자 셀 번호: 파일에서 온 그대로(ok=false) 실행하면 휴대폰 빈칸·원문 숫자는 비고', async () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['아몬즈', '2178934182592088', 'F-퓨어컷팅(실버)R', '[925-17호]', 17000, 12033, '차카타', 1060000256]];
+  const parsed = C.oiGroupOrders(C.oiParseRows(rows, { numericPhoneRows: [1] }).lines)[0];
+  const erp = makeErp();
+  const o = order([{ master: MASTER, spec: { k: '925', color: null, itemSize: '17', qty: 1, price: 17000, remark: '' } }]);
+  o.phone = parsed.phone; o.clientName = parsed.clientName;
+  assert.equal(o.clientName, '차카타0256/아');
+  const r = await C.oiRunOrder(o, erp, hooks);
+  assert.equal(r.status, 'done', r.reason);
+  const reg = erp.calls.find((c) => c[0] === 'registerClient');
+  assert.equal(reg[2], ''); assert.equal(reg[4], '1060000256');
+  assert.ok(!erp.calls.some((c) => c[0] === 'searchClient' && c[1] === 'phone'));
+});
+test('휴대폰이 아예 비면 비고도 비운다', async () => {
+  const erp = makeErp();
+  const o = order();
+  o.phone = C.oiNormPhone('');
+  const r = await C.oiRunOrder(o, erp, hooks);
+  assert.equal(r.status, 'done');
+  const reg = erp.calls.find((c) => c[0] === 'registerClient');
+  assert.equal(reg[2], ''); assert.equal(reg[4], '');
+});
+//  사장님 지시 2026-09-22: 마스터 기본 색상이 비고 폴백도 없으면 색상 빈칸으로 등록한다(스펙 §4.2 — 서버는 color 빈값도 받았다).
+test('색상 폴백 없음: color 빈칸으로 POST 해 완료까지 간다', async () => {
+  const erp = makeErp({ emptyColor: true });   // 폼 기본 색상 '' + 셀렉트에 WG 없음 → 코드 토막 WG 폴백도 실패
+  const o = order([{ master: MASTER, spec: { k: '925', color: null, itemSize: '', qty: 1, price: 17000, remark: '' } }]);   // 가격은 스텁 행(17,000)과 맞춘다
+  const r = await C.oiRunOrder(o, erp, hooks);
+  assert.equal(r.status, 'done', r.reason);
+  const post = erp.calls.find((c) => c[0] === 'postLine')[1];
+  assert.equal(post.color, '');
+  assert.equal(post.master, '7083');
 });
 test('정상 등록은 비고가 비어 있고 휴대폰이 실린다', async () => {
   const erp = makeErp();

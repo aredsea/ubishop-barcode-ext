@@ -86,18 +86,51 @@ test('oiGroupOrders: 같은 주문장 안에서 수령자나 휴대폰이 첫 �
     ['쿠팡', 'O1', 'D', '', 4000, 400, '홍길동', '010-9999-0000']];
   const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
   assert.equal(g.length, 1);
+  //  2026-09-22 사장님 지시로 '수령자 불일치' 는 차단(issues)이 아니라 경고(warnings) — 체크는 가능, 표시만.
   const iss = (l) => C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
+  const wrn = (l) => C.oiLineWarnings(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
   assert.deepEqual(iss(g[0].lines[0]), []); assert.deepEqual(iss(g[0].lines[1]), []);
-  assert.ok(iss(g[0].lines[2]).some((s) => s.startsWith('수령자 불일치')));
-  assert.ok(iss(g[0].lines[3]).some((s) => s.startsWith('수령자 불일치')));
+  assert.deepEqual(wrn(g[0].lines[0]), []); assert.deepEqual(wrn(g[0].lines[1]), []);
+  assert.deepEqual(iss(g[0].lines[2]), []); assert.deepEqual(iss(g[0].lines[3]), []);
+  assert.ok(wrn(g[0].lines[2]).some((s) => s.startsWith('수령자 불일치')));
+  assert.ok(wrn(g[0].lines[3]).some((s) => s.startsWith('수령자 불일치')));
 });
 
 //  Terra 4R P2 (2026-09-15): 미해석 토큰(3푼)을 사람이 보정해도 영구 차단됐다.
-test('oiLineIssues: optOverride 면 미해석 토큰 이슈를 내지 않는다', () => {
+//  2026-09-22 사장님 지시: 미해석 토큰은 애초에 차단이 아니라 경고 — optOverride 면 경고도 내지 않는다.
+test('oiLineWarnings: 미해석 토큰은 경고이고 optOverride 면 그 경고도 내지 않는다', () => {
   const line = C.oiParseRows(ROWS_B).lines[0];
   const parsed = C.oiParseOption('[14K-로즈골드-3푼-45cm]');
-  assert.ok(C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed }).some((s) => s.startsWith('옵션 해석 불가')));
-  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed, optOverride: true }), []);
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed }), []);
+  assert.ok(C.oiLineWarnings(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed }).some((s) => s.startsWith('옵션 해석 불가')));
+  assert.deepEqual(C.oiLineWarnings(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed, optOverride: true }), []);
+});
+
+//  사장님 지시 2026-09-22: "중복이 아닌 신상 주문은 여러 오류로 체크를 거부하지 말고, 제품 매칭만 제대로 됐으면 등록할 수 있게".
+//  → 판정을 둘로 나눈다. issues = 등록 자체가 안 되거나 매칭 문제(체크 불가), warnings = 표시만(체크 가능).
+test('oiLineReview: 차단(issues)과 경고(warnings)를 나눈다 — 경고만 있는 줄은 issues 가 비어 실행 가능', () => {
+  const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
+  const rows = [H, ['쿠팡', '1103109837088', '헤링본 소가죽 팔찌', '', 25000, 20000, '송지영', '+82 10-1687-6587']];
+  const line = C.oiParseRows(rows).lines[0];
+  assert.equal(line.phone.ok, false, '국가코드 번호는 형식 불가');
+  const entry = { seq: '7083', code: 'F-RF-I-QQ-PA-00F6' };            // 코드 4번째 토막 QQ 는 색상 셀렉트에 없음 → 폴백 없음
+  const form = { kOpts: [{ value: '5', text: '925' }], colorOpts: [{ value: '' }, { value: 'WG' }], defaults: { color: '' } };
+  const r = C.oiLineReview(line, { mapping: { entry }, parsed: C.oiParseOption('[각인:JH]'), form });
+  assert.deepEqual(r.issues, []);
+  assert.ok(r.warnings.some((s) => s.startsWith('색상 없음(마스터 기본값 빈값)')), '색상 빈칸 등록 경고');
+  assert.ok(r.warnings.some((s) => s.startsWith('옵션 해석 불가: 각인:JH')));
+  assert.ok(r.warnings.some((s) => s.startsWith('휴대폰 형식: +82 10-1687-6587')));
+  assert.equal(r.warnings.length, 3);
+  //  같은 줄에 매칭 문제가 있으면 issues — 경고와 무관하게 차단
+  assert.deepEqual(C.oiLineReview(line, { mapping: null, parsed: C.oiParseOption('') }).issues, ['상품 미매칭']);
+  const kBad = C.oiLineReview(line, { mapping: { entry }, parsed: C.oiParseOption('[14K-옐로우골드]'), form });
+  assert.ok(kBad.issues.some((s) => s.startsWith('품위 옵션 없음: 14')), '그 마스터에 없는 품위는 매칭 문제 → 차단');
+  assert.ok(kBad.issues.some((s) => s.startsWith('색상 없음: YG')), '셀렉트에 없는 색상 코드 → 차단');
+  //  제외한 사은품 줄은 둘 다 비어 있다
+  assert.deepEqual(C.oiLineReview({ gift: true, excluded: true }, null), { issues: [], warnings: [] });
+  //  oiLineIssues / oiLineWarnings 는 같은 판정의 두 절반
+  assert.deepEqual(C.oiLineIssues(line, { mapping: { entry }, parsed: C.oiParseOption(''), form }), []);
+  assert.equal(C.oiLineWarnings(line, { mapping: { entry }, parsed: C.oiParseOption(''), form }).length, 2);
 });
 
 //  Terra 4R P2 (2026-09-15): 코드표 밖 판매처를 세션에서 보정할 길이 없었다(스펙 §2.3 약속 항목).
@@ -153,6 +186,15 @@ test('사은품 제외 매핑은 유효하며 해당 줄 문제와 실행 대상
   assert.deepEqual(C.oiActiveLines({ lines: [main, gift] }), [main]);
   assert.equal(C.oiOrderReady({ lines: [main, gift], market: C.oiMarket('GS샵'), phone: C.oiNormPhone('010-1234-5678') }), true);
   assert.equal(C.oiOrderReady({ lines: [gift], market: C.oiMarket('GS샵'), phone: C.oiNormPhone('010-1234-5678') }), false, '제외 줄만 있는 주문은 실행하지 않는다');
+});
+
+//  사장님 지시 2026-09-22: 휴대폰 형식은 경고라 실행을 막지 않는다(휴대폰 빈칸 + 번호는 비고로 등록). 차단은 줄의 issues 와 판매처뿐.
+test('oiOrderReady: 휴대폰 형식 불가·경고만 있는 주문장은 실행 가능, 판매처 없음·issues 있는 줄은 불가', () => {
+  const clean = { issues: [], warnings: ['휴대폰 형식: +82 10-1234-5678 — 휴대폰 빈칸으로 등록, 번호는 고객 비고에'] };
+  assert.equal(C.oiOrderReady({ lines: [clean], market: C.oiMarket('쿠팡'), phone: C.oiNormPhone('+82 10-1234-5678') }), true);
+  assert.equal(C.oiOrderReady({ lines: [clean], market: C.oiMarket('쿠팡'), phone: C.oiNormPhone('') }), true, '휴대폰이 아예 비어도 경고일 뿐');
+  assert.equal(C.oiOrderReady({ lines: [clean], market: null, phone: C.oiNormPhone('010-1234-5678') }), false, '판매처 없으면 고객명을 못 만든다');
+  assert.equal(C.oiOrderReady({ lines: [{ issues: ['상품 미매칭'], warnings: [] }], market: C.oiMarket('쿠팡'), phone: C.oiNormPhone('010-1234-5678') }), false);
 });
 
 //  Terra 9R P1 (2026-09-15): 주문폼 목록은 기본 pageSize 20 이라 21줄부터 행 수 대조가 깨진다 → 쓰기 전에 막는다.
@@ -226,9 +268,50 @@ test('oiParseRows: 숫자형 휴대폰 셀(meta.numericPhoneRows)은 검토 대�
     ['쿠팡', '2', 'B', '', 1000, 100, '김철수', '010-2222-3333']];
   const r = C.oiParseRows(rows, { numericPhoneRows: [1] });
   assert.equal(r.lines[0].phoneNumericCell, true); assert.equal(r.lines[1].phoneNumericCell, false);
-  const iss = C.oiLineIssues(r.lines[0], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
-  assert.ok(iss.some((s) => s.startsWith('휴대폰 숫자 셀')));
-  assert.deepEqual(C.oiLineIssues(r.lines[1], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }), []);
+  //  2026-09-22 사장님 지시로 경고(warnings) — 체크는 막지 않는다.
+  const res = { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') };
+  assert.deepEqual(C.oiLineIssues(r.lines[0], res), []);
+  const w = C.oiLineWarnings(r.lines[0], res);
+  assert.equal(w.length, 1, '숫자 셀 경고 하나만(형식 경고를 겹쳐 내지 않는다)');
+  assert.ok(w[0].startsWith('휴대폰 숫자 셀'));
+  assert.ok(w[0].includes('휴대폰 빈칸으로 등록') && w[0].includes('1065783269') && w[0].includes('비고'), '등록될 결과를 문구에 적는다(Opus P2-1)');
+  //  Opus 5 P2-1 (2026-09-22): 실행되면 앞 0 이 사라진 번호(106-578-3269)가 휴대폰 칸에 등록됐다 → 숫자 셀은 믿지 않는다.
+  //  휴대폰 빈칸(ok=false) + 원문 숫자는 raw 로 남겨 고객 비고에 싣는다(형식 불가와 같은 경로). 뒤 4자리는 그대로라 고객명은 유지.
+  assert.equal(r.lines[0].phone.ok, false); assert.equal(r.lines[0].phone.phone, '');
+  assert.equal(r.lines[0].phone.raw, '1065783269'); assert.equal(r.lines[0].phone.last4, '3269');
+  assert.equal(C.oiGroupOrders(r.lines)[0].clientName, '홍길동3269/쿠');
+  assert.deepEqual(C.oiLineIssues(r.lines[1], res), []);
+  assert.deepEqual(C.oiLineWarnings(r.lines[1], res), []);
+  assert.equal(r.lines[1].phone.phone, '010-2222-3333', '텍스트 셀은 그대로 신뢰');
+  //  연락처 칸에서 고치면(oiApplyCustomer) 신뢰 번호가 되고 숫자 셀 표시도 사라진다.
+  const g = C.oiGroupOrders(r.lines)[0];
+  C.oiApplyCustomer(g, '홍길동', '010-6578-3269');
+  assert.equal(g.phone.ok, true); assert.equal(g.lines[0].phoneNumericCell, false);
+  assert.deepEqual(C.oiLineWarnings(g.lines[0], res), []);
+});
+
+//  Opus 5 O2 Nit (2026-09-22): 숫자 셀 두 줄은 둘 다 phone '' 라 번호가 달라도 수령자 불일치가 안 떴다 → 숫자 셀끼리는 원문(raw)으로 가른다.
+test('oiGroupOrders: 숫자 셀 두 줄의 번호가 다르면 수령자 불일치, 같으면 아니다', () => {
+  const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
+  const diff = C.oiGroupOrders(C.oiParseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', 1011112222], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', 1033334444]], { numericPhoneRows: [1, 2] }).lines);
+  assert.equal(diff[0].lines[1].groupMismatch, true);
+  const same = C.oiGroupOrders(C.oiParseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', 1011112222], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', 1011112222]], { numericPhoneRows: [1, 2] }).lines);
+  assert.equal(same[0].lines[1].groupMismatch, false);
+  const intl = C.oiGroupOrders(C.oiParseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', '+82 10-1111-2222'], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', '+82 10-1111-2222']]).lines);
+  assert.equal(intl[0].lines[1].groupMismatch, false, '형식 불가라도 원문이 같으면 불일치가 아니다');
+});
+
+//  Opus 5 Nit-1·Nit-2 (2026-09-22): 문구가 결과를 정확히 말해야 한다 — 휴대폰이 아예 비면 비고에 실을 번호도 없다 · 수령자 불일치는 첫 줄 수령자로 등록된다.
+test('oiLineWarnings: 휴대폰이 아예 비면 "비고에" 라고 하지 않고, 수령자 불일치는 등록 결과를 말한다', () => {
+  const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
+    ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', ''],
+    ['쿠팡', 'O1', 'B', '', 2000, 200, '김철수', '']];
+  const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
+  const res = { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') };
+  const w0 = C.oiLineWarnings(g[0].lines[0], res);
+  assert.equal(w0.length, 1); assert.ok(w0[0].startsWith('휴대폰 없음') && w0[0].includes('빈칸으로 등록') && !w0[0].includes('비고'));
+  const w1 = C.oiLineWarnings(g[0].lines[1], res);
+  assert.ok(w1.some((s) => s.startsWith('수령자 불일치') && s.includes('첫 줄 수령자(홍길동)로 등록')));
 });
 
 //  Opus 5 P2 (2026-09-15): 12자리는 무조건 4-4-4, 11자리는 3-4-4 로 재조립해 '+82 10-…'·'0505-123-4567' 이 다른 번호 문자열이 됐다.
@@ -347,10 +430,12 @@ test('oiLineIssues: 미매칭·옵션 미해석·판매처 미등록·판매가 
   const ok = C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption(line.optionText) });
   assert.deepEqual(ok, []);
   const bad = Object.assign({}, line, { market: null, price: null });
-  const issues = C.oiLineIssues(bad, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('[3푼]') });
+  const badRes = { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('[3푼]') };
+  const issues = C.oiLineIssues(bad, badRes);
   assert.ok(issues.some((s) => s.startsWith('판매처 미등록')));
   assert.ok(issues.includes('판매가 없음'));
-  assert.ok(issues.some((s) => s.startsWith('옵션 해석 불가: 3푼')));
+  assert.ok(!issues.some((s) => s.startsWith('옵션 해석 불가')), '미해석 토큰은 차단이 아니다(2026-09-22)');
+  assert.ok(C.oiLineWarnings(bad, badRes).some((s) => s.startsWith('옵션 해석 불가: 3푼')));
   const form = { kOpts: [{ value: '5', text: '925' }], colorOpts: [{ value: 'WG' }], defaults: { color: '' } };
   const kIssue = C.oiLineIssues(line, { mapping: { entry: { seq: '7083', code: 'F-RF-I-WG-PA-00F6' } }, parsed: C.oiParseOption('[14K-옐로우골드-12호]'), form });
   assert.ok(kIssue.some((s) => s.startsWith('품위 옵션 없음: 14')));
@@ -395,6 +480,9 @@ test('oiEnrichTotal: 조회할 마스터·고객·추천 수를 센다', () => {
   ];
   assert.deepStrictEqual(C.oiEnrichTotal(orders, {}), { masters: 1, customers: 1, suggests: 1, total: 3 });
   assert.deepStrictEqual(C.oiEnrichTotal(orders, { 7: {} }), { masters: 0, customers: 1, suggests: 1, total: 2 });
+  //  휴대폰 형식 불가 주문장도 실행되므로(2026-09-22) 고객 판정(이름 검색)을 조회한다 — 판매처 없는 주문장만 뺀다.
+  orders.push({ market: { name: 'z' }, phone: { ok: false, raw: '+82 10-1234-5678' }, customer: null, lines: [{ mapping: null, suggest: [] }] });
+  assert.deepStrictEqual(C.oiEnrichTotal(orders, { 7: {} }), { masters: 0, customers: 2, suggests: 1, total: 3 });
 });
 
 test('oiEnrichTotal: 등록 제외 사은품은 마스터·추천 조회 수에서 빠진다', () => {

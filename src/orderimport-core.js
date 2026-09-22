@@ -119,14 +119,17 @@
       const mobile = cell('phone'), recipientPhone = cell('recipientPhone');
       const phoneSource = mobile ? '수령자휴대폰' : '수령자전화';
       const gift = /사은품/.test(cell('name'));               // 사은품은 판매가 0 으로 주문한다(사장님 2026-09-16 — 유비샵도 0 주문 가능)
+      //  숫자형 셀은 앞 0 이 사라져 다른 번호(1065783269 → 106-578-3269)로 복원될 수 있다 → 믿지 않는다: 휴대폰 빈칸(ok=false) + 원문은 raw 로
+      //  남겨 실행기가 고객 비고에 싣는다(형식 불가와 같은 경로, Opus 5 P2-1 2026-09-22). 뒤 4자리는 그대로라 고객명은 유지. 연락처 칸에서 고치면 신뢰.
+      const numericCell = numericPhone.has(i + 1), normPhone = oiNormPhone(mobile || recipientPhone);
       lines.push({
         row: i + 2,                                          // 엑셀 행 번호(헤더=1)
         seller, orderNo,
         market: oiMarket(seller),
         buyer: cell('buyer'),
-        phone: oiNormPhone(mobile || recipientPhone),
+        phone: numericCell ? Object.assign({}, normPhone, { phone: '', ok: false }) : normPhone,
         phoneSource,
-        phoneNumericCell: numericPhone.has(i + 1),
+        phoneNumericCell: numericCell,
         productName: cell('name'),
         optionText: cell('option'),
         gift,
@@ -249,7 +252,10 @@
       }
       const o = map.get(key);
       //  같은 주문장인데 수령자/휴대폰이 첫 줄과 다르면 그 줄을 검토로 올린다(Terra 4R P1 — 첫 줄 고객으로 조용히 합쳐지면 오배송).
-      ln.groupMismatch = !!(o.lines.length && (ln.buyer !== o.buyer || (ln.phone && ln.phone.phone) !== (o.phone && o.phone.phone)));
+      //  번호 비교는 정규화값, 그것이 비면(숫자 셀·형식 불가) 원문으로 — 숫자 셀끼리 번호가 달라도 '' 끼리 같아지지 않게(Opus 5 O2 Nit 2026-09-22).
+      const pv = (p) => (p && (p.phone || p.raw)) || '';
+      ln.groupMismatch = !!(o.lines.length && (ln.buyer !== o.buyer || pv(ln.phone) !== pv(o.phone)));
+      ln.groupBuyer = o.buyer;                              // 경고 문구용 — 이 줄이 실제로 등록될 주문장 수령자(첫 줄)
       o.lines.push(ln);
     });
     const orders = [...map.values()];
@@ -312,22 +318,27 @@
   }
 
   /* ------------------------------------------------------ §3.3 검토 판정 */
-  //  줄 하나의 문제 목록. resolved = { mapping, parsed, form:{kOpts,colorOpts,defaults} } (form 은 있을 때만 대조).
-  function oiLineIssues(line, resolved) {
-    const issues = [];
-    if (line && line.gift && line.excluded) return issues;
+  //  줄 하나의 판정 → { issues, warnings }. resolved = { mapping, parsed, form:{kOpts,colorOpts,defaults}, optOverride } (form 은 있을 때만 대조).
+  //  issues = 차단(체크 불가): 등록 자체가 안 되거나(판매처·주문번호·수령자·판매가·수량 없음, 20줄 초과) 매칭 문제(미매칭·매핑 불완전,
+  //  그 마스터에 없는 품위, 셀렉트에 없는 색상 코드). warnings = 표시만(체크 가능): 색상 폴백 없음(빈칸으로 등록) · 미해석 토큰 · 휴대폰
+  //  형식(빈칸 + 번호는 고객 비고) · 숫자 셀 · 수령자 불일치 — 사장님 지시 2026-09-22 "제품 매칭만 제대로 했다면 등록할 수 있게".
+  function oiLineReview(line, resolved) {
+    const issues = [], warnings = [];
+    if (line && line.gift && line.excluded) return { issues, warnings };
     if (!line.market) issues.push('판매처 미등록: ' + line.seller);
     if (!line.orderNo) issues.push('주문번호 없음');
-    if (line.groupMismatch) issues.push('수령자 불일치: 같은 주문번호의 첫 줄과 수령자/휴대폰이 다름');
+    if (line.groupMismatch) warnings.push('수령자 불일치: 같은 주문번호의 첫 줄과 수령자/휴대폰이 다름 — 첫 줄 수령자(' + (line.groupBuyer || '') + ')로 등록됩니다');
     if (line.tooMany) issues.push('줄 수 초과: 주문장 ' + line.tooMany + '줄 (최대 ' + OI_MAX_LINES + ') — 유비샵에서 나눠 넣으세요');
-    if (!line.phone || !line.phone.ok) issues.push('휴대폰 형식: ' + (line.phone ? line.phone.raw : ''));
-    if (line.phoneNumericCell) issues.push('휴대폰 숫자 셀: 앞 0 이 사라졌을 수 있음 — 엑셀에서 텍스트 서식으로 저장하세요');
+    //  휴대폰 경고는 셋 중 하나만 — 문구가 등록될 결과를 정확히 말한다(Opus 5 P2-1·Nit-1): 숫자 셀 / 형식 불가(둘 다 빈칸+원문은 비고) / 아예 없음(빈칸).
+    const rawPhone = line.phone ? line.phone.raw : '';
+    if (line.phoneNumericCell) warnings.push('휴대폰 숫자 셀: 앞 0 이 사라졌을 수 있음 — 휴대폰 빈칸으로 등록, 번호(' + rawPhone + ')는 고객 비고에. 연락처 칸에서 고치거나 엑셀에서 텍스트 서식으로 저장하세요');
+    else if (!line.phone || !line.phone.ok) warnings.push(rawPhone ? '휴대폰 형식: ' + rawPhone + ' — 휴대폰 빈칸으로 등록, 번호는 고객 비고에' : '휴대폰 없음 — 휴대폰 빈칸으로 등록');
     if (!line.buyer) issues.push('수령자 없음');
     if (line.price == null) issues.push('판매가 없음');
     if (line.qty == null) issues.push('수량');
     const parsed = resolved && resolved.parsed;
-    //  사람이 품위·색상·사이즈를 직접 보정했으면(optOverride) 원문의 미해석 토큰은 더 이상 차단 사유가 아니다(Terra 4R P2).
-    if (parsed && parsed.unresolved.length && !(resolved && resolved.optOverride)) issues.push('옵션 해석 불가: ' + parsed.unresolved.join(', '));
+    //  사람이 품위·색상·사이즈를 직접 보정했으면(optOverride) 원문의 미해석 토큰은 경고도 아니다(Terra 4R P2).
+    if (parsed && parsed.unresolved.length && !(resolved && resolved.optOverride)) warnings.push('옵션 해석 불가: ' + parsed.unresolved.join(', '));
     if (!resolved || !resolved.mapping) issues.push('상품 미매칭');
     else if (!oiValidMapEntry(resolved.mapping.entry)) issues.push('매핑 불완전(seq/code 없음) — 매핑을 지우고 다시 고르세요');
     const form = resolved && resolved.form;
@@ -337,15 +348,18 @@
     }
     if (form && parsed && !parsed.color && !(form.defaults && form.defaults.color)) {
       const fb = resolved.mapping ? oiFallbackColor(resolved.mapping.entry, form.colorOpts) : null;
-      if (!fb) issues.push('색상 없음(마스터 기본값 빈값)');
+      if (!fb) warnings.push('색상 없음(마스터 기본값 빈값) — 색상 빈칸으로 등록');
     }
-    return issues;
+    return { issues, warnings };
   }
+  function oiLineIssues(line, resolved) { return oiLineReview(line, resolved).issues; }
+  function oiLineWarnings(line, resolved) { return oiLineReview(line, resolved).warnings; }
 
   function oiActiveLines(order) { return ((order && order.lines) || []).filter((l) => !l.excluded); }
+  //  실행 가능 = 실행할 줄이 있고 · 판매처(고객명 접미·등록 마켓)가 있고 · 줄마다 차단(issues)이 없다. 휴대폰 형식은 경고라 여기서 보지 않는다(2026-09-22).
   function oiOrderReady(order) {
     const lines = oiActiveLines(order);
-    return !!(lines.length && order && order.market && order.phone && order.phone.ok && lines.every((l) => !l.issues.length));
+    return !!(lines.length && order && order.market && lines.every((l) => !l.issues.length));
   }
 
   /* ------------------------------------------------------- §4 폼 추출 */
@@ -575,10 +589,11 @@
         if (a.arr_inputSupply && pos < a.arr_inputSupply.length) v.inputPrice = String(a.arr_inputSupply[pos]);
       }
     }
+    //  색상: 지정값 → 마스터 기본값 → 폴백(매핑 colorFallback·코드 토막) → 그래도 없으면 **빈칸으로 등록**(2026-09-22 사장님 지시 — 스펙 §4.2:
+    //  폼의 validate() 는 REQUIRED 지만 서버는 color 빈값도 받았다(실측)). 셀렉트에 없는 코드(손으로 넣은 오타)는 여전히 issue.
     let color = spec.color || v.color || '';
     if (!color) color = oiFallbackColor(master, form.colorOpts) || '';
-    if (!color) issues.push('색상 없음');
-    else if (form.colorOpts && form.colorOpts.length && !form.colorOpts.some((o) => o.value === color)) issues.push('색상 없음: ' + color);
+    if (color && form.colorOpts && form.colorOpts.length && !form.colorOpts.some((o) => o.value === color)) issues.push('색상 없음: ' + color);
     v.color = color;
     if (spec.itemSize != null && spec.itemSize !== '') v.itemSize = String(spec.itemSize);
     if (!(spec.qty > 0)) issues.push('수량');
@@ -716,7 +731,8 @@
       if (exact) res.client = { seq: exact.seq, name: exact.name, mode: 'reuse' };
       else {
         //  휴대폰을 비울 때는 번호를 비고(remark)에 남긴다 — 사장님 규칙(2026-09-16): "휴대폰 항목만 비워두고 전화번호는 비고란에".
-        let phone = order.phone && order.phone.phone ? order.phone.phone : '', remark = '';
+        //  형식이 안 맞는 번호(국가코드 등)는 경고로 여기까지 온다(2026-09-22) — 유비샵 형식으로 못 만드니 처음부터 빈칸 + 원문을 비고에.
+        let phone = order.phone && order.phone.phone ? order.phone.phone : '', remark = (!phone && order.phone && order.phone.raw) ? order.phone.raw : '';
         if (phone) { const byPhone = await erp.searchClient('phone', phone); if (byPhone.some((c) => c.phone === phone)) { remark = phone; phone = ''; } }
         let reg = await erp.registerClient(order.clientName, phone, order.market.clientJob, remark);
         log('register', reg);
@@ -839,7 +855,7 @@
   function oiEnrichTotal(orders, masters) {
     const seqs = new Set();
     (orders || []).forEach((o) => oiActiveLines(o).forEach((l) => { if (l.mapping && !(masters || {})[l.mapping.entry.seq]) seqs.add(String(l.mapping.entry.seq)); }));
-    const customers = (orders || []).filter((o) => !o.customer && o.market && o.phone && o.phone.ok).length;
+    const customers = (orders || []).filter((o) => !o.customer && o.market).length;   // 휴대폰 형식 불가 주문장도 실행되므로 이름 검색은 한다(2026-09-22)
     const suggests = (orders || []).reduce((n, o) => n + oiActiveLines(o).filter((l) => !l.mapping && !l.suggest).length, 0);
     return { masters: seqs.size, customers, suggests, total: seqs.size + customers + suggests };
   }
@@ -879,7 +895,7 @@
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
     oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiParseRows,
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
-    oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineIssues, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
+    oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineReview, oiLineIssues, oiLineWarnings, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,
