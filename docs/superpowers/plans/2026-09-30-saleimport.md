@@ -649,7 +649,7 @@ git commit -m "docs(판매 처리): Phase 0 판매 쓰기 계약 실측(민*금 
 - [ ] **Step 4: 실행기 배선 테스트 작성(RED)** — `tests/saleimport-run.test.js`. 가짜 erp(메모리 상태 머신: 세션 tradeJun/payJun/rows, 호출 기록)를 테스트 파일 안에 만든다(`orderimport-run.test.js` 의 가짜 erp 패턴 참고). 필수 케이스:
   1. 정상 2줄(본품 1 + 사은품 0원): 호출 순서 = state → openClient → postLine → getSaleForm → postLine → getModify → postModify ×2 → getSaleForm → getCash → postCash → getSaleForm → postJun → state → trade; 결과 `done`, paid true.
   2. 시작 가드: state 에 tradeJun 있음 → `skipped:'open_trade'`, post* 호출 0.
-  3. 둘째 줄 전 세션에 남의 줄이 끼어듦 → 둘째 postLine 호출 0, 내 줄만 deleteLines, `skipped`, rolledBack 1.
+  3. 둘째 줄 전 세션에 남의 줄이 끼어듦 → 둘째 postLine 호출 0, 내 줄만 deleteLines, 되돌린 뒤에도 남의 줄이 남으므로 **`fatal:foreign_rows_remain`**(스펙 §4.2-7 · 2026-09-30 Opus 검토로 정정 — 처음 이 줄에 `skipped` 로 잘못 적었다).
   4. 최종 대조 실패(한 행 amount 가 다르게 저장됨) → postCash 호출 0, 되돌리기.
   5. 결제 후 slJunCheck 실패(afterPrice ≠ 0) → **postJun 호출 0**, `fatal`, deleteLines 호출 0.
   6. postCash 예외 → `fatal`, deleteLines 0, postJun 0.
