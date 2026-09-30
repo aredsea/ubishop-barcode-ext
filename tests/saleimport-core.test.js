@@ -160,3 +160,112 @@ test('slTradeUrl', () => {
   assert.match(u, /client=123734&/);
   assert.match(u, /clientName=%ED%95%98\*%EC%9D%B43785%2FG$/);
 });
+
+/* ---------------------------------------------------------------- Task 5: 판매 폼 읽기·페이로드 */
+const SALEFORM = FX('saleform-line.html'), MODIFY = FX('modifyform.html'), CASHPAY = FX('cashpay-form.html');
+const CASHPAY_UNPAID = CASHPAY.replace('name="payJun" value="280453"', 'name="payJun" value=""');
+
+test('slComma: 콤마 문자열, 음수 부호 유지', () => {
+  assert.equal(C.slComma(75722), '75,722');
+  assert.equal(C.slComma(0), '0');
+  assert.equal(C.slComma(999), '999');
+  assert.equal(C.slComma(-5), '-5');
+  assert.equal(C.slComma(-1234567), '-1,234,567');
+});
+
+test('SL_FORM10_NAMES: 스펙 §4.1-4 이름 그대로 순서대로', () => {
+  assert.deepEqual(C.SL_FORM10_NAMES, ['sKey', 'pageSize', 'searchSortType', 'tradeJun', 'payJun', 'shop', 'client', 'payBank', 'payDia', 'payCard',
+    'paySaleOldGold', 'payCash', 'payCashPaper', 'payRemark', 'payEtc', 'txtSaleDate', 'regId', 'beforePrice', 'beforePoint', 'saleDcPrice',
+    'usePoint', 'payPrice', 'savePoint', 'afterPrice', 'afterPoint']);
+});
+
+test('slReadSaleForm: values · rows(헤더 이름으로 열 찾기) · form10', () => {
+  const f = C.slReadSaleForm(SALEFORM);
+  assert.equal(f.values.tradeJun, '114348'); assert.equal(f.values.payJun, '280453');
+  assert.equal(f.values.client, '123699'); assert.equal(f.values.clientName, '민*금2837/G');
+  assert.equal(f.values.sKey, '260930154640668');
+  assert.deepEqual(f.missing, []);
+  assert.deepEqual(f.rows, [{ idx: '376143,2504L5', saleSeq: '376143', barcode: '2504L5', salePrice: 112000, dcPrice: 36278, amount: 75722 }]);
+  assert.equal(f.form10.afterPrice, '0'); assert.equal(f.form10.payPrice, '75,722');
+  assert.equal(f.form10.payRemark, '');
+});
+
+test('slReadSaleForm: 헤더 열 순서가 바뀌어도 이름으로 읽는다 / 열이 없으면 null', () => {
+  //  판매가 ↔ 실판매가 헤더·데이터 칸을 함께 맞바꾼다
+  const swapped = SALEFORM
+    .replace('<td>판매가</td>', '<td>@@A</td>').replace('<td>실판매가</td>', '<td>판매가</td>').replace('<td>@@A</td>', '<td>실판매가</td>')
+    .replace('<td>112,000</td>\n<td class="f_bold">1</td>', '<td>75,722</td>\n<td class="f_bold">1</td>')
+    .replace('<td class="f_bold">75,722</td>', '<td class="f_bold">112,000</td>');
+  const r = C.slReadSaleForm(swapped).rows[0];
+  assert.equal(r.salePrice, 112000); assert.equal(r.amount, 75722);   // 위치가 바뀌어도 헤더 이름을 따라간다
+  const noCol = C.slReadSaleForm(SALEFORM.replace('<td>실판매가</td>', '<td>xx</td>')).rows[0];
+  assert.equal(noCol.amount, null);
+});
+
+test('slReadSaleForm: 빈 목록·필드 없음은 missing 으로', () => {
+  const empty = SALEFORM.replace(/<table class="t_list">[\s\S]*<\/table>/, '');
+  assert.deepEqual(C.slReadSaleForm(empty).rows, []);
+  assert.ok(C.slReadSaleForm('<html></html>').missing.includes('sKey'));
+});
+
+test('slSaleManager: 인라인 스크립트에서 읽고 없으면 빈값', () => {
+  assert.equal(C.slSaleManager(MODIFY), '홍해진');
+  assert.equal(C.slSaleManager(MODIFY.replace('form1.saleManager.value = "홍해진";', '')), '');
+});
+
+test('slModifyPayload: 픽스처 + 75,722 → 실판매가·DC·DC율·판매직원', () => {
+  const p = C.slModifyPayload(MODIFY, 75722);
+  assert.deepEqual(p.issues, []);
+  const m = Object.fromEntries(p.fields);
+  assert.equal(m.saleDcPrice, '75,722'); assert.equal(m.dcPrice, '36,278'); assert.equal(m.dcRate, '32.39');
+  assert.equal(m.saleManager, '홍해진'); assert.equal(m.seq, '376143'); assert.equal(m.tradeJun, '114348');
+  assert.equal(m.salePrice, '112,000'); assert.equal(m.tmpSalePrice, '112,000'); assert.equal(m.cashPoint, '0');
+  assert.deepEqual(p.fields.map((f) => f[0]), ['sKey', 'pageSize', 'searchSortType', 'tradeJun', 'payJun', 'seq', 'barcode', 'shop', 'client', 'shopName', 'clientName',
+    'salePrice', 'saleQty', 'tmpSalePrice', 'dcRate', 'dcPrice', 'cashPoint', 'saleDcPrice', 'saleManager', 'tmpPoint', 'usePoint', 'remark']);
+  assert.ok(!p.fields.some((f) => f[0] === 'imageField22'));
+});
+
+test('slModifyPayload: 사은품 0원 → DC 전액·DC율 100.00', () => {
+  const m = Object.fromEntries(C.slModifyPayload(MODIFY, 0).fields);
+  assert.equal(m.saleDcPrice, '0'); assert.equal(m.dcPrice, '112,000'); assert.equal(m.dcRate, '100.00');
+});
+
+test('slModifyPayload: issues — 판매직원 없음 · 금액 이상 · 필드 누락', () => {
+  assert.ok(C.slModifyPayload(MODIFY.replace('form1.saleManager.value = "홍해진";', ''), 75722).issues.includes('no_sale_manager'));
+  for (const bad of [-1, 112001, 1.5, NaN, '75722']) assert.ok(C.slModifyPayload(MODIFY, bad).issues.includes('bad_amount'), String(bad));
+  assert.ok(C.slModifyPayload(MODIFY.replace(/<input[^>]*name="tmpSalePrice"[^>]*>/, ''), 75722).issues.includes('missing:tmpSalePrice'));
+});
+
+test('slCashPayload: payJun 이 있으면 already_paid, 비우면 payCash 로 등록 준비', () => {
+  assert.ok(C.slCashPayload(CASHPAY, 75722).issues.includes('already_paid'));
+  const p = C.slCashPayload(CASHPAY_UNPAID, 75722);
+  assert.deepEqual(p.issues, []);
+  const m = Object.fromEntries(p.fields);
+  assert.equal(m.payCash, '75,722'); assert.equal(m.payCashPaper, '0'); assert.equal(m.payEtc, '0'); assert.equal(m.remark, '');
+  assert.equal(m.tradeType, '3'); assert.equal(m.payJun, ''); assert.equal(m.tradeJun, '114348');
+  assert.equal(p.fields.filter((f) => f[0] === 'payCash').length, 1);
+  assert.equal(p.fields[0][0], 'sKey');
+  assert.ok(!p.fields.some((f) => f[0] === 'imageField22'));
+  assert.ok(C.slCashPayload(CASHPAY_UNPAID, 0).issues.includes('bad_cash'));
+  assert.ok(C.slCashPayload(CASHPAY_UNPAID.replace(/<input[^>]*name="sKey"[^>]*>/, ''), 75722).issues.includes('missing:sKey'));
+});
+
+test('slJunCheck: D8 — 미수 0 · payPrice/payCash/saleDcPrice = 현금', () => {
+  const f10 = C.slReadSaleForm(SALEFORM).form10;
+  assert.deepEqual(C.slJunCheck(f10, 75722), { ok: true, reason: '' });
+  const bad = (over, cash) => C.slJunCheck(Object.assign({}, f10, over), cash == null ? 75722 : cash);
+  let r = bad({ afterPrice: '75,722' }); assert.equal(r.ok, false); assert.match(r.reason, /afterPrice/);
+  r = bad({ beforePrice: '1,000' }); assert.equal(r.ok, false); assert.match(r.reason, /beforePrice/);
+  r = bad({ payCash: '70,000' }); assert.equal(r.ok, false); assert.match(r.reason, /payCash/);
+  r = bad({ payPrice: '' }); assert.equal(r.ok, false); assert.match(r.reason, /payPrice/);
+  r = bad({ saleDcPrice: '1' }); assert.equal(r.ok, false); assert.match(r.reason, /saleDcPrice/);
+  r = bad({}, 75721); assert.equal(r.ok, false);
+  assert.equal(C.slJunCheck({}, 75722).ok, false);
+});
+
+test('slJunPayload: SL_FORM10_NAMES 순서', () => {
+  const f10 = C.slReadSaleForm(SALEFORM).form10;
+  const p = C.slJunPayload(f10);
+  assert.deepEqual(p.map((x) => x[0]), C.SL_FORM10_NAMES);
+  assert.equal(Object.fromEntries(p).payCash, '75,722'); assert.equal(Object.fromEntries(p).sKey, '260930154640668');
+});

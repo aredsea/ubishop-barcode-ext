@@ -202,7 +202,286 @@
       + '&shop=LT&shopName=FASHION&client=' + encodeURIComponent(client) + '&clientName=' + encodeURIComponent(clientName);
   }
 
-  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slMatchClient, slTradeUrl, slOrderRows, slSaleRows };
+  /* ------------------------------------------------------------ §4.1 판매 폼 읽기·페이로드 */
+  //  폼 유틸은 orderimport-core 것을 쓴다(브라우저에선 manifest 에서 먼저 실림).
+  const O = (typeof module !== 'undefined' && module.exports) ? require('./orderimport-core.js') : globalThis.ubOi;
+
+  const SL_FORM10_NAMES = Object.freeze(['sKey', 'pageSize', 'searchSortType', 'tradeJun', 'payJun', 'shop', 'client', 'payBank', 'payDia', 'payCard',
+    'paySaleOldGold', 'payCash', 'payCashPaper', 'payRemark', 'payEtc', 'txtSaleDate', 'regId', 'beforePrice', 'beforePoint', 'saleDcPrice',
+    'usePoint', 'payPrice', 'savePoint', 'afterPrice', 'afterPoint']);
+  const SL_VALUE_NAMES = ['sKey', 'tradeJun', 'payJun', 'client', 'clientName'];
+  //  줄 수정 폼(form1)의 필드 — 문서 순서. imageField22(type=image)는 제외.
+  const SL_MODIFY_NAMES = ['sKey', 'pageSize', 'searchSortType', 'tradeJun', 'payJun', 'seq', 'barcode', 'shop', 'client', 'shopName', 'clientName',
+    'salePrice', 'saleQty', 'tmpSalePrice', 'dcRate', 'dcPrice', 'cashPoint', 'saleDcPrice', 'saleManager', 'tmpPoint', 'usePoint', 'remark'];
+
+  function slComma(n) { return String(Math.trunc(Number(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  const slInt = (s) => { const t = String(s == null ? '' : s).replace(/,/g, '').trim(); return /^-?\d+$/.test(t) ? Number(t) : NaN; };
+
+  //  <form name=X> 구간(다음 </form> 또는 다음 <form 까지). 없으면 null.
+  function formSeg(html, name) {
+    const h = String(html);
+    const m = h.match(new RegExp('<form\\b[^>]*\\bname\\s*=\\s*["\']?' + name + '["\']?(?=[\\s>"\'])', 'i'));
+    if (!m) return null;
+    const rest = h.slice(m.index + m[0].length);
+    const e = rest.search(/<\/form>|<form\b/i);
+    return e < 0 ? rest : rest.slice(0, e);
+  }
+  const firstNum = (cell) => { const m = String(cell == null ? '' : cell).match(/-?\d[\d,]*/); return m ? Number(m[0].replace(/,/g, '')) : null; };
+
+  //  판매폼(saleItemWriteForm.do) → 값·form10·목록 행. 목록 열은 **헤더 이름으로** 찾는다(못 찾으면 그 값은 null → 대조가 실패한다).
+  function slReadSaleForm(html) {
+    const f1 = formSeg(html, 'form1') || String(html);
+    const ex = O.oiExtractFields(f1, SL_VALUE_NAMES);
+    const missing = ex.missing.slice();
+    const seg10 = formSeg(html, 'form10');
+    let form10 = {};
+    if (seg10 == null) missing.push('form10');
+    else { const e10 = O.oiExtractFields(seg10, SL_FORM10_NAMES); form10 = e10.values; e10.missing.forEach((n) => missing.push('form10.' + n)); }
+    const all = O.oiTListAllRows(html);
+    const head = all.find((r) => /class\s*=\s*["']?title_line/i.test(r.html));
+    const cells = head ? head.cells : [];
+    const col = { salePrice: cells.findIndex((c) => c === '판매가'), dc: cells.findIndex((c) => c.indexOf('DC금액') === 0), amount: cells.findIndex((c) => c === '실판매가') };
+    const rows = all.filter((r) => r.idx !== null).map((r) => {
+      const parts = String(r.idx).split(',');
+      const at = (i) => (i < 0 ? null : firstNum(r.cells[i]));
+      return { idx: String(r.idx), saleSeq: parts[0] || '', barcode: parts[1] || '', salePrice: at(col.salePrice), dcPrice: at(col.dc), amount: at(col.amount) };
+    });
+    return { values: ex.values, form10, missing, rows };
+  }
+
+  //  판매직원은 HTML selected 가 아니라 인라인 스크립트로 선택된다(실측, 스펙 §4.1).
+  function slSaleManager(html) {
+    const m = String(html).match(/form1\.saleManager\.value\s*=\s*(?:"([^"]*)"|'([^']*)')/);
+    return m ? (m[1] != null ? m[1] : m[2]) : '';
+  }
+
+  //  실판매가 수정 페이로드. dcPrice·dcRate 는 화면 JS(calDcPrice2·calDcRate)와 같은 규칙.
+  function slModifyPayload(html, amount) {
+    const f1 = formSeg(html, 'form1') || String(html);
+    const fields = [], issues = [];
+    const mgr = slSaleManager(html);
+    SL_MODIFY_NAMES.forEach((n) => {
+      const v = n === 'saleManager' ? mgr : O.oiFieldValue(f1, n);
+      if (v === null) issues.push('missing:' + n); else fields.push([n, v]);
+    });
+    if (!mgr) issues.push('no_sale_manager');
+    const get = (n) => { const f = fields.find((x) => x[0] === n); return f ? f[1] : ''; };
+    const tmp = slInt(get('tmpSalePrice')), cashPoint = slInt(get('cashPoint'));
+    if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || !Number.isFinite(tmp) || amount > tmp) { issues.push('bad_amount'); return { fields, issues }; }
+    const dcPrice = tmp - amount - (Number.isFinite(cashPoint) ? cashPoint : 0);
+    const dcRate = tmp === 0 ? '0.00' : (Math.round(dcPrice / tmp * 10000) / 100).toFixed(2);
+    const set = (n, v) => { const f = fields.find((x) => x[0] === n); if (f) f[1] = v; };
+    set('saleDcPrice', slComma(amount)); set('dcPrice', slComma(dcPrice)); set('dcRate', dcRate);
+    return { fields, issues };
+  }
+
+  //  현금결제 페이로드. payJun 이 이미 있으면 결제는 이미 된 것 — 두 번 보내지 않는다(스펙 §4.1 결제 1회 규칙).
+  function slCashPayload(html, cash) {
+    const issues = [];
+    const hidden = O.oiExtractHidden(html);
+    ['sKey', 'tradeJun', 'payJun'].forEach((n) => { if (!hidden.some((h) => h[0] === n)) issues.push('missing:' + n); });
+    const pj = hidden.find((h) => h[0] === 'payJun');
+    if (pj && pj[1] !== '') issues.push('already_paid');
+    if (typeof cash !== 'number' || !Number.isInteger(cash) || cash <= 0) issues.push('bad_cash');
+    const fields = hidden.slice();
+    fields.push(['payCash', slComma(cash)], ['payCashPaper', '0'], ['payEtc', '0'], ['remark', '']);
+    return { fields, issues };
+  }
+
+  //  D8 — 판매하기 직전 미수 0: 거래 전·후 미수 0, 결제/현금/실판매가 합 = 현금. 하나라도 어긋나면 ok=false(판매하기를 보내지 않는다).
+  function slJunCheck(form10, cash) {
+    const f = form10 || {}; const bad = [];
+    ['beforePrice', 'afterPrice'].forEach((n) => { if (slInt(f[n]) !== 0) bad.push(n + '=' + (f[n] == null ? '(없음)' : f[n])); });
+    ['payPrice', 'payCash', 'saleDcPrice'].forEach((n) => { if (slInt(f[n]) !== cash || !Number.isFinite(cash)) bad.push(n + '=' + (f[n] == null ? '(없음)' : f[n]) + '≠' + cash); });
+    return bad.length ? { ok: false, reason: bad.join(' ') } : { ok: true, reason: '' };
+  }
+  function slJunPayload(form10) { const f = form10 || {}; return SL_FORM10_NAMES.map((n) => [n, f[n] == null ? '' : String(f[n])]); }
+
+  /* ------------------------------------------------------------ §4.2 실행기 (erp 주입) */
+  //  erp 인터페이스(saleimport-erp.js 가 구현):
+  //   state() → {tradeJun, payJun, rows:number, form}          openClient(client, clientName) → form
+  //   getSaleForm({tradeJun,payJun,client,clientName}) → form   postLine(form, barcode) → {ok, msg, form}
+  //   getModify(saleSeq, ctx) → html   postModify(fields) → {ok, msg, form}
+  //   getCash(ctx) → html   postCash(fields) → {ok, msg, payJun, payCash}   postJun(fields) → {ok, msg}
+  //   deleteLines(ctx, idxValues) → {ok, msg, before}   trade(client, clientName) → {orders, sales}
+  //  hooks: { log(key, step, info) }
+  //  plan = { key, client:{seq,name}, lines:[SaleLinePlan], cash }
+  const errMsg = (e) => String((e && e.message) || e);
+  const bagKey = (r) => r.barcode + ':' + r.amount;
+  function sameBag(a, b) {
+    if (a.length !== b.length) return false;
+    const m = new Map();
+    a.forEach((x) => m.set(x, (m.get(x) || 0) + 1));
+    for (const x of b) { const n = m.get(x); if (!n) return false; m.set(x, n - 1); }
+    return true;
+  }
+  function slNewResult(key) { return { key, status: 'pending', reason: '', tradeJun: '', payJun: '', saleSeqs: [], rolledBack: 0, paid: false }; }
+
+  async function slRunClient(plan, erp, hooks) {
+    const res = slNewResult(plan && plan.key);
+    const log = (step, info) => { try { hooks && hooks.log && hooks.log(res.key, step, info); } catch (_) {} };
+    const client = String(plan.client.seq), clientName = plan.client.name;
+    const lines = plan.lines || [];
+    const idxValues = [];
+    let lineUnknown = false;
+    const ctx = () => ({ tradeJun: res.tradeJun, payJun: res.payJun, client, clientName });
+    const fatal = (reason) => { res.status = 'fatal'; res.reason = reason; log('fatal', reason); return res; };
+
+    //  실패 처리. 🔴 결제 POST 를 보낸 뒤(paid)에는 무엇이든 fatal — 넣은 줄을 지우지 않고 결제를 취소하지도 않는다.
+    //  줄 POST 의 결과를 모르는 상태(lineUnknown)도 fatal — 무엇이 들어갔는지 모르니 지우지도 계속하지도 않는다.
+    const fail = async (reason) => {
+      log('fail', reason);
+      if (res.paid) return fatal('paid_unverified:' + reason);
+      if (lineUnknown) return fatal('line_unverified:' + reason);
+      if (idxValues.length) {
+        try {
+          //  삭제 직전에 세션의 열린 전표가 아직 내 tradeJun 인지 본다 — 남이 그 사이 완료했으면 완료된 전표를 지우게 된다.
+          const now = await erp.state();
+          if (String(now.tradeJun || '') !== String(res.tradeJun || '')) return fatal('rollback_aborted:trade_changed ' + (now.tradeJun || '(none)') + '≠' + res.tradeJun + ' (' + reason + ')');
+          const del = await erp.deleteLines(ctx(), idxValues.slice());
+          log('rollback', del);
+          const after = await erp.getSaleForm(ctx());
+          const remain = (after.rows || []).map((r) => String(r.saleSeq));
+          if (!del.ok || remain.some((s) => res.saleSeqs.includes(s))) return fatal('rollback_failed:' + reason);
+          if (!Array.isArray(del.before)) return fatal('rollback_unverifiable:' + reason);
+          //  되돌리기가 내 줄 **밖**까지 지웠는지 — 삭제 직전 목록에 있던 남의 줄이 사라졌으면 서버 계약이 idx 단독 삭제가 아니다(미실측 → fail-closed).
+          const foreign = del.before.map((r) => String(r.saleSeq)).filter((s) => s && !res.saleSeqs.includes(s));
+          const lost = foreign.filter((s) => !remain.includes(s));
+          if (lost.length) return fatal('rollback_overreach:' + lost.join(',') + ' (' + reason + ')');
+          res.rolledBack = idxValues.length;
+          const st = await erp.state();
+          if (st.rows !== foreign.length) return fatal('rollback_incomplete:trade ' + (st.tradeJun || '') + ' rows ' + st.rows + ' (' + reason + ')');
+          if (!foreign.length && (st.tradeJun || st.payJun)) return fatal('rollback_incomplete:trade ' + (st.tradeJun || '') + ' pay ' + (st.payJun || '') + ' (' + reason + ')');
+          res.status = 'skipped'; res.reason = reason + (foreign.length ? ' [남의 줄 ' + foreign.length + '개 남음: ' + foreign.join(',') + ']' : '');
+          return res;
+        } catch (e) { return fatal('rollback_exception:' + errMsg(e) + ' (' + reason + ')'); }
+      }
+      res.status = 'skipped'; res.reason = reason; return res;
+    };
+
+    try {
+      //  0. 계획 자체 점검(쓰기 전) — 현금 = 줄 실판매가 합, 바코드 유일·비어 있지 않음.
+      const sum = lines.reduce((s, l) => s + l.amount, 0);
+      const bcs = lines.map((l) => l.barcode);
+      if (!lines.length || !Number.isInteger(plan.cash) || plan.cash <= 0 || sum !== plan.cash || lines.some((l) => !l.barcode || !Number.isInteger(l.amount) || l.amount < 0) || new Set(bcs).size !== bcs.length) {
+        res.status = 'skipped'; res.reason = 'bad_plan'; return res;
+      }
+      //  1. 가드
+      const st0 = await erp.state();
+      log('guard', { tradeJun: st0.tradeJun, payJun: st0.payJun, rows: st0.rows });
+      if (st0.tradeJun || st0.payJun || st0.rows > 0) { res.status = 'skipped'; res.reason = 'open_trade'; return res; }
+
+      //  2. 줄 등록
+      for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        const form = i === 0 ? await erp.openClient(client, clientName) : await erp.getSaleForm(ctx());
+        const v = form.values || {};
+        if (String(v.client) !== client) return await fail('client_mismatch:' + v.client + '≠' + client);
+        const rows0 = form.rows || [];
+        if (i === 0) {
+          if (rows0.length || v.tradeJun || v.payJun) return await fail('session_not_empty');
+        } else {
+          if (String(v.tradeJun) !== String(res.tradeJun)) return await fail('trade_changed:' + v.tradeJun + '≠' + res.tradeJun);
+          if (!sameBag(rows0.map((r) => String(r.saleSeq)), res.saleSeqs.map(String))) return await fail('foreign_row:' + rows0.map((r) => r.saleSeq).join(','));
+        }
+        let post;
+        try { post = await erp.postLine(form, ln.barcode); }
+        catch (e) { lineUnknown = true; return await fail('line_post_exception:' + errMsg(e)); }
+        log('line', { i, n: lines.length, ok: post.ok, msg: post.msg });
+        if (!post.ok) return await fail('line_failed:' + post.msg);
+        const rows = (post.form && post.form.rows) || [];
+        const fresh = rows.filter((r) => !res.saleSeqs.includes(String(r.saleSeq)));
+        if (rows.length !== res.saleSeqs.length + 1 || fresh.length !== 1) { lineUnknown = true; return await fail('rowmismatch:rows=' + rows.length + ',fresh=' + fresh.map((r) => r.saleSeq + '/' + r.barcode).join('|')); }
+        const gotTrade = post.form.values && post.form.values.tradeJun;
+        if (!gotTrade) { lineUnknown = true; return await fail('trade_missing:line' + i); }
+        if (res.tradeJun && String(gotTrade) !== String(res.tradeJun)) { lineUnknown = true; return await fail('trade_switched:' + gotTrade + '≠' + res.tradeJun); }
+        //  새 줄이 정확히 하나인데 바코드가 다르면 그 줄이 내 것인지 확신할 수 없다 → 지우지도 계속하지도 않는다.
+        if (fresh[0].barcode !== ln.barcode) { lineUnknown = true; return await fail('barcode:' + fresh[0].barcode + '≠' + ln.barcode); }
+        res.saleSeqs.push(String(fresh[0].saleSeq));
+        idxValues.push(fresh[0].saleSeq + ',' + fresh[0].barcode);
+        res.tradeJun = String(gotTrade);
+      }
+
+      //  3. 줄마다 실판매가
+      for (let i = 0; i < lines.length; i++) {
+        const seq = res.saleSeqs[i], ln = lines[i];
+        const html = await erp.getModify(seq, ctx());
+        const pl = slModifyPayload(html, ln.amount);
+        if (pl.issues.length) return await fail('modify_payload:' + pl.issues.join(','));
+        const m = await erp.postModify(pl.fields);
+        log('modify', { i, ok: m.ok, msg: m.msg });
+        if (!m.ok) return await fail('modify_failed:' + m.msg);
+        const row = ((m.form && m.form.rows) || []).find((r) => String(r.saleSeq) === String(seq));
+        if (!row || row.amount !== ln.amount) return await fail('modify_unverified:' + seq + ' ' + (row ? row.amount : '(행 없음)') + '≠' + ln.amount);
+      }
+
+      //  4. 최종 대조 — 결제 전 마지막 관문
+      const fin = await erp.getSaleForm(ctx());
+      const fv = fin.values || {};
+      if (String(fv.client) !== client) return await fail('final:client ' + fv.client + '≠' + client);
+      if (String(fv.tradeJun) !== String(res.tradeJun)) return await fail('final:trade ' + fv.tradeJun + '≠' + res.tradeJun);
+      const frows = fin.rows || [];
+      if (!sameBag(frows.map((r) => String(r.saleSeq)), res.saleSeqs.map(String))) return await fail('final:rows ' + frows.map((r) => r.saleSeq).join(',') + '≠' + res.saleSeqs.join(','));
+      if (!sameBag(frows.map(bagKey), lines.map(bagKey))) return await fail('final:lines ' + frows.map(bagKey).join('|') + '≠' + lines.map(bagKey).join('|'));
+      if (frows.reduce((s, r) => s + r.amount, 0) !== plan.cash) return await fail('final:sum≠' + plan.cash);
+      if (slInt(fin.form10 && fin.form10.beforePrice) !== 0) return await fail('final:beforePrice=' + (fin.form10 && fin.form10.beforePrice));
+
+      //  5. 현금결제 — 이 POST 를 보내는 순간부터 paid. 이후 실패는 전부 fatal 이고 결제는 두 번 보내지 않는다.
+      const cashHtml = await erp.getCash(ctx());
+      const cp = slCashPayload(cashHtml, plan.cash);
+      if (cp.issues.length) return await fail('cash_payload:' + cp.issues.join(','));
+      res.paid = true;
+      let pc;
+      try { pc = await erp.postCash(cp.fields); }
+      catch (e) { return fatal('cash_unverified:exception:' + errMsg(e)); }
+      log('cash', pc);
+      if (!pc || !pc.ok) return fatal('cash_failed:' + (pc && pc.msg));
+      if (!pc.payJun) return fatal('cash_unverified:payJun 없음');
+      if (slInt(pc.payCash) !== plan.cash) return fatal('cash_unverified:payCash ' + pc.payCash + '≠' + plan.cash);
+      res.payJun = String(pc.payJun);
+
+      //  6. 판매하기 — D8: 미수 0 이 아니면 보내지 않는다.
+      const f2 = await erp.getSaleForm(ctx());
+      const v2 = f2.values || {}, t10 = f2.form10 || {};
+      if (String(v2.client) !== client || String(t10.tradeJun) !== res.tradeJun || String(t10.payJun) !== res.payJun) return fatal('session_changed:' + [v2.client, t10.tradeJun, t10.payJun].join('/'));
+      const jc = slJunCheck(t10, plan.cash);
+      if (!jc.ok) return fatal('receivable:' + jc.reason);
+      let jr;
+      try { jr = await erp.postJun(slJunPayload(t10)); }
+      catch (e) { return fatal('jun_unverified:exception:' + errMsg(e)); }
+      log('jun', jr);
+      if (!jr || !jr.ok) return fatal('jun_failed:' + (jr && jr.msg));
+      const st2 = await erp.state();
+      if (st2.tradeJun || st2.payJun || st2.rows > 0) return fatal('session_not_clear:trade ' + (st2.tradeJun || '') + ' pay ' + (st2.payJun || '') + ' rows ' + st2.rows);
+      const tr = await erp.trade(client, clientName);
+      const pool = ((tr && tr.sales) || []).map(bagKey);
+      for (const ln of lines) {
+        const k = bagKey(ln), at = pool.indexOf(k);
+        if (at < 0) return fatal('sale_unverified:' + ln.barcode + ' ' + ln.amount);
+        pool.splice(at, 1);
+      }
+      res.status = 'done'; return res;
+    } catch (e) {
+      return await fail('exception:' + errMsg(e));
+    }
+  }
+
+  //  고객 순차 실행. fatal 이면 이후 전부 blocked. 한 고객의 예외는 fatal 결과로 담는다(던지지 않는다).
+  async function slRunAll(plans, erp, hooks) {
+    const out = []; let halted = false;
+    for (const p of plans) {
+      if (halted) { const r = slNewResult(p.key); r.status = 'blocked'; r.reason = 'halted'; out.push(r); continue; }
+      let r;
+      try { r = await slRunClient(p, erp, hooks); }
+      catch (e) { r = slNewResult(p && p.key); r.status = 'fatal'; r.reason = 'exception:' + errMsg(e); }
+      out.push(r);
+      if (r.status === 'fatal') halted = true;
+    }
+    return out;
+  }
+
+  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slMatchClient, slTradeUrl, slOrderRows, slSaleRows,
+    SL_FORM10_NAMES, slComma, slReadSaleForm, slSaleManager, slModifyPayload, slCashPayload, slJunCheck, slJunPayload, slNewResult, slRunClient, slRunAll };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }
 })();
