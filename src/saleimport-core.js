@@ -56,7 +56,11 @@
     }
     if (!out.length) return { ok: false, error: '데이터 행 없음' };
     const t = rows[tIdx];
-    const tot = (k) => slMoney(String(t[ix[k]] == null ? '' : t[ix[k]]).trim()) || 0;
+    //  합계 칸은 빈칸만 0 — 숫자로 못 읽는 값을 0 으로 두면 공제가 빠진 금액이 조용히 나간다(Task 1 검토 Minor).
+    const raw = (k) => String(t[ix[k]] == null ? '' : t[ix[k]]).trim();
+    const badTot = ['Y', 'Z', 'AA'].filter((k) => raw(k) !== '' && slMoney(raw(k)) == null);
+    if (badTot.length) return { ok: false, error: '합계 행 금액을 읽을 수 없음: ' + badTot.map((k) => COLS[k]).join(', ') };
+    const tot = (k) => (raw(k) === '' ? 0 : slMoney(raw(k)));
     return { ok: true, rows: out, totals: { Y: tot('Y'), Z: tot('Z'), AA: tot('AA') } };
   }
 

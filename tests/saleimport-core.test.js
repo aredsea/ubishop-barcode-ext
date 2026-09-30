@@ -269,3 +269,16 @@ test('slJunPayload: SL_FORM10_NAMES 순서', () => {
   assert.deepEqual(p.map((x) => x[0]), C.SL_FORM10_NAMES);
   assert.equal(Object.fromEntries(p).payCash, '75,722'); assert.equal(Object.fromEntries(p).sKey, '260930154640668');
 });
+
+test('slParseSheet: 합계 행 금액을 못 읽으면 거부, 빈칸은 0', () => {
+  const h = C.slHeaderMap(ROWS[0]);
+  const bad = ROWS.map((r) => r.slice());
+  const t = bad.findIndex((r) => r[0] === '합계');
+  bad[t][h.idx.Z] = '확인중';
+  const p = C.slParseSheet(bad);
+  assert.equal(p.ok, false);
+  assert.match(p.error, /딜광고/);
+  const empty = ROWS.map((r) => r.slice());
+  empty[t][h.idx.AA] = '';
+  assert.equal(C.slParseSheet(empty).totals.AA, 0);
+});
