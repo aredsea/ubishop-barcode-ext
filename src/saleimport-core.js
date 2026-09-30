@@ -138,7 +138,71 @@
     return { status: 'ok', reason: '', lines, cash: lines.reduce((s, l) => s + l.amount, 0) };
   }
 
-  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slMatchClient };
+  /* ------------------------------------------------------------ §3.2 거래내역 파싱 */
+  //  목록 표는 헤더 셀(주문일/판매일)로 찾고, 각 <tr> 을 **행 텍스트 전체**로 본다(셀 묶음이 화면마다 달라도 견딘다).
+  const BARCODE_RE = /(?:^|\s)(2[1-6](?=[0-9A-Z]{0,3}[A-Z])[0-9A-Z]{4})(?=\s|$)/;   // 년도 21~26 + 영숫자 4(영문 ≥1)
+  const CODE_RE = /[A-Z]-[A-Z0-9]{2}-[A-Z]-[A-Z]{2}-[A-Z]{2}-[0-9A-Z]{4}/;
+  const DATE_RE = /(\d\d-\d\d-\d\d)/;
+  function textOf(h) {
+    return String(h).replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
+  }
+  //  바깥 표의 최상위 <tr> 만 자른다 — 이미지 칸에 중첩 <table><tr> 이 있어 단순 split 은 행을 쪼갠다(실측).
+  function topRows(tableHtml) {
+    const out = []; const re = /<(\/?)(table|tr)\b[^>]*>/gi;
+    let depth = 0, start = -1, m;
+    while ((m = re.exec(tableHtml))) {
+      const close = m[1] === '/', tag = m[2].toLowerCase();
+      if (tag === 'table') { depth += close ? -1 : 1; continue; }
+      if (depth !== 1) continue;
+      if (!close) start = m.index; else if (start >= 0) { out.push(tableHtml.slice(start, re.lastIndex)); start = -1; }
+    }
+    return out;
+  }
+  //  headWord('주문일'|'판매일') 가 든 title_line 행 이후의 행 텍스트. 표는 그 헤더를 품은 가장 가까운 <table class="t_list">.
+  function listRows(html, headWord) {
+    const s = String(html || '');
+    const hi = s.search(new RegExp('<tr[^>]*class="title_line"[^>]*>(?:(?!</tr>)[\\s\\S])*' + headWord));
+    if (hi < 0) return [];
+    const ts = s.lastIndexOf('<table', hi);
+    const rows = topRows(s.slice(ts));
+    const hIdx = rows.findIndex((r) => /class="title_line"/.test(r) && r.indexOf(headWord) >= 0);
+    return rows.slice(hIdx + 1).map(textOf).filter((t) => DATE_RE.test(t) && /^\d+\s/.test(t));
+  }
+  const nums = (t) => (t.match(/-?\d[\d,]*(?:\.\d+)?/g) || []).map((x) => Number(x.replace(/,/g, '')));
+  function slOrderRows(html) {
+    return listRows(html, '주문일').map((t) => {
+      const bc = t.match(BARCODE_RE); const code = t.match(CODE_RE);
+      const st = t.match(/정산\s*([\d,]+)/);
+      const tail = t.replace(/\s*\S+$/, '');                 // 끝의 접수직원 이름 제거
+      const n = nums(tail);
+      const after = code ? t.slice(t.indexOf(code[0]) + code[0].length).trim() : '';
+      return {
+        date: (t.match(DATE_RE) || [])[1] || '', barcode: bc ? bc[1] : '', code: code ? code[0] : '',
+        name: after.split(' ')[0] || '', gift: /\(사은품\)/.test(t),
+        settle: st ? Number(st[1].replace(/,/g, '')) : null, qty: n[n.length - 2], price: n[n.length - 1]
+      };
+    });
+  }
+  function slSaleRows(html) {
+    return listRows(html, '판매일').map((t) => {
+      const bc = t.match(BARCODE_RE); const code = t.match(CODE_RE);
+      //  꼬리: … 판매가 수량 DC(DC율 %) 실판매가 판매직원  → 퍼센트 괄호를 빼고 숫자 4개
+      const tail = t.replace(/\s*\S+$/, '').replace(/\([\d.]+\s*%\)/g, ' ');
+      const n = nums(tail);
+      return {
+        date: (t.match(DATE_RE) || [])[1] || '', barcode: bc ? bc[1] : '', code: code ? code[0] : '',
+        price: n[n.length - 4], qty: n[n.length - 3], dc: n[n.length - 2], amount: n[n.length - 1]
+      };
+    });
+  }
+  function slTradeUrl(vcode, client, clientName) {
+    return '/info/clienttrade/infoClientTradeView.do?tcode=sale_item&vcode=' + vcode
+      + '&searchImageType=0&reqPage=1&pageSize=100&searchSortType=seq&url=/sale/item/saleItemWriteForm.do'
+      + '&shop=LT&shopName=FASHION&client=' + encodeURIComponent(client) + '&clientName=' + encodeURIComponent(clientName);
+  }
+
+  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slMatchClient, slTradeUrl, slOrderRows, slSaleRows };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }
 })();

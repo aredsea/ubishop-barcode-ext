@@ -125,3 +125,38 @@ test('slGroupByClient: 반품 제외, 이름 키로 묶음', () => {
   assert.ok(!g.some((x) => x.key === '박*미4371/G'));
   assert.ok(g.some((x) => x.key === '민*금/G'));
 });
+
+test('slOrderRows: 사은품 포함 2줄', () => {
+  const o = C.slOrderRows(FX('trade-order-gift.html'));
+  assert.equal(o.length, 2);
+  const main = o.find((x) => !x.gift), gift = o.find((x) => x.gift);
+  assert.deepEqual([main.barcode, main.settle, main.qty, main.price], ['2609E8', 389900, 1, 557000]);
+  assert.deepEqual([gift.barcode, gift.settle, gift.price], ['2604PG', null, 1400]);
+  assert.equal(main.date, gift.date);
+});
+
+test('slOrderRows: 수량 2 는 정산 259,000 줄 2개 + 사은품 1줄', () => {
+  const o = C.slOrderRows(FX('trade-order-qty2.html'));
+  assert.equal(o.length, 3);
+  assert.deepEqual(o.filter((x) => !x.gift).map((x) => [x.barcode, x.settle, x.name]).sort(), [['2609RX', 259000, 'F-위스퍼샤인R'], ['2609RY', 259000, 'F-위스퍼샤인R']]);
+  assert.deepEqual(o.filter((x) => x.gift).map((x) => x.barcode), ['2604P6']);
+});
+
+test('slOrderRows: 비고에 색상이 앞에 붙은 정산', () => {
+  const o = C.slOrderRows(FX('trade-order-sold.html'));
+  assert.deepEqual([o[0].barcode, o[0].settle, o[0].date, o[0].code], ['240CKK', 29400, '26-09-10', 'F-BF-Z-XX-ZZ-002Q']);
+});
+
+test('slSaleRows: 판매내역 바코드·실판매가, 빈 목록', () => {
+  const s = C.slSaleRows(FX('trade-sale-sold.html'));
+  assert.equal(s.length, 1);
+  assert.deepEqual([s[0].barcode, s[0].price, s[0].dc, s[0].amount], ['240CKK', 42000, 13604, 28396]);
+  assert.deepEqual(C.slSaleRows(FX('trade-sale-empty.html')), []);
+});
+
+test('slTradeUrl', () => {
+  const u = C.slTradeUrl('orderitem', '123734', '하*이3785/G');
+  assert.match(u, /^\/info\/clienttrade\/infoClientTradeView\.do\?tcode=sale_item&vcode=orderitem&/);
+  assert.match(u, /client=123734&/);
+  assert.match(u, /clientName=%ED%95%98\*%EC%9D%B43785%2FG$/);
+});
