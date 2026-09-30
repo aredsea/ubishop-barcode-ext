@@ -350,9 +350,10 @@
           if (lost.length) return fatal('rollback_overreach:' + lost.join(',') + ' (' + reason + ')');
           res.rolledBack = idxValues.length;
           const st = await erp.state();
-          if (st.rows !== foreign.length) return fatal('rollback_incomplete:trade ' + (st.tradeJun || '') + ' rows ' + st.rows + ' (' + reason + ')');
-          if (!foreign.length && (st.tradeJun || st.payJun)) return fatal('rollback_incomplete:trade ' + (st.tradeJun || '') + ' pay ' + (st.payJun || '') + ' (' + reason + ')');
-          res.status = 'skipped'; res.reason = reason + (foreign.length ? ' [남의 줄 ' + foreign.length + '개 남음: ' + foreign.join(',') + ']' : '');
+          //  되돌린 뒤에도 세션에 줄이 남아 있으면(남의 줄이든 정체불명이든) 전체 중단 — 스펙 §4.2-7, oiRunOrder 와 같다.
+          if (st.rows > 0) return fatal('foreign_rows_remain:' + reason + ' [rows ' + st.rows + (foreign.length ? ': ' + foreign.join(',') : '') + ']');
+          if (st.rows !== foreign.length || st.tradeJun || st.payJun) return fatal('rollback_incomplete:trade ' + (st.tradeJun || '') + ' pay ' + (st.payJun || '') + ' rows ' + st.rows + ' (' + reason + ')');
+          res.status = 'skipped'; res.reason = reason;
           return res;
         } catch (e) { return fatal('rollback_exception:' + errMsg(e) + ' (' + reason + ')'); }
       }
@@ -377,6 +378,7 @@
         const form = i === 0 ? await erp.openClient(client, clientName) : await erp.getSaleForm(ctx());
         const v = form.values || {};
         if (String(v.client) !== client) return await fail('client_mismatch:' + v.client + '≠' + client);
+        if (!v.sKey) return await fail('no_sKey');
         const rows0 = form.rows || [];
         if (i === 0) {
           if (rows0.length || v.tradeJun || v.payJun) return await fail('session_not_empty');
@@ -429,6 +431,7 @@
       //  5. 현금결제 — 이 POST 를 보내는 순간부터 paid. 이후 실패는 전부 fatal 이고 결제는 두 번 보내지 않는다.
       const cashHtml = await erp.getCash(ctx());
       const cp = slCashPayload(cashHtml, plan.cash);
+      if (cp.issues.includes('already_paid')) return fatal('already_paid');   // 이미 결제가 있다 — 지우지도 다시 결제하지도 않는다
       if (cp.issues.length) return await fail('cash_payload:' + cp.issues.join(','));
       res.paid = true;
       let pc;
@@ -444,6 +447,8 @@
       const f2 = await erp.getSaleForm(ctx());
       const v2 = f2.values || {}, t10 = f2.form10 || {};
       if (String(v2.client) !== client || String(t10.tradeJun) !== res.tradeJun || String(t10.payJun) !== res.payJun) return fatal('session_changed:' + [v2.client, t10.tradeJun, t10.payJun].join('/'));
+      const lack = (f2.missing || []).concat(SL_FORM10_NAMES.filter((n) => t10[n] == null).map((n) => 'form10.' + n));
+      if (lack.length) return fatal('form10_incomplete:' + [...new Set(lack)].join(','));   // 빈 값으로 판매하기를 보내지 않는다
       const jc = slJunCheck(t10, plan.cash);
       if (!jc.ok) return fatal('receivable:' + jc.reason);
       let jr;

@@ -33,8 +33,10 @@ function makeErp(opts) {
       payBank: '0', payDia: '0', payCard: '0', paySaleOldGold: '0', payCash: C.slComma(cash), payCashPaper: '0', payRemark: '', payEtc: '0',
       txtSaleDate: '26-09-30', regId: '홍해진', beforePrice: opts.beforePrice || '0', beforePoint: '0', saleDcPrice: C.slComma(sum()), usePoint: '0',
       payPrice: C.slComma(sum()), savePoint: '0', afterPrice: srv.payJun && opts.afterPrice ? opts.afterPrice : '0', afterPoint: '0' };
-    return Object.assign({ values: { sKey: f10.sKey, tradeJun: srv.tradeJun, payJun: srv.payJun, client: opts.wrongClient ? '999' : CLIENT.seq, clientName: CLIENT.name },
-      form10: f10, missing: [], rows: srv.rows.map((r) => Object.assign({}, r)) }, over || {});
+    if (opts.dropForm10 && srv.payJun) delete f10[opts.dropForm10];
+    if (opts.switchAfterPay && srv.payJun) f10.tradeJun = '777';
+    return Object.assign({ values: { sKey: opts.noSKey ? '' : f10.sKey, tradeJun: srv.tradeJun, payJun: srv.payJun, client: opts.wrongClient ? '999' : CLIENT.seq, clientName: CLIENT.name },
+      form10: f10, missing: opts.missingAfterPay && srv.payJun ? ['form10.regId'] : [], rows: srv.rows.map((r) => Object.assign({}, r)) }, over || {});
   };
   return {
     calls, srv,
@@ -58,7 +60,7 @@ function makeErp(opts) {
       srv.rows.push({ idx: seq + ',' + bc, saleSeq: seq, barcode: bc, salePrice: 112000, dcPrice: 0, amount: 112000 });
       return { ok: true, msg: '', form: form() };
     },
-    async getModify(saleSeq, ctx) { calls.push(['getModify', saleSeq]); return MODIFY.replace('name="seq" value="376143"', 'name="seq" value="' + saleSeq + '"'); },
+    async getModify(saleSeq, ctx) { calls.push(['getModify', saleSeq]); return (opts.noManager ? MODIFY.replace('form1.saleManager.value = "홍해진";', '') : MODIFY).replace('name="seq" value="376143"', 'name="seq" value="' + saleSeq + '"'); },
     async postModify(fields) {
       const m = Object.fromEntries(fields); calls.push(['postModify', m.seq, m.saleDcPrice]);
       const row = srv.rows.find((r) => r.saleSeq === m.seq);
@@ -68,7 +70,7 @@ function makeErp(opts) {
       if (opts.storeWrongAt === m.seq) f.rows = f.rows.map((r) => (r.saleSeq === m.seq ? Object.assign({}, r, { amount: want }) : r));   // 응답은 정상처럼 보이고 저장만 다르다
       return { ok: true, msg: '', form: f };
     },
-    async getCash(ctx) { calls.push(['getCash', ctx.tradeJun]); return CASHPAY.replace('name="payJun" value="280453"', 'name="payJun" value="' + srv.payJun + '"'); },
+    async getCash(ctx) { calls.push(['getCash', ctx.tradeJun]); return CASHPAY.replace('name="payJun" value="280453"', 'name="payJun" value="' + (opts.cashAlreadyPaid ? '280453' : srv.payJun) + '"'); },
     async postCash(fields) {
       const m = Object.fromEntries(fields); calls.push(['postCash', m.payCash]); srv.cashPosts++;
       if (opts.cashThrows) throw new Error('timeout');
@@ -118,10 +120,10 @@ test('2. 시작 가드: 열린 판매전표가 있으면 skipped:open_trade, 쓰
   for (const w of ['openClient', 'postLine', 'postModify', 'postCash', 'postJun', 'deleteLines']) assert.equal(count(erp, w), 0, w);
 });
 
-test('3. 둘째 줄 전 세션에 남의 줄이 끼어듦 → 둘째 postLine 0, 내 줄만 삭제, skipped·rolledBack 1', async () => {
+test('3. 둘째 줄 전 세션에 남의 줄이 끼어듦 → 둘째 postLine 0, 내 줄만 삭제, 남은 줄이 있으니 fatal:foreign_rows_remain', async () => {
   const erp = makeErp({ foreign: true });
   const r = await C.slRunClient(plan(), erp, hooks);
-  assert.equal(r.status, 'skipped', r.reason);
+  assert.equal(r.status, 'fatal', r.reason); assert.match(r.reason, /^foreign_rows_remain:foreign_row/);
   assert.equal(count(erp, 'postLine'), 1);
   const del = erp.calls.filter((c) => c[0] === 'deleteLines');
   assert.equal(del.length, 1); assert.equal(del[0][1].length, 1); assert.match(del[0][1][0], /^376101,2504L5$/);
@@ -186,7 +188,7 @@ test('9. slRunAll: 첫 고객 fatal → 둘째 고객 blocked, 둘째 고객의 
   assert.equal(count(erp, 'openClient'), 1);
 });
 
-test('9b. slRunAll: 정상 두 고객은 순차로 done · 한 고객 예외는 던지지 않고 fatal 결과', async () => {
+test('9b. slRunAll: 정상 두 고객은 순차로 done · 쓰기 전 예외(state)는 던지지 않고 skipped 결과', async () => {
   const erp = makeErp();
   const res = await C.slRunAll([plan({ key: 'A' }), plan({ key: 'B', lines: [{ barcode: '2504L9', code: '', name: '', gift: false, orderNo: 'x', amount: 1000 }], cash: 1000 })], erp, hooks);
   assert.equal(res[0].status, 'done', res[0].reason);
@@ -233,4 +235,42 @@ test('14. 결제 후 판매폼 GET 이 죽어도(예외) 되돌리지 않고 fat
   const r = await C.slRunClient(plan(), erp, hooks);
   assert.equal(r.status, 'fatal', r.reason); assert.equal(r.paid, true);
   assert.equal(count(erp, 'deleteLines'), 0); assert.equal(count(erp, 'postJun'), 0); assert.equal(erp.srv.cashPosts, 1);
+});
+
+test('15. 결제 후 판매폼의 form10 이 불완전하면(누락 필드·missing) postJun 0 · fatal:form10_incomplete', async () => {
+  for (const o of [{ dropForm10: 'regId' }, { missingAfterPay: true }]) {
+    const erp = makeErp(o);
+    const r = await C.slRunClient(plan(), erp, hooks);
+    assert.equal(r.status, 'fatal'); assert.match(r.reason, /^form10_incomplete:.*regId/); assert.equal(r.paid, true);
+    assert.equal(count(erp, 'postJun'), 0); assert.equal(count(erp, 'deleteLines'), 0); assert.equal(erp.srv.cashPosts, 1);
+  }
+});
+
+test('16. 판매폼에 sKey 가 없으면 postLine 0 (쓰기 전 중단)', async () => {
+  const erp = makeErp({ noSKey: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'skipped'); assert.equal(r.reason, 'no_sKey');
+  assert.equal(count(erp, 'postLine'), 0); assert.equal(count(erp, 'deleteLines'), 0);
+});
+
+test('17. 결제 폼에 이미 payJun 이 있으면 already_paid — 삭제 0 · 결제 0 · fatal', async () => {
+  const erp = makeErp({ cashAlreadyPaid: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.equal(r.reason, 'already_paid');
+  assert.equal(count(erp, 'deleteLines'), 0); assert.equal(count(erp, 'postCash'), 0); assert.equal(count(erp, 'postJun'), 0);
+});
+
+test('18. 결제 후 판매폼의 전표가 바뀌었으면(session_changed) postJun 0 · fatal', async () => {
+  const erp = makeErp({ switchAfterPay: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'fatal'); assert.match(r.reason, /^session_changed/);
+  assert.equal(count(erp, 'postJun'), 0); assert.equal(count(erp, 'deleteLines'), 0);
+});
+
+test('19. 줄 수정 폼에서 판매직원을 못 읽으면(no_sale_manager) postModify 0 · 내 줄 되돌리기', async () => {
+  const erp = makeErp({ noManager: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'skipped', r.reason); assert.match(r.reason, /^modify_payload:.*no_sale_manager/);
+  assert.equal(count(erp, 'postModify'), 0); assert.equal(count(erp, 'postCash'), 0);
+  assert.equal(count(erp, 'deleteLines'), 1); assert.equal(r.rolledBack, 2);
 });
