@@ -585,20 +585,106 @@ git commit -m "docs(판매 처리): Phase 0 판매 쓰기 계약 실측(민*금 
 
 ---
 
-### Task 5 (개요 — Task 4 후 상세화): 어댑터와 실행기
+### Task 5: 판매 폼 읽기·페이로드·실행기 (core) + 유비샵 어댑터
 
-- `src/saleimport-erp.js` — `orderimport-erp.js` 의 `req/post/assertUbdstore` 패턴 그대로. 함수: `state()` · `searchClient(word)`(`/etc/client.do?tcode=sale_item`, `oiClientSearchRows` 재사용) · `trade(vcode, client, clientName)` · 판매 쓰기 4종(Task 4 실측 이름) · `deleteLines`.
-- `saleimport-core.js` 에 `slRunClient(plan, erp, hooks)` / `slRunAll` — 스펙 §4 흐름 1~6, fatal 이면 이후 'blocked'. 결제 전 실패 → 내 줄 삭제 후 다음, 결제 후 실패 → fatal.
-- 테스트 `tests/saleimport-run.test.js`: 가짜 erp 로 (1) 가드 실패 시 쓰기 0 (2) 세션 client 불일치 시 결제·판매 POST 0 + 내 줄만 삭제 (3) 결제 후 실패 → fatal·이후 blocked (4) 최종 대조 실패 시 결제 POST 0. 변이(가드 제거·대조 제거)로 테스트가 실패하는지 확인.
+**Files:**
+- Modify: `src/saleimport-core.js`
+- Create: `src/saleimport-erp.js`, `tests/saleimport-run.test.js`
+- Modify: `tests/saleimport-core.test.js` (폼·페이로드 단위 테스트 추가)
+- 읽기 전용 참고(수정 금지): `src/orderimport-core.js`(`oiFieldValue` `oiExtractHidden` `oiTListAllRows` `oiTListRows` `oiSubmitResult` `oiClientSearchRows` `oiRunOrder`), `src/orderimport-erp.js`(`req/post/assertUbdstore` 패턴)
+- 픽스처(이미 있음, 수정 금지): `tests/fixtures/saleimport/saleform-line.html`, `modifyform.html`, `cashpay-form.html`
 
-### Task 6 (개요 — Task 4 후 상세화): 패널·배선·배포
+**계약의 정본은 스펙 §4.1(실측 표)과 D8(미수금 0)이다. 이 Task 를 시작하기 전에 스펙 §4 전체를 읽어라.**
 
-- `src/saleimport.js`: orderimport.js 의 `ensureXls/readXls`(같은 `ubOiInjectXls`·`ub-oi` 메시지) · 파일 → `slParseSheet`/`slComputeFinals` → `slGroupByClient` → 고객 조회(정확일치 자동, 아니면 검색창) → 거래내역 읽기 → `slMatchClient` → 검토 표(차단/제외/이미 판매, 기본 체크) → [판매 시작] → 진행·결과·로그 JSON. 실행 중 패널 잠금·`beforeunload`.
-- `src/skin.js`: `isSaleWrite()` 페이지에 `ubSaleImport` 섹션(버튼 `#ub-sl-open`), 기본값 `ubSaleImport: true`.
-- `popup/popup.html/js`: 스위치 "판매 처리 가져오기".
-- `manifest.json`: content_scripts `saleItemWriteForm.do` → `src/erp.js, src/orderimport-core.js, src/saleimport-core.js, src/saleimport-erp.js, src/saleimport.js`; version `4.3.0`.
-- `build-shell-index.ps1` `$patterns` + `tests/loader-integrity.test.js` `SHELL_PATTERNS` 에 saleimport 3파일 추가 → `pwsh -File build-shell-index.ps1` → `node --test tests/loader-integrity.test.js`.
-- UI 는 렌더 스크린샷(데스크톱)으로 확인.
+**Interfaces:**
+- Consumes: Task 1~3 의 `slMatchClient` 결과 `SaleLinePlan = { barcode, code, name, gift, orderNo, amount }`, `Match.cash`.
+- core 는 브라우저에선 `globalThis.ubOi`(orderimport-core, manifest 에서 먼저 실림), node 에선 `require('./orderimport-core.js')` 로 폼 유틸을 얻는다:
+  ```js
+  const O = (typeof module !== 'undefined' && module.exports) ? require('./orderimport-core.js') : globalThis.ubOi;
+  ```
+- Produces (core):
+  - `SL_FORM10_NAMES` — 스펙 §4.1-4 의 form10 24필드 이름 배열(순서 그대로).
+  - `slComma(n: number) → string` (`75722`→`'75,722'`, 음수 부호 유지)
+  - `slReadSaleForm(html) → { values: { sKey, tradeJun, payJun, client, clientName }, form10: {name→string}, missing: string[], rows: [{ idx, saleSeq, barcode, salePrice, dcPrice, amount }] }`
+    - rows 는 `O.oiTListAllRows` 의 헤더 행(class title_line)에서 **헤더 이름으로** `판매가`·`DC금액`·`실판매가` 열 위치를 찾아 읽는다(첫 줄 숫자만, 콤마 제거). idx = `'<saleSeq>,<barcode>'`.
+    - 픽스처 기대: values `{ tradeJun:'114348', payJun:'280453', client:'123699', clientName:'민*금2837/G' }`, rows `[{ idx:'376143,2504L5', saleSeq:'376143', barcode:'2504L5', salePrice:112000, dcPrice:36278, amount:75722 }]`, form10.afterPrice `'0'`, form10.payPrice `'75,722'`.
+  - `slSaleManager(html) → string` — 인라인 스크립트 `form1.saleManager.value = "X";` 의 X. 없으면 `''`. 픽스처 기대 `'홍해진'`.
+  - `slModifyPayload(html, amount) → { fields: [name, value][], issues: string[] }`
+    - form1 의 모든 필드를 문서 순서대로(hidden 11 + `salePrice saleQty tmpSalePrice dcRate dcPrice cashPoint saleDcPrice saleManager tmpPoint usePoint remark`, `imageField22` 는 제외) 모은 뒤
+    - `saleDcPrice = slComma(amount)`, `dcPrice = slComma(tmp − amount − cashPoint)`, `dcRate = (Math.round(dcPrice / tmp * 10000) / 100).toFixed(2)`(tmp=0 이면 `'0.00'`), `saleManager = slSaleManager(html)`.
+    - issues: `saleManager` 빈값 → `'no_sale_manager'`; `amount` 가 정수 아님·음수·tmp 초과 → `'bad_amount'`; 필수 이름 누락 → `'missing:<name>'`.
+    - 픽스처 + 75722 기대: `saleDcPrice='75,722' dcPrice='36,278' dcRate='32.39' saleManager='홍해진' seq='376143' tradeJun='114348'`. 0 원(사은품) 기대: `dcPrice='112,000' dcRate='100.00'`.
+  - `slCashPayload(html, cash) → { fields, issues }` — hidden 전부(문서 순서) + `payCash=slComma(cash) payCashPaper='0' payEtc='0' remark=''`. **`payJun` 이 비어 있지 않으면 issue `'already_paid'`**(결제 1회 규칙, 스펙 §4.1). 픽스처는 payJun 280453 이라 `already_paid` 가 나와야 한다; payJun 을 비운 HTML 로는 issue 0·`payCash='75,722'`·`tradeType='3'`.
+  - `slJunCheck(form10, cash) → { ok, reason }` — D8: `beforePrice`·`afterPrice` 가 `'0'`, `payPrice`·`payCash`·`saleDcPrice` 가 `slComma(cash)` 와 같아야 ok. 아니면 reason 에 어긋난 칸 이름.
+  - `slJunPayload(form10) → [name, value][]` — `SL_FORM10_NAMES` 순서로.
+  - `slRunClient(plan, erp, hooks) → Result`, `slRunAll(plans, erp, hooks) → Result[]`
+    - `plan = { key, client: { seq, name }, lines: SaleLinePlan[], cash }`
+    - `Result = { key, status: 'done'|'skipped'|'fatal'|'blocked', reason, tradeJun, payJun, saleSeqs: [], rolledBack: 0, paid: false }`
+- Produces (erp, `globalThis.ubSlErp`) — 모두 `orderimport-erp.js` 의 `req/post/assertUbdstore` 를 복사해 같은 방식(30초 타임아웃, 세션 만료 리다이렉트 검출)으로:
+  - `state() → { tradeJun, payJun, rows: number, form }` — plain GET `saleItemWriteForm.do?tcode=sale_item&pageSize=20&searchSortType=seq` → `slReadSaleForm`
+  - `openClient(client, clientName) → form` — 스펙 §4.1-0 GET
+  - `getSaleForm(ctx) → form` — `ctx = { tradeJun, payJun, client, clientName }` 로 판매폼 GET
+  - `postLine(form, barcode) → { ok, msg, form }` — form 의 values 로 10필드 조립(barcode 만 채움) POST, 응답 HTML 을 `slReadSaleForm`
+  - `getModify(saleSeq, ctx) → html` / `postModify(fields) → { ok, msg, form }`
+  - `getCash(ctx) → html` / `postCash(fields) → { ok, msg, payJun, payCash }` — 응답 URL 의 payJun·html 의 payCash
+  - `postJun(fields) → { ok, msg }`
+  - `deleteLines(ctx, idxValues) → { ok, msg, before }` — 스펙 §4.1-D(미실측, `del()` 그대로): 판매폼 GET 으로 sKey·before rows → `POST /sale/item/saleItemDelete.do?tcode=sale_item&reqPage=1&pageSize=20&searchSortType=seq&tradeJun=…&payJun=…&shop=LT&client=…&shopName=FASHION&clientName=…` 에 `sKey` + `idx`…
+  - `trade(client, clientName) → { orders, sales }` — `slTradeUrl` 두 개 GET → `slOrderRows` / `slSaleRows`
+  - `searchClient(word) → [{ seq, name, phone }]` — `POST /etc/client.do?tcode=sale_item` (`formname=form1 url=/sale/item/saleItemWriteForm.do actFlag=1 jun= shop=LT shopName=FASHION searchWordType=clientName searchWord pageSize=100`) → `O.oiClientSearchRows`
+  - 성공 판정은 항상 `O.oiSubmitResult(url)` (msg 빈값) **그리고** 상태 변화.
+
+**slRunClient 흐름 (스펙 §4.2 — 순서·판정 그대로):**
+1. `erp.state()` — tradeJun·payJun 빈값·rows 0 아니면 `skipped:'open_trade'`(쓰기 0).
+2. 줄마다: 첫 줄은 `erp.openClient`, 이후 `erp.getSaleForm({tradeJun,…})` → form.values.client 가 plan.client.seq 와 다르면 중단 → rows 가 **내가 넣은 saleSeq 집합과 정확히 같아야**(남의 줄 끼어듦 검출) → `erp.postLine(form, barcode)` → 응답 rows 가 이전 + **정확히 1개 새 행이고 그 barcode 가 일치**해야 한다. 새 행 saleSeq 를 기록, 첫 줄이면 tradeJun 보관. POST 예외(응답 유실)는 `fatal:'line_unverified'`(되돌리지 않음 — orderimport 와 같은 이유).
+3. 줄마다 실판매가: `erp.getModify(saleSeq, ctx)` → `slModifyPayload(html, line.amount)` issues 있으면 중단 → `postModify` → 응답 form 의 그 행 `amount === line.amount`.
+4. 최종 대조: `getSaleForm` → rows 의 (barcode, amount) 다중집합 = plan.lines, Σamount = plan.cash, `form10.beforePrice === '0'`.
+5. 결제: `getCash(ctx)` → `slCashPayload(html, plan.cash)` issues 있으면 중단 → `postCash` → payJun 비어 있지 않음·payCash = cash. **이 POST 를 보내는 순간부터 `res.paid = true`** — 이후 모든 실패는 `fatal`(되돌리지 않음). postCash 예외도 fatal.
+6. 판매하기: `getSaleForm({tradeJun, payJun,…})` → `slJunCheck(form.form10, cash)` 실패면 **postJun 을 보내지 않고** `fatal:'receivable:<칸>'`(D8) → `postJun(slJunPayload(form.form10))` → `state()` 가 tradeJun·payJun 빈값·rows 0 → `erp.trade(client)` 의 sales 에 각 barcode 와 amount 가 있어야 `done`.
+7. 실패(5 이전): 넣은 saleSeq 가 있으면 `state()` 로 세션 tradeJun 이 내 것인지 확인(아니면 fatal) → `deleteLines` → `getSaleForm` 으로 내 saleSeq 가 사라졌는지·남의 줄이 before 대비 사라지지 않았는지(`rollback_overreach`) → `state()` 비었는지. 하나라도 어긋나면 fatal. 되돌리기 성공이면 `skipped` + `rolledBack`.
+8. `slRunAll`: 고객 순차, `fatal` 이면 이후 전부 `blocked:'halted'`. 한 고객 예외는 fatal 결과로 담는다(던지지 않는다).
+
+- [ ] **Step 1: 폼·페이로드 단위 테스트 작성(RED)** — `tests/saleimport-core.test.js` 에 위 Produces 의 "픽스처 기대" 전부를 assert 로. 추가로: `slComma(-5)`→`'-5'`; `slModifyPayload` 에 스크립트를 지운 HTML → issues 에 `no_sale_manager`; `slJunCheck` 에 afterPrice `'75,722'` → ok false·reason 에 `afterPrice`; beforePrice `'1,000'` → reason 에 `beforePrice`; payCash 가 cash 와 다르면 reason 에 `payCash`.
+- [ ] **Step 2: 실행해 실패 확인** — `node --test tests/saleimport-core.test.js`
+- [ ] **Step 3: core 폼·페이로드 함수 구현 → 통과**
+- [ ] **Step 4: 실행기 배선 테스트 작성(RED)** — `tests/saleimport-run.test.js`. 가짜 erp(메모리 상태 머신: 세션 tradeJun/payJun/rows, 호출 기록)를 테스트 파일 안에 만든다(`orderimport-run.test.js` 의 가짜 erp 패턴 참고). 필수 케이스:
+  1. 정상 2줄(본품 1 + 사은품 0원): 호출 순서 = state → openClient → postLine → getSaleForm → postLine → getModify → postModify ×2 → getSaleForm → getCash → postCash → getSaleForm → postJun → state → trade; 결과 `done`, paid true.
+  2. 시작 가드: state 에 tradeJun 있음 → `skipped:'open_trade'`, post* 호출 0.
+  3. 둘째 줄 전 세션에 남의 줄이 끼어듦 → 둘째 postLine 호출 0, 내 줄만 deleteLines, `skipped`, rolledBack 1.
+  4. 최종 대조 실패(한 행 amount 가 다르게 저장됨) → postCash 호출 0, 되돌리기.
+  5. 결제 후 slJunCheck 실패(afterPrice ≠ 0) → **postJun 호출 0**, `fatal`, deleteLines 호출 0.
+  6. postCash 예외 → `fatal`, deleteLines 0, postJun 0.
+  7. postLine 예외 → `fatal:'line_unverified…'`, deleteLines 0.
+  8. 되돌리기가 남의 줄까지 지움(before 에 있던 남의 saleSeq 사라짐) → `fatal:'rollback_overreach…'`.
+  9. slRunAll: 첫 고객 fatal → 둘째 고객 `blocked`, 둘째 고객 erp 호출 0.
+- [ ] **Step 5: 실패 확인 → `slRunClient`/`slRunAll` 구현 → 통과** — `node --test tests/saleimport-core.test.js tests/saleimport-run.test.js`
+- [ ] **Step 6: 변이 확인** — 구현에서 (a) 시작 가드 (b) slJunCheck 호출 (c) 결제 후 fatal 처리 를 하나씩 지워 각각 테스트가 **실패**하는지 확인하고 되돌린다. 결과를 보고서에 표로.
+- [ ] **Step 7: 어댑터 `src/saleimport-erp.js` 작성** — 위 erp 목록. node 테스트 대상 아님(fetch). 문법 확인: `node --check src/saleimport-erp.js`.
+- [ ] **Step 8: 커밋** — `feat(판매 처리): 판매 폼 읽기·페이로드·실행기·유비샵 어댑터`
+
+### Task 6: 패널·배선·배포 준비
+
+**Files:**
+- Create: `src/saleimport.js`
+- Modify: `src/skin.js`(사이드바 섹션), `popup/popup.html`, `popup/popup.js`(스위치), `manifest.json`(content_scripts·version), `build-shell-index.ps1`, `tests/loader-integrity.test.js`(SHELL_PATTERNS), `shell-files.json`(생성물)
+- 참고(수정 금지): `src/orderimport.js`(패널 구조·ensureXls/readXls·실행 잠금·beforeunload·로그 JSON — **같은 구조로 만든다**)
+
+**Interfaces:**
+- Consumes: `globalThis.ubSl`(core), `globalThis.ubSlErp`, background 메시지 `ubOiInjectXls` 와 MAIN 의 `orderimport-xls.js`(`source:'ub-oi'` 요청 / `source:'ub-oi-xls'` 응답) — **재사용, 수정 금지**.
+- storage 키: 스위치 `ubSaleImport`(기본 true), 장부 `ubSlLedger` = `{ '<GS주문번호>': { at, tradeJun, barcodes } }`.
+
+- [ ] **Step 1: `src/saleimport.js`** — `saleItemWriteForm.do` top window 에서만. 흐름:
+  1. 사이드바 버튼 `#ub-sl-open` 클릭 → 패널(`#ub-sl-panel`, 반투명 덮개 `#ub-sl-veil`).
+  2. 파일 선택 → `readXls` → `slParseSheet` → `slComputeFinals`(실패면 오류 배너, 끝) → `slGroupByClient`.
+  3. 고객마다(읽기만, 순차): `E.searchClient(key)` 에서 이름 `===` 정확일치 1명이면 자동, 아니면 **차단 + 검색창**(수취인 이름을 미리 채움, 결과 목록에서 고르면 그 고객으로 확정). 확정되면 `E.trade(seq, name)` → `slMatchClient`. **고객 판매폼 form10 의 `beforePrice` 가 0 이 아니면 차단('기존 미수금 있음', D8)** — 이를 위해 `E.openClient` GET 결과의 form10 을 쓴다(쓰기 없음).
+  4. 검토 표: 고객 단위 행(고객명·판정 칩·GS 주문번호들·바코드/상품명·실판매가·사은품 0원 줄·현금 합계). 반품 행은 별도 회색 '수동 처리 필요' 목록. 부분 판매(한 고객의 일부 행만 이미 판매)는 그 행을 '이미 판매됨' 으로 표시. 장부에 있는 GS 주문번호는 '이전에 처리함(날짜)' 경고. 체크 가능 = status 'ok' 이고 차단 없음, 기본 체크.
+  5. 상단 요약: 처리 대상 고객 수 · 줄 수 · 현금 합계 · 차단/제외 수.
+  6. [판매 시작] → 확인창(고객 수·현금 합계) → 실행 중 잠금(패널 컨트롤 disabled, 덮개 문구 "실행 중 — 유비샵 판매 화면을 조작하지 마세요", beforeunload) → `slRunAll` → 결과 표(상태·사유·판매전표·결제전표·되돌림) + 장부 기록(done 만) + [로그 JSON].
+- [ ] **Step 2: `src/skin.js`** — `isOrderWrite()` 옆에 `isSaleWrite()`(`/sale/item/saleItemWriteForm.do`) 추가, 기본값 `ubSaleImport: true`, 섹션 문구 "GS 판처 xlsx 불러오기" / "파일 → 검토 → 판매 시작. 실행 중엔 판매 화면을 건드리지 마세요." (orderimport 섹션과 같은 마크업).
+- [ ] **Step 3: popup 스위치** "GS 판매 처리 가져오기"(`ubSaleImport`).
+- [ ] **Step 4: manifest** — content_scripts 항목 추가: matches `http(s)://ubdstore.ubshop.biz/sale/item/saleItemWriteForm.do*`, js `["src/erp.js","src/orderimport-core.js","src/saleimport-core.js","src/saleimport-erp.js","src/saleimport.js"]`, ISOLATED, document_idle. `"version": "4.3.0"`.
+- [ ] **Step 5: SHELL 인덱스** — `build-shell-index.ps1` 의 `$patterns` 와 `tests/loader-integrity.test.js` 의 `SHELL_PATTERNS` 끝에 `'src/saleimport-core.js','src/saleimport-erp.js','src/saleimport.js'` 를 같은 순서로 추가 → `pwsh -File build-shell-index.ps1` → `node --test tests/loader-integrity.test.js tests/saleimport-*.test.js` 전부 PASS. ⚠ 트레이 D102LabelPrinter 를 끈 상태에서.
+- [ ] **Step 6: 렌더 확인** — 스크래치패드에 가짜 chrome/erp 하네스(orderimport 4.2.9 때와 같은 방식: 가짜 `chrome.storage`·`chrome.runtime.sendMessage`, 가짜 `ubSlErp`, 실제 core+UI, 이 xlsx 행 배열)로 검토 표를 띄워 데스크톱 스크린샷 1장. 체크 가능 12 · 이미 판매 1(하*이) · 차단 4(이름 불일치 — 민*금 포함) · 반품 1 이 보여야 한다.
+- [ ] **Step 7: 커밋** — `feat(판매 처리): 상품판매 사이드바 패널·스위치·SHELL 배선 (4.3.0)`
 
 ### Task 7: 검수(T3)·라이브 첫 실행
 
