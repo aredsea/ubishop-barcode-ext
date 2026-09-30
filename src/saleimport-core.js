@@ -458,6 +458,11 @@
       const f2 = await erp.getSaleForm(ctx());
       const v2 = f2.values || {}, t10 = f2.form10 || {};
       if (String(v2.client) !== client || String(t10.tradeJun) !== res.tradeJun || String(t10.payJun) !== res.payJun) return fatal('session_changed:' + [v2.client, t10.tradeJun, t10.payJun].join('/'));
+      //  판매하기 직전 줄 대조 — 결제 뒤 다른 탭이 0원 줄을 끼워 넣어도 금액 필드는 그대로라, 줄 목록으로 다시 확인한다(이미 결제했으니 fatal).
+      const jrows = f2.rows || [];
+      if (!sameBag(jrows.map((r) => String(r.saleSeq)), res.saleSeqs.map(String))) return fatal('jun_rows:seq ' + jrows.map((r) => r.saleSeq).join(',') + '≠' + res.saleSeqs.join(','));
+      if (!sameBag(jrows.map(bagKey), lines.map(bagKey))) return fatal('jun_rows:lines ' + jrows.map(bagKey).join('|') + '≠' + lines.map(bagKey).join('|'));
+      if (jrows.reduce((s, r) => s + r.amount, 0) !== plan.cash) return fatal('jun_rows:sum≠' + plan.cash);
       const lack = (f2.missing || []).concat(SL_FORM10_NAMES.filter((n) => t10[n] == null).map((n) => 'form10.' + n));
       if (lack.length) return fatal('form10_incomplete:' + [...new Set(lack)].join(','));   // 빈 값으로 판매하기를 보내지 않는다
       const jc = slJunCheck(t10, plan.cash);

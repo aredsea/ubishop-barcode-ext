@@ -45,6 +45,10 @@ function makeErp(opts) {
     async getSaleForm(ctx) {
       calls.push(['getSaleForm', ctx.tradeJun, ctx.payJun]);
       if (opts.formThrowsAfterPay && srv.payJun) throw new Error('timeout');
+      if (opts.foreignAfterCash && srv.payJun && !srv.injected) {
+        srv.injected = true;
+        srv.rows.push({ idx: '999997,XXXXXX', saleSeq: '999997', barcode: 'XXXXXX', salePrice: 30000, dcPrice: 30000, amount: 0 });   // 결제 뒤 다른 탭이 끼운 0원 줄
+      }
       if (opts.foreign && !srv.injected && srv.rows.length === 1) {
         srv.injected = true;
         srv.rows.push({ idx: '999999,ZZZZZZ', saleSeq: '999999', barcode: 'ZZZZZZ', salePrice: 50000, dcPrice: 0, amount: 50000 });
@@ -290,4 +294,11 @@ test('21. 수정 POST 응답에 낯선 줄이 섞여 있으면 postCash 0 · 내
   const r = await C.slRunClient(plan(), erp, hooks);
   assert.equal(r.status, 'skipped', r.reason); assert.match(r.reason, /^modify_rows:/);
   assert.equal(count(erp, 'postModify'), 1); assert.equal(count(erp, 'postCash'), 0); assert.equal(count(erp, 'deleteLines'), 1);
+});
+
+test('22. 결제 뒤 다른 탭이 0원 줄을 끼움 → postJun 0 · fatal:jun_rows · 삭제 0 · 결제 1회', async () => {
+  const erp = makeErp({ foreignAfterCash: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'fatal', r.reason); assert.match(r.reason, /^jun_rows/);
+  assert.equal(count(erp, 'postJun'), 0); assert.equal(count(erp, 'deleteLines'), 0); assert.equal(erp.srv.cashPosts, 1);
 });
