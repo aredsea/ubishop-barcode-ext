@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const C = require(path.join(__dirname, '..', 'src', 'saleimport-core.js'));
-const FX = (n) => fs.readFileSync(path.join(__dirname, 'fixtures', 'saleimport', n), 'utf8');
+//  autocrlf=true 체크아웃은 픽스처를 CRLF 로 쓴다 — 테스트의 '\n' 치환이 빗나가지 않게 LF 로 맞춘다.
+const FX = (n) => fs.readFileSync(path.join(__dirname, 'fixtures', 'saleimport', n), 'utf8').replace(/\r\n/g, '\n');
 const ROWS = JSON.parse(FX('rows-gs.json'));
 
 test('slHeaderMap: 이름으로 찾고 공백 무시, 빠지면 missing', () => {

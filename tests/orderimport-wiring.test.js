@@ -42,7 +42,7 @@ test('manifest: orderItemWriteForm.do 에 erp → core → erp어댑터 → UI �
   assert.equal(cs.run_at, 'document_idle');
   assert.deepEqual(cs.matches, ['http://ubdstore.ubshop.biz/order/item/orderItemWriteForm.do*', 'https://ubdstore.ubshop.biz/order/item/orderItemWriteForm.do*']);
   assert.ok(man.permissions.includes('scripting'), 'SheetJS MAIN 주입에 scripting 권한이 필요하다');
-  assert.ok(/^4\.2\.\d+$/.test(man.version), 'SHELL 버전은 4.2.x 여야 한다(4.1.9 → patch>9 규칙)');
+  { const [ma, mi] = man.version.split('.').map(Number); assert.ok(ma > 4 || (ma === 4 && mi >= 2), 'SHELL 버전은 4.2.0 이상이어야 한다(주문 가져오기 도입 버전, 4.3.0 판매 처리 가져오기)'); }
 });
 
 test('background: ubOiInjectXls 가 vendor+브리지를 MAIN 에 파일 주입한다', () => {
