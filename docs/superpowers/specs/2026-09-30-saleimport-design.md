@@ -93,31 +93,40 @@ Y_r  = Y합 × W_r / ΣW      Z_r = Z합 × W_r / ΣW      AA_r = AA합 × W_r /
 
 ## 4. 실행 (체크한 고객 순차)
 
-> 판매 쪽 쓰기 계약은 **Phase 0 에서 실측으로 확정**한다(§5). 아래는 화면 스크립트에서 읽은 흐름이다.
+> **Phase 0 실측 완료(2026-09-30 14:17~14:33, 사장님 지시·입회)** — `민*금2837/G`(#123699) 1건을 실제로 판매했다.
+> 바코드 2504L5 · 판매가 112,000 · DC 36,278(32.39%) · 실판매가 75,722 · 현금 75,722 · 판매전표 tradeJun **114348** · 결제 payJun **280453**.
+> 완료 후 plain GET 세션 비움(tradeJun 빈값·idx 0), 판매내역에 위 값 그대로. 아래 표가 그 요청이다.
 
-화면에서 확인한 구조(2026-09-30, 읽기):
-- `saleItemWriteForm.do` form1 → `POST /sale/item/saleItemWrite.do` (필드 `sKey pageSize searchSortType tradeJun payJun shop client shopName clientName barcode`, 바코드 6자리 검사 `checkBarcode`).
-- 줄 수정 `modify(seq)` → `GET /sale/item/saleItemModifyForm.do?seq=` (실판매가·DC 입력 추정 — Phase 0 확인).
-- 결제 `pay(3,'Cash')` → `GET /pay/client/clientCashPayWriteForm.do?tradeType=3&tradeJun=…` → form1 `POST /pay/client/clientCashPayWrite.do`.
-- 판매하기 form10 → `POST /jun/saleitem/saleItemJunWrite.do` (필드 `payBank payDia payCard paySaleOldGold payCash payCashPaper payRemark payEtc txtSaleDate regId beforePrice … afterPoint`).
+### 4.1 쓰기 계약 (라이브 실측)
 
-고객 한 명의 흐름:
-1. **가드**: 파라미터 없는 GET `saleItemWriteForm.do` → 열린 판매전표(tradeJun) 없음·0행이 아니면 시작하지 않는다.
-2. **줄 등록**(줄마다): 키 발급 GET → `saleItemWrite.do` POST(client·barcode) → 응답의 목록에서 그 바코드 행 +1, 첫 줄에서 생긴 tradeJun 을 세션 보관.
-3. **실판매가 입력**(줄마다): 수정폼 GET → 실판매가 설정 POST → 목록 행의 실판매가 = 기대값.
-4. **현금결제**: 결제폼 GET → `payCash = 합계` POST → 판매폼의 결제 합계가 합계와 같은지.
-5. **판매하기**: `saleItemJunWrite.do` POST → plain GET 세션 비움 → 그 고객 **판매내역**에서 바코드·실판매가 재대조.
-6. **실패 처리**
-   - 4 이전 실패 → 이번 실행에서 넣은 판매 줄만 삭제(form3 `idx`) → 세션 0행 확인 → 다음 고객. 삭제 후에도 줄이 남으면 **전체 중단**.
-   - 4 이후 실패 → **전체 중단**하고 상태 보고. 결제·판매를 자동으로 되돌리지 않는다.
+| # | 단계 | 요청 | 페이로드 | 결과·판정 |
+|---|---|---|---|---|
+| 0 | 고객 선택(읽기) | `GET /sale/item/saleItemWriteForm.do?tcode=sale_item&client=<seq>&clientName=<enc>&shop=LT&shopName=FASHION` | — | 고객 팝업의 `setSeting` 이 하는 일 그대로(쓰기 없음). form1 에 `client`·`clientName` 이 채워지고 `sKey` 발급 |
+| 1 | 줄 등록 | `POST /sale/item/saleItemWrite.do?tcode=sale_item` | form1 10필드: `sKey pageSize=20 searchSortType=seq tradeJun payJun shop=LT client shopName=FASHION clientName barcode`(첫 줄은 tradeJun·payJun 빈값) | `saleItemWriteForm.do?…&barcode=<bc>…` 로 리다이렉트. 응답 hidden `tradeJun` 에 **새 판매전표 번호**(첫 줄에서 생성). 목록 `input[name=idx]` value = `<saleSeq>,<barcode>` (예 `376143,2504L5`). 판매가 = 상품 판매가(112,000), 실판매가 = 판매가 |
+| 2 | 실판매가 | `GET /sale/item/saleItemModifyForm.do?tcode=sale_item&seq=<saleSeq>&reqPage=1&pageSize=20&searchSortType=seq&tradeJun=<t>&payJun=&shop=LT&client=<c>&shopName=FASHION&clientName=<enc>` → `POST /sale/item/saleItemModify.do?tcode=sale_item` | form1 22필드: hidden `sKey pageSize searchSortType tradeJun payJun seq barcode shop client shopName clientName` + `salePrice saleQty tmpSalePrice`(읽기 전용, 그대로) + **`dcRate dcPrice saleDcPrice`** + `cashPoint saleManager tmpPoint usePoint remark`(그대로) | 화면 JS(`changeSaleDcPrice`→`calDcPrice2`·`calDcRate`)가 `dcPrice = tmpSalePrice − saleDcPrice`(36,278), `dcRate` = 소수 2자리(32.39)를 채운다 → **확장도 세 값을 같은 규칙으로 계산해 보낸다**. 금액은 콤마 문자열. 판매 화면으로 리다이렉트, 목록 행에 DC·실판매가 반영 |
+| 3 | 현금결제 | `GET /pay/client/clientCashPayWriteForm.do?tcode=sale_item&url=/sale/item/saleItemWriteForm.do&tradeType=3&reqPage=1&pageSize=20&searchSortType=seq&tradeJun=<t>&payJun=&shop=LT&client=<c>&shopName=FASHION&clientName=<enc>` → `POST /pay/client/clientCashPayWrite.do` | form1: hidden `sKey url tcode reqPage pageSize searchSortType tradeType=3 tradeJun payJun shop client shopName clientName searchRegId searchJunNum searchTradeType searchShop searchWordType3 searchWord3 syear smonth sday eyear emonth eday` + **`payCash`**(콤마 문자열) `payCashPaper=0 payEtc=0 remark` | 같은 결제폼으로 리다이렉트, URL·hidden 에 **새 `payJun`**(280453), 화면 '총 결제금액' = payCash |
+| 3b | 결제창완료(읽기) | `GET saleItemWriteForm.do?…&tradeJun=<t>&payJun=<p>…` | — | 팝업의 `setPay()` 는 opener 를 이 URL 로 다시 여는 것뿐(쓰기 없음). form10 `payCash payPrice` = 결제액, `afterPrice`(거래 후 미수) = 0 |
+| 4 | 판매하기 | `POST /jun/saleitem/saleItemJunWrite.do?tcode=sale_item` | form10 24필드 그대로: `sKey pageSize searchSortType tradeJun payJun shop client payBank payDia payCard paySaleOldGold payCash payCashPaper payRemark payEtc txtSaleDate regId beforePrice beforePoint saleDcPrice usePoint payPrice savePoint afterPrice afterPoint` | plain 판매폼으로 리다이렉트. plain GET → tradeJun 빈값·idx 0. 판매내역에 줄. 화면의 `checkForm2` 는 `confirm("판매처리 하시겠습니까?")` 를 띄우지만 fetch 경로엔 해당 없음 |
+| D | 판매 줄 삭제(**미실측**) | `POST /sale/item/saleItemDelete.do?tcode=sale_item` + CONST_URL | form3: `sKey` + 체크된 `idx`(=`<saleSeq>,<barcode>`) | 화면 `del(form2,form3)` 스크립트에서 읽음. 주문 가져오기와 같은 이유로 라이브 미실측 — fail-closed 로 설계 |
 
-## 5. Phase 0 — 쓰기 계약 실측 (사장님 입회)
+- `sKey` 는 매 쓰기 직전 GET 에서 새로 받고, 그 GET 과 POST 사이에 다른 GET 을 끼우지 않는다(주문 가져오기와 동일 규칙).
+- 판매전표는 **로그인 세션당 1개**로 보인다(plain GET 이 열린 전표를 보여 준다) — 주문 가져오기 §5.0 과 같은 동시작업 위험.
+- 결제(3)는 판매하기(4) **전에** 이미 결제전표(payJun)를 만든다. 3 이후~4 이전에 실패하면 결제전표가 남는다 → **3 이후 실패는 fatal(전체 중단·보고)**, 결제 취소를 자동으로 하지 않는다.
+- ⚠ 사은품 줄(실판매가 0 → dcRate 100) 은 이번 실측에 없었다. 첫 라이브 실행에서 사은품 있는 고객 1명으로 확인한다.
+- ⚠ Claude Code 의 자동 모드 검사가 3(현금결제)을 '실제 금전 거래'로 분류해 막았다(자사 ERP 장부 기록이며 금전 이동 아님 — 사장님 확인 후 권한 우회 모드에서 진행). **확장 런타임과는 무관**하다(확장은 사장님 브라우저에서 돈다).
 
-쓰기 요청 4종(줄 등록 · 실판매가 · 현금결제 · 판매하기)과 판매 줄 삭제의 정확한 필드·응답·판정을 **실제 고객 1명**으로 확인한다.
-후보: `민*금2837/G`(주문 1줄 2504L5, 사은품 없음, 정산 78,400 → 실판매가 75,722).
-- 사장님이 보시는 앞에서 진행, 요청·응답을 기록해 이 문서 §4 를 실측 표로 갱신한다.
-- 확인할 것: tradeJun 이 판매에서도 세션당 1개인지 · 실판매가가 DC금액으로 들어가는지 실판매가로 들어가는지 · 현금결제가 판매폼 결제 합계에 반영되는지 · `sKey` GET→POST 규칙 · 판매 줄 삭제 계약.
-- Phase 0 전에는 실행기 코드를 라이브에 쓰지 않는다.
+### 4.2 고객 한 명의 흐름
+1. **가드**: plain GET `saleItemWriteForm.do?tcode=sale_item&pageSize=20&searchSortType=seq` → tradeJun 빈값·idx 0 이 아니면 시작하지 않는다.
+2. **줄 등록**(줄마다, §4.1-0·1): 고객 지정 GET(첫 줄) 또는 tradeJun 지정 GET → sKey → POST → 응답의 idx 목록에 그 바코드 행 +1, tradeJun 보관.
+3. **실판매가**(줄마다, §4.1-2) → 판매폼 목록 행의 실판매가 = 기대값.
+4. **최종 대조**: 판매폼 GET 의 줄 수·바코드·실판매가 합 = 검토 표.
+5. **현금결제**(§4.1-3) → 응답 payJun 비어 있지 않음 + 총 결제금액 = 합계.
+6. **판매하기**(§4.1-3b → 4) → form10 `afterPrice = 0` 확인 후 POST → plain GET 세션 비움 → 그 고객 판매내역에서 바코드·실판매가 재대조.
+7. **실패 처리**: 5 이전 실패 → 넣은 판매 줄만 삭제(§4.1-D) → 세션 0행 확인 → 다음 고객(삭제 후에도 줄이 남으면 전체 중단). 5 이후 실패 → **전체 중단**하고 보고.
+
+## 5. Phase 0 — 결과
+
+2026-09-30 완료(§4.1 머리말). 남은 미실측: 판매 줄 삭제(§4.1-D) · 사은품 0원 줄 · 실패 응답의 `msg` 형식. 앞의 둘은 첫 라이브 실행에서, `msg` 는 실행기가 **응답 URL 의 msg 비어 있음 + 상태 변화** 이중 판정으로 fail-closed 처리한다.
 
 ## 6. 안전장치 (주문 가져오기 §5 계승)
 1. 실행 전 가드(열린 판매전표 없음).
