@@ -1,9 +1,9 @@
 {
-  "version": "4.2.9",
+  "version": "4.3.0",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "55560b63bce0f288f151c5b0c332c8bd1b1c343ffe229208dbc192e3f9dbc4cf"
+      "sha256": "90300d9e23f714e127d9e36c7be699f67cbd7d366cdf58b2240556b41fa346c6"
     },
     {
       "path": "src/loader.js",
@@ -23,15 +23,15 @@
     },
     {
       "path": "src/skin.js",
-      "sha256": "5d06abe98271b007d69b42f30138e87882118880e0cc4fa1a9169dfad171dc47"
+      "sha256": "fe9faaadc673391e4e175c4e45328f2c256f997e7125ee9ddaad031437783d79"
     },
     {
       "path": "popup/popup.html",
-      "sha256": "ec13db78fb08efaa2674e52019e07e153e469a6c0775c4f3be1f75ee0cc59eba"
+      "sha256": "9a646146389b098eb65f908077e19f5cce3b01dd94f7d1547553eedc2df24d97"
     },
     {
       "path": "popup/popup.js",
-      "sha256": "2a3a2aafdf72f1fd2f9c383658959010f887e7914810a77042b5b43e56e04d93"
+      "sha256": "66d3f34feac1561479c30f91655fe187fc4fd469f9a07390c0c9a14b9de32573"
     },
     {
       "path": "rules/cache.json",
@@ -60,6 +60,18 @@
     {
       "path": "vendor/xlsx.full.min.js",
       "sha256": "cc015130aa8521e7f088f88898eba949ccdcbfb38df0bd129b44b7273c3a6f41"
+    },
+    {
+      "path": "src/saleimport-core.js",
+      "sha256": "523896b2d8369b904925b2645029d85454d5588fa10dd70ecbc23c987bd94f37"
+    },
+    {
+      "path": "src/saleimport-erp.js",
+      "sha256": "094cbc868ed595983fc8d165071d2967e39039720f25a4561aafc44117c99ff7"
+    },
+    {
+      "path": "src/saleimport.js",
+      "sha256": "d308c93a0f769adb36849d7175d457c879293995da66988e5d09a7646936c4c4"
     },
     {
       "path": "icons/icon128.png",
