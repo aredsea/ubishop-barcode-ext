@@ -92,7 +92,9 @@
     //  이 슬라이스는 읽기 전용(버튼+사전검증 승인창+fetchOrderRow). 쓰기 배선 없음.
     ubHqConfirm: false,
     // v4.2.0 판매처 주문 가져오기(orderimport.js) — 주문 화면 사이드바 버튼. 기본 ON.
-    ubOrderImport: true
+    ubOrderImport: true,
+    // v4.3.0 GS샵 판매 처리 가져오기(saleimport.js) — 상품판매 화면 사이드바 버튼. 기본 ON.
+    ubSaleImport: true
   };
   const state = Object.assign({}, D);
   const on = (k) => state.ubSkin && state[k];
@@ -490,6 +492,7 @@
   const STK_TAG = '[UB][stock]';
   const stkLog = (...a) => { try { console.log(STK_TAG, ...a); } catch (_) {} };
   function isOrderWrite() { return /\/order\/item\/orderItemWriteForm\.do/.test(location.pathname); }
+  function isSaleWrite() { return /\/sale\/item\/saleItemWriteForm\.do/.test(location.pathname); }
   function isInboundWrite() { return /\/input\/item\/inputItemWriteForm\.do/.test(location.pathname); }
   function isInboundModify() { return /\/input\/item\/inputItemModifyForm\.do/.test(location.pathname); }
   function dateParams() {
@@ -3448,6 +3451,14 @@
           <div class="ub-sb-sect-t">${ICONS.database}<span>주문 가져오기</span></div>
           <button class="ub-sb-btn ub-sb-wide" id="ub-oi-open">이지어드민 xls 불러오기</button>
           <div class="ub-sb-empty" style="margin-top:6px">파일 → 검토 → 등록 시작.<br>실행 중엔 주문 화면을 건드리지 마세요.</div>
+        </div>
+      ` : ''}
+
+      ${isSaleWrite() && on('ubSaleImport') ? `
+        <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.database}<span>판매 처리 가져오기</span></div>
+          <button class="ub-sb-btn ub-sb-wide" id="ub-sl-open">GS 판처 xlsx 불러오기</button>
+          <div class="ub-sb-empty" style="margin-top:6px">파일 → 검토 → 판매 시작.<br>실행 중엔 판매 화면을 건드리지 마세요.</div>
         </div>
       ` : ''}
 
