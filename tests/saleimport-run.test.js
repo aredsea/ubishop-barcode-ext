@@ -67,6 +67,8 @@ function makeErp(opts) {
       const want = Number(m.saleDcPrice.replace(/,/g, ''));
       row.amount = opts.storeWrongAt === m.seq ? want + 1 : want; row.dcPrice = 112000 - want;
       const f = form();
+      if (opts.modifyExtraRow) f.rows.push({ idx: '999998,YYYYYY', saleSeq: '999998', barcode: 'YYYYYY', salePrice: 1, dcPrice: 0, amount: 1 });   // 응답에만 낯선 줄
+      if (opts.foreignAfterModify && !srv.injected) { srv.injected = true; srv.rows.push({ idx: '999999,ZZZZZZ', saleSeq: '999999', barcode: 'ZZZZZZ', salePrice: 50000, dcPrice: 0, amount: 50000 }); }   // 응답 뒤 다른 탭이 끼워 넣음
       if (opts.storeWrongAt === m.seq) f.rows = f.rows.map((r) => (r.saleSeq === m.seq ? Object.assign({}, r, { amount: want }) : r));   // 응답은 정상처럼 보이고 저장만 다르다
       return { ok: true, msg: '', form: f };
     },
@@ -102,7 +104,7 @@ test('1. 정상 2줄(본품 + 사은품 0원): 호출 순서·done·paid', async
   const erp = makeErp();
   const r = await C.slRunClient(plan(), erp, hooks);
   assert.equal(r.status, 'done', r.reason);
-  assert.deepEqual(names(erp), ['state', 'openClient', 'postLine', 'getSaleForm', 'postLine', 'getModify', 'postModify', 'getModify', 'postModify',
+  assert.deepEqual(names(erp), ['state', 'openClient', 'postLine', 'getSaleForm', 'postLine', 'getSaleForm', 'getModify', 'postModify', 'getSaleForm', 'getModify', 'postModify',
     'getSaleForm', 'getCash', 'postCash', 'getSaleForm', 'postJun', 'state', 'trade']);
   assert.equal(r.paid, true); assert.equal(r.tradeJun, '114348'); assert.equal(r.payJun, '280453');
   assert.equal(r.saleSeqs.length, 2); assert.equal(r.rolledBack, 0);
@@ -273,4 +275,19 @@ test('19. 줄 수정 폼에서 판매직원을 못 읽으면(no_sale_manager) po
   assert.equal(r.status, 'skipped', r.reason); assert.match(r.reason, /^modify_payload:.*no_sale_manager/);
   assert.equal(count(erp, 'postModify'), 0); assert.equal(count(erp, 'postCash'), 0);
   assert.equal(count(erp, 'deleteLines'), 1); assert.equal(r.rolledBack, 2);
+});
+
+test('20. 첫 수정 뒤 다른 탭이 줄을 끼워 넣음 → 둘째 postModify 0 · postCash 0 · 내 줄 되돌리고 fatal:foreign_rows_remain', async () => {
+  const erp = makeErp({ foreignAfterModify: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'fatal', r.reason); assert.match(r.reason, /^foreign_rows_remain:modify_session:rows/);
+  assert.equal(count(erp, 'postModify'), 1); assert.equal(count(erp, 'postCash'), 0); assert.equal(count(erp, 'postJun'), 0);
+  assert.equal(count(erp, 'deleteLines'), 1); assert.ok(erp.srv.rows.some((x) => x.saleSeq === '999999'), '남의 줄은 그대로');
+});
+
+test('21. 수정 POST 응답에 낯선 줄이 섞여 있으면 postCash 0 · 내 줄 되돌리고 skipped:modify_rows', async () => {
+  const erp = makeErp({ modifyExtraRow: true });
+  const r = await C.slRunClient(plan(), erp, hooks);
+  assert.equal(r.status, 'skipped', r.reason); assert.match(r.reason, /^modify_rows:/);
+  assert.equal(count(erp, 'postModify'), 1); assert.equal(count(erp, 'postCash'), 0); assert.equal(count(erp, 'deleteLines'), 1);
 });

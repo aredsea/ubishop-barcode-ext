@@ -407,12 +407,23 @@
       //  3. 줄마다 실판매가
       for (let i = 0; i < lines.length; i++) {
         const seq = res.saleSeqs[i], ln = lines[i];
+        //  수정 POST 마다 직전에 판매 세션을 대조한다 — 같은 로그인의 다른 탭이 공유 전표에 줄을 끼워 넣었으면 다음 수정 POST 를 보내지 않는다.
+        const chk = await erp.getSaleForm(ctx());
+        const cv = chk.values || {};
+        if (String(cv.client) !== client) return await fail('modify_session:client ' + cv.client + '≠' + client);
+        if (String(cv.tradeJun) !== String(res.tradeJun)) return await fail('modify_session:trade ' + cv.tradeJun + '≠' + res.tradeJun);
+        const crows = (chk.rows || []).map((r) => String(r.saleSeq));
+        if (!sameBag(crows, res.saleSeqs.map(String))) return await fail('modify_session:rows ' + crows.join(',') + '≠' + res.saleSeqs.join(','));
         const html = await erp.getModify(seq, ctx());
         const pl = slModifyPayload(html, ln.amount);
         if (pl.issues.length) return await fail('modify_payload:' + pl.issues.join(','));
         const m = await erp.postModify(pl.fields);
         log('modify', { i, ok: m.ok, msg: m.msg });
         if (!m.ok) return await fail('modify_failed:' + m.msg);
+        const mrows = ((m.form && m.form.rows) || []).map((r) => String(r.saleSeq));
+        const mtrade = m.form && m.form.values && m.form.values.tradeJun;
+        if (!sameBag(mrows, res.saleSeqs.map(String))) return await fail('modify_rows:' + mrows.join(',') + '≠' + res.saleSeqs.join(','));
+        if (String(mtrade) !== String(res.tradeJun)) return await fail('modify_rows:trade ' + mtrade + '≠' + res.tradeJun);
         const row = ((m.form && m.form.rows) || []).find((r) => String(r.saleSeq) === String(seq));
         if (!row || row.amount !== ln.amount) return await fail('modify_unverified:' + seq + ' ' + (row ? row.amount : '(행 없음)') + '≠' + ln.amount);
       }

@@ -63,7 +63,7 @@
     },
     {
       "path": "src/saleimport-core.js",
-      "sha256": "5ae633306eaf0ac8041afe876d942d5dc983e4b9b2e1bc5ad3b3178bda339b16"
+      "sha256": "40ed18b2679d4077921d14fff464379c1630772baf60b6740aa5836aacdefd70"
     },
     {
       "path": "src/saleimport-erp.js",
