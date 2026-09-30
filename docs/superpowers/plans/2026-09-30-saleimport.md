@@ -297,19 +297,15 @@ git commit -m "feat(판매 처리): xlsx 행 파싱·최종 판처금액 계산(
   - `slOrderRows(html) → OrderLine[]` — `OrderLine = { date: 'YY-MM-DD', barcode: string ('' 이면 없음), code, name, gift: boolean, settle: number|null, qty: number, price: number }`
   - `slSaleRows(html) → SaleLine[]` — `SaleLine = { date, barcode, code, price, qty, dc, amount }`
 
-- [ ] **Step 1: 픽스처 캡처(읽기 전용, 사장님 PC Chrome — 파일 다운로드 승인 필요)**
+- [x] **Step 1: 픽스처 캡처 — 완료(2026-09-30, 컨트롤러)**
 
-유비샵에 로그인된 Chrome 탭 콘솔(또는 Claude in Chrome javascript_tool)에서 실행. **GET 만** 한다:
-```js
-const base = '/info/clienttrade/infoClientTradeView.do?tcode=sale_item&searchImageType=0&reqPage=1&pageSize=20&searchSortType=seq&url=/sale/item/saleItemWriteForm.do&shop=LT&shopName=FASHION';
-const pick = [['trade-order-gift.html','orderitem',123476,'윤*하9203/G'],['trade-order-qty2.html','orderitem',123438,'박*주0248/G'],
-  ['trade-order-sold.html','orderitem',123734,'하*이3785/G'],['trade-sale-sold.html','saleitem',123734,'하*이3785/G'],['trade-sale-empty.html','saleitem',123438,'박*주0248/G']];
-for (const [f, v, c, n] of pick) {
-  const h = await (await fetch(base + '&vcode=' + v + '&client=' + c + '&clientName=' + encodeURIComponent(n))).text();
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([h], { type: 'text/html' })); a.download = f; a.click();
-}
-```
-받은 5개 파일을 `tests/fixtures/saleimport/` 로 옮기고, 각 파일에서 고객 상단 정보 표(핸드폰·전화번호 칸)의 번호 숫자를 `0504-0000-<뒤4>` 로 바꾼다. 목록 표는 건드리지 않는다.
+`tests/fixtures/saleimport/trade-*.html` 5개는 라이브 화면에서 **목록 표(`table.t_list`)만** 떠서 class·id 외 속성을 지운 것이다(전화번호 없음). 실측 구조:
+- 헤더 행은 `<tr class="title_line">`(셀은 `<td>`, `<th>` 아님). 그 위에 합계 행 `<tr class="sum">`.
+- **각 데이터 행의 이미지 칸 안에 중첩 `<table><tr><td><img></td></tr></table>` 이 있다** → `<tr` 로 단순 split 하면 행이 쪼개진다. 행은 중첩 깊이를 세서 **바깥 표의 최상위 `<tr>`** 만 잘라야 한다.
+- 판매내역 DC 칸은 `13,604<br>(32.39 %)`, 판매직원 칸은 `홍해진`(연결번호 없음).
+- 사은품 줄의 비고 칸은 `<span class="f_green"></span>`(빈 칸). `trade-order-qty2.html` 은 위스퍼샤인 2줄 + **사은품 1줄(2604P6)** = 3줄.
+- 판매내역의 상품번호가 주문내역과 다를 수 있다(`F-BF-Z-XY-…` vs `F-BF-Z-XX-…`) → 매칭에 상품번호를 쓰지 않는다.
+- 빈 판매내역은 `<td>검색된 판매내역이 없습니다.</td>` 한 행.
 
 - [ ] **Step 2: 실패하는 테스트 추가**
 
@@ -324,9 +320,16 @@ test('slOrderRows: 사은품 포함 2줄', () => {
   assert.equal(main.date, gift.date);
 });
 
-test('slOrderRows: 수량 2 는 정산 259,000 줄 2개', () => {
+test('slOrderRows: 수량 2 는 정산 259,000 줄 2개 + 사은품 1줄', () => {
   const o = C.slOrderRows(FX('trade-order-qty2.html'));
-  assert.deepEqual(o.map((x) => [x.barcode, x.settle]).sort(), [['2609RX', 259000], ['2609RY', 259000]]);
+  assert.equal(o.length, 3);
+  assert.deepEqual(o.filter((x) => !x.gift).map((x) => [x.barcode, x.settle, x.name]).sort(), [['2609RX', 259000, 'F-위스퍼샤인R'], ['2609RY', 259000, 'F-위스퍼샤인R']]);
+  assert.deepEqual(o.filter((x) => x.gift).map((x) => x.barcode), ['2604P6']);
+});
+
+test('slOrderRows: 비고에 색상이 앞에 붙은 정산', () => {
+  const o = C.slOrderRows(FX('trade-order-sold.html'));
+  assert.deepEqual([o[0].barcode, o[0].settle, o[0].date, o[0].code], ['240CKK', 29400, '26-09-10', 'F-BF-Z-XX-ZZ-002Q']);
 });
 
 test('slSaleRows: 판매내역 바코드·실판매가, 빈 목록', () => {
@@ -357,13 +360,27 @@ test('slTradeUrl', () => {
     return String(h).replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
   }
+  //  바깥 표의 최상위 <tr> 만 자른다 — 이미지 칸에 중첩 <table><tr> 이 있어 단순 split 은 행을 쪼갠다(실측).
+  function topRows(tableHtml) {
+    const out = []; const re = /<(\/?)(table|tr)\b[^>]*>/gi;
+    let depth = 0, start = -1, m;
+    while ((m = re.exec(tableHtml))) {
+      const close = m[1] === '/', tag = m[2].toLowerCase();
+      if (tag === 'table') { depth += close ? -1 : 1; continue; }
+      if (depth !== 1) continue;
+      if (!close) start = m.index; else if (start >= 0) { out.push(tableHtml.slice(start, re.lastIndex)); start = -1; }
+    }
+    return out;
+  }
+  //  headWord('주문일'|'판매일') 가 든 title_line 행 이후의 행 텍스트. 표는 그 헤더를 품은 가장 가까운 <table class="t_list">.
   function listRows(html, headWord) {
     const s = String(html || '');
-    const hi = s.search(new RegExp('<th[^>]*>[^<]*' + headWord));
+    const hi = s.search(new RegExp('<tr[^>]*class="title_line"[^>]*>(?:(?!</tr>)[\\s\\S])*' + headWord));
     if (hi < 0) return [];
-    const end = s.indexOf('</table>', hi);
-    const seg = s.slice(hi, end < 0 ? undefined : end);
-    return seg.split(/<tr\b/i).slice(1).map(textOf).filter((t) => DATE_RE.test(t) && /^\d+\s/.test(t));
+    const ts = s.lastIndexOf('<table', hi);
+    const rows = topRows(s.slice(ts));
+    const hIdx = rows.findIndex((r) => /class="title_line"/.test(r) && r.indexOf(headWord) >= 0);
+    return rows.slice(hIdx + 1).map(textOf).filter((t) => DATE_RE.test(t) && /^\d+\s/.test(t));
   }
   const nums = (t) => (t.match(/-?\d[\d,]*(?:\.\d+)?/g) || []).map((x) => Number(x.replace(/,/g, '')));
   function slOrderRows(html) {
@@ -398,9 +415,9 @@ test('slTradeUrl', () => {
       + '&shop=LT&shopName=FASHION&client=' + encodeURIComponent(client) + '&clientName=' + encodeURIComponent(clientName);
   }
 ```
-주의: 판매직원 칸이 `홍해진(12345)` 처럼 연결번호를 붙이면 `\S+$` 한 토큰으로 지워진다. 픽스처로 확인하고, 다르면 **픽스처에 맞게** 꼬리 처리만 고친다.
+주의: 판매직원 칸은 실측상 이름만(`홍해진`). 끝 토큰 하나를 지우는 처리는 픽스처로 확인됐다.
 
-- [ ] **Step 5: 통과 확인** — Run: `node --test tests/saleimport-core.test.js` → Expected: PASS 11/11.
+- [ ] **Step 5: 통과 확인** — Run: `node --test tests/saleimport-core.test.js` → Expected: PASS 19/19 (Task 1·3 의 14 + 이 Task 의 5).
 
 - [ ] **Step 6: 라이브 대조(읽기)** — 스펙 §3.1 의 자동 13고객 전원에 대해 Chrome 에서 core 를 붙여 `slOrderRows` 결과의 `settle` 이 엑셀 `W/qty` 와 같은 줄이 있는지 확인한다. 불일치가 있으면 원인을 적고 멈춘다.
 
