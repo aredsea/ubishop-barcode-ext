@@ -586,5 +586,5 @@ git commit -m "docs(판매 처리): Phase 0 판매 쓰기 계약 실측(민*금 
 ### Task 7: 검수(T3)·라이브 첫 실행
 
 - gate: `node --test tests/saleimport-*.test.js tests/loader-integrity.test.js` 전부 PASS.
-- 검수 T3: 외부 1명(Terra) 반복 + Opus 5.5 가 아닌 Opus 4.7/4.6(메인 Opus 가 직접 짠 코드일 때) + 교차 DeepSeek + Fable 자리(되돌리기 어려운 라이브 쓰기 — 단 `feedback_no_fable_review` 메모리(09-15 호출 금지)가 있으므로 **착수 전 사장님께 Fable 자리 여부를 묻는다**). 원장 `docs/REVIEW-LEDGER.md` 갱신.
+- 검수 T3: 외부 1명(Terra) 반복 + Opus 4.7/4.6(메인 Opus 가 직접 짠 코드일 때; Sonnet worker 코드면 opus-reviewer) + 교차 DeepSeek. **Fable 제외(2026-09-30 사장님 지시).** 원장 `docs/REVIEW-LEDGER.md` 갱신.
 - 라이브: 사장님 입회로 1~2 고객만 체크해 실행 → 판매내역 대조 → main 머지·push → ExtSync.
