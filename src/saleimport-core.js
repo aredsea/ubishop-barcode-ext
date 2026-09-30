@@ -87,7 +87,58 @@
     return String(buyer || '').trim() + (d.length >= 4 ? d.slice(-4) : '') + '/G';
   }
 
-  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName };
+  /* ------------------------------------------------------------ §3.2~3.3 매칭·배분 */
+  function slAllocate(total, q) {
+    const base = Math.floor(total / q);
+    const out = new Array(q).fill(base);
+    out[0] += total - base * q;
+    return out;
+  }
+  function slGroupByClient(rows) {
+    const map = new Map();
+    rows.filter((r) => !slIsReturn(r)).forEach((r) => {
+      const key = slClientName(r.buyer, r.phone);
+      if (!map.has(key)) map.set(key, { key, rows: [], client: null });
+      map.get(key).rows.push(r);
+    });
+    return [...map.values()];
+  }
+  //  고객 한 명: 같은 단가(W/qty) 끼리 필요 개수를 모아, 판매 안 된 본품 줄이 **정확히 그 개수**일 때만 자동.
+  function slMatchClient(rows, orders, sales) {
+    const sold = new Set((sales || []).map((s) => s.barcode).filter(Boolean));
+    const block = (reason) => ({ status: 'block', reason, lines: [], cash: 0 });
+    const need = new Map();   // unit → [{row, amounts[]}]
+    for (const r of rows) {
+      if (!(r.amount > 0)) return block(r.orderNo + ': 실판매가가 0 이하');
+      const unit = r.W / r.qty;
+      if (!Number.isInteger(unit)) return block(r.orderNo + ': 협력사지급금액이 수량으로 나누어지지 않음');
+      if (!need.has(unit)) need.set(unit, []);
+      need.get(unit).push({ row: r, amounts: slAllocate(r.amount, r.qty) });
+    }
+    const lines = [], usedDates = new Set();
+    let soldOnly = true;
+    for (const [unit, list] of need) {
+      const n = list.reduce((s, x) => s + x.row.qty, 0);
+      const mains = orders.filter((o) => !o.gift && o.settle === unit);
+      const open = mains.filter((o) => !o.barcode || !sold.has(o.barcode));
+      if (open.length === 0 && mains.length >= n) continue;             // 전부 이미 판매됨
+      soldOnly = false;
+      if (open.length !== n) return block('정산 ' + unit.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)');
+      if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
+      let k = 0;
+      for (const { row, amounts } of list) for (const a of amounts) {
+        const o = open[k++];
+        lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: false, orderNo: row.orderNo, amount: a });
+        usedDates.add(o.date);
+      }
+    }
+    if (soldOnly) return { status: 'sold', reason: '이미 판매됨', lines: [], cash: 0 };
+    orders.filter((o) => o.gift && o.barcode && !sold.has(o.barcode) && usedDates.has(o.date))
+      .forEach((o) => lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: true, orderNo: '', amount: 0 }));
+    return { status: 'ok', reason: '', lines, cash: lines.reduce((s, l) => s + l.amount, 0) };
+  }
+
+  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slMatchClient };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }
 })();

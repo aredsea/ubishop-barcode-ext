@@ -74,3 +74,54 @@ test('slIsReturn / slClientName', () => {
   assert.equal(C.slClientName('하*이', '0504-0000-3785'), '하*이3785/G');
   assert.equal(C.slClientName('민*금', ''), '민*금/G');
 });
+
+const R = (over) => Object.assign({ orderNo: 'A', qty: 1, W: 0, amount: 0 }, over);
+const O = (over) => Object.assign({ date: '26-09-10', barcode: '', code: 'F-XX-Z-XX-ZZ-0001', name: 'x', gift: false, settle: null, qty: 1, price: 0 }, over);
+
+test('slAllocate', () => {
+  assert.deepEqual(C.slAllocate(537307, 2), [268654, 268653]);
+  assert.deepEqual(C.slAllocate(100, 1), [100]);
+});
+
+test('slMatchClient: 본품+같은 날 사은품(0원), 현금 = 본품', () => {
+  const m = C.slMatchClient([R({ orderNo: 'G1', W: 389900, amount: 376583 })],
+    [O({ barcode: '2609E8', settle: 389900 }), O({ barcode: '2604PG', gift: true }), O({ barcode: '2604ZZ', gift: true, date: '26-01-01' })], []);
+  assert.equal(m.status, 'ok');
+  assert.deepEqual(m.lines.map((l) => [l.barcode, l.amount, l.gift]), [['2609E8', 376583, false], ['2604PG', 0, true]]);
+  assert.equal(m.cash, 376583);
+});
+
+test('slMatchClient: 수량 2 → 정산 W/2 줄 2개, 금액 배분', () => {
+  const m = C.slMatchClient([R({ orderNo: 'G2', qty: 2, W: 518000, amount: 537307 })],
+    [O({ barcode: '2609RY', settle: 259000 }), O({ barcode: '2609RX', settle: 259000 })], []);
+  assert.equal(m.status, 'ok');
+  assert.deepEqual(m.lines.map((l) => l.amount), [268654, 268653]);
+});
+
+test('slMatchClient: 이미 판매됨', () => {
+  const m = C.slMatchClient([R({ W: 29400, amount: 28396 })], [O({ barcode: '240CKK', settle: 29400 })], [{ barcode: '240CKK' }]);
+  assert.equal(m.status, 'sold');
+});
+
+test('slMatchClient: 차단 — 후보 0 · 후보 과다 · 바코드 없음 · 금액 0 이하', () => {
+  assert.equal(C.slMatchClient([R({ W: 1, amount: 1 })], [O({ barcode: '2609AA', settle: 2 })], []).status, 'block');
+  assert.equal(C.slMatchClient([R({ W: 5, amount: 5 })], [O({ barcode: '2609AA', settle: 5 }), O({ barcode: '2609AB', settle: 5 })], []).status, 'block');
+  const nb = C.slMatchClient([R({ W: 5, amount: 5 })], [O({ barcode: '', settle: 5 })], []);
+  assert.equal(nb.status, 'block'); assert.match(nb.reason, /바코드/);
+  assert.equal(C.slMatchClient([R({ W: 5, amount: 0 })], [O({ barcode: '2609AA', settle: 5 })], []).status, 'block');
+});
+
+test('slMatchClient: 같은 고객 두 행(다른 정산액)은 한 전표', () => {
+  const m = C.slMatchClient([R({ orderNo: 'a', W: 10, amount: 9 }), R({ orderNo: 'b', W: 20, amount: 19 })],
+    [O({ barcode: '2609AA', settle: 10 }), O({ barcode: '2609AB', settle: 20 })], []);
+  assert.equal(m.status, 'ok');
+  assert.equal(m.cash, 28);
+});
+
+test('slGroupByClient: 반품 제외, 이름 키로 묶음', () => {
+  const f = C.slComputeFinals(C.slParseSheet(ROWS));
+  const g = C.slGroupByClient(f.rows);
+  assert.equal(g.length, 17);
+  assert.ok(!g.some((x) => x.key === '박*미4371/G'));
+  assert.ok(g.some((x) => x.key === '민*금/G'));
+});
