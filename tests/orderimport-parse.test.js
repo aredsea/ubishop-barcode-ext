@@ -110,7 +110,7 @@ test('oiLineWarnings: 미해석 토큰은 경고이고 optOverride 면 그 경�
 //  → 판정을 둘로 나눈다. issues = 등록 자체가 안 되거나 매칭 문제(체크 불가), warnings = 표시만(체크 가능).
 test('oiLineReview: 차단(issues)과 경고(warnings)를 나눈다 — 경고만 있는 줄은 issues 가 비어 실행 가능', () => {
   const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
-  const rows = [H, ['쿠팡', '1103109837088', '헤링본 소가죽 팔찌', '', 25000, 20000, '송지영', '+82 10-1687-6587']];
+  const rows = [H, ['쿠팡', '1103109837088', '헤링본 소가죽 팔찌', '', 25000, 20000, '고객가', '+82 10-0000-1234']];
   const line = C.oiParseRows(rows).lines[0];
   assert.equal(line.phone.ok, false, '국가코드 번호는 형식 불가');
   const entry = { seq: '7083', code: 'F-RF-I-QQ-PA-00F6' };            // 코드 4번째 토막 QQ 는 색상 셀렉트에 없음 → 폴백 없음
@@ -119,7 +119,7 @@ test('oiLineReview: 차단(issues)과 경고(warnings)를 나눈다 — 경고�
   assert.deepEqual(r.issues, []);
   assert.ok(r.warnings.some((s) => s.startsWith('색상 없음(마스터 기본값 빈값)')), '색상 빈칸 등록 경고');
   assert.ok(r.warnings.some((s) => s.startsWith('옵션 해석 불가: 각인:JH')));
-  assert.ok(r.warnings.some((s) => s.startsWith('휴대폰 형식: +82 10-1687-6587')));
+  assert.ok(r.warnings.some((s) => s.startsWith('휴대폰 형식: +82 10-0000-1234')));
   assert.equal(r.warnings.length, 3);
   //  같은 줄에 매칭 문제가 있으면 issues — 경고와 무관하게 차단
   assert.deepEqual(C.oiLineReview(line, { mapping: null, parsed: C.oiParseOption('') }).issues, ['상품 미매칭']);

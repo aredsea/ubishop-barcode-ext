@@ -86,9 +86,10 @@
 
   /* ------------------------------------------------------------ §2.3 분류 · §3.1 고객명 */
   function slIsReturn(row) { return row.type === '반품주문' || row.qty < 0; }
-  function slClientName(buyer, phone) {
+  //  suffix 기본 'G'(GS). 아몬즈처럼 파일에 수취인+연락처가 있는 마켓은 자기 접미를 넘긴다(§10.8).
+  function slClientName(buyer, phone, suffix) {
     const d = String(phone == null ? '' : phone).replace(/\D/g, '');
-    return String(buyer || '').trim() + (d.length >= 4 ? d.slice(-4) : '') + '/G';
+    return String(buyer || '').trim() + (d.length >= 4 ? d.slice(-4) : '') + '/' + (suffix || 'G');
   }
 
   /* ------------------------------------------------------------ §3.2~3.3 매칭·배분 */
@@ -98,19 +99,107 @@
     out[0] += total - base * q;
     return out;
   }
-  function slGroupByClient(rows) {
+  function slGroupByClient(rows, adapter) {
     const map = new Map();
-    rows.filter((r) => !slIsReturn(r)).forEach((r) => {
-      const key = slClientName(r.buyer, r.phone);
-      if (!map.has(key)) map.set(key, { key, rows: [], client: null });
+    const p4 = !!adapter && adapter.clientRule === 'prefix4';
+    rows.filter((r) => !(adapter ? r.isReturn : slIsReturn(r))).forEach((r) => {
+      const key = p4 ? String(r.buyer || '').trim() + '/' + adapter.suffix : slClientName(r.buyer, r.phone, adapter && adapter.suffix);
+      if (!map.has(key)) map.set(key, { key, rows: [], client: null, buyer: p4 ? String(r.buyer || '').trim() : undefined, source: p4 ? '이름 추정' : '파일 연락처' });
       map.get(key).rows.push(r);
     });
     return [...map.values()];
   }
+  //  §10.3 — 검색 결과 중 이 묶음의 고객 후보. exact: 이름 정확일치, prefix4: ^구매자\d{4}/접미$.
+  const reEsc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function slClientCandidates(hits, group, adapter) {
+    if (adapter && adapter.clientRule === 'prefix4') {
+      const re = new RegExp('^' + reEsc(group.buyer) + '\\d{4}/' + reEsc(adapter.suffix) + '$', 'i');   // SSG 는 /s·/S 둘 다 있다(§10.5)
+      return (hits || []).filter((h) => re.test(h.name));
+    }
+    if (adapter && adapter.ciSuffix) {   // 원장 고객명(§10.8) — 접미만 대소문자 무시(SSG /s·/S), 접두는 정확일치
+      const cut = (n) => { const i = String(n).lastIndexOf('/'); return i < 0 ? [String(n), ''] : [String(n).slice(0, i), String(n).slice(i + 1).toLowerCase()]; };
+      const [gp, gs] = cut(group.key);
+      return (hits || []).filter((h) => { const [hp, hs] = cut(h.name); return hp === gp && hs === gs; });
+    }
+    return (hits || []).filter((h) => h.name === group.key);
+  }
+  //  자동 확정 판정(§10.3) — 검색이 100건에서 잘렸으면 후보를 신뢰할 수 없으므로 자동 확정하지 않는다.
+  function slAutoDecision(res, group, adapter) {
+    const p4 = !!adapter && adapter.clientRule === 'prefix4';
+    if (res && res.truncated) return { auto: null, reason: '검색 결과가 100건 이상 — 직접 고르세요' };
+    const cands = slClientCandidates(res && res.hits, group, adapter);
+    if (cands.length === 1) return { auto: { seq: String(cands[0].seq), name: cands[0].name }, reason: '' };
+    if (cands.length > 1) return { auto: null, reason: '같은 이름의 고객이 ' + cands.length + '명 — 아래에서 직접 고르세요' };
+    const what = p4 ? '"' + group.buyer + '○○○○/' + adapter.suffix + '" 형태' : '"' + group.key + '"';
+    return { auto: null, reason: '유비샵에 ' + what + ' 고객이 없음 — 아래에서 직접 찾아 고르세요' };
+  }
+  //  묶음 간 겹침 — ok 묶음끼리 같은 바코드를 잡았으면(고객이 달라도) 둘 다 돌려준다.
+  function slOverlaps(entries) {
+    const owner = new Map(), out = new Set();
+    (entries || []).filter((e) => e && e.st === 'ok' && e.match).forEach((e) => {
+      (e.match.lines || []).forEach((l) => {
+        if (!l.barcode) return;
+        if (owner.has(l.barcode) && owner.get(l.barcode) !== e.key) { out.add(e.key); out.add(owner.get(l.barcode)); }
+        else owner.set(l.barcode, e.key);
+      });
+    });
+    return out;
+  }
+  //  §10.4 — 비율 배분: 각 floor(total*w/Σw), 나머지 원은 첫 칸. Σw ≤ 0 이면 null.
+  function slAllocateByWeight(total, weights) {
+    if (weights.some((w) => !Number.isFinite(w) || w < 0)) return null;
+    const sum = weights.reduce((s, w) => s + w, 0);
+    if (!(sum > 0)) return null;
+    const out = weights.map((w) => Math.floor(total * w / sum));
+    out[0] += total - out.reduce((s, x) => s + x, 0);
+    return out;
+  }
+  //  §10.4 perOrder — 정산 N = 결제 전체 금액이라 그 결제의 모든 줄에 같은 값이 붙는다.
+  function matchPerOrder(rows, orders, sold, block) {
+    const seen = new Set();
+    for (const r of rows) {
+      if (seen.has(r.key)) return block('같은 정산 ' + r.key.toLocaleString('en-US') + ' 결제가 2건 — 어느 줄인지 모름');
+      seen.add(r.key);
+    }
+    const lines = [], usedDates = new Set();
+    let soldOnly = true;
+    for (const r of rows) {
+      if (!(r.amount > 0)) return block(r.orderNo + ': 실판매가가 0 이하');
+      const mains = orders.filter((o) => !o.gift && o.settle === r.key);
+      const open = mains.filter((o) => !o.barcode || !sold.has(o.barcode));
+      if (open.length === 0 && mains.length > 0) continue;               // 이미 판매됨
+      if (open.length > 0 && mains.length > open.length) return block('정산 ' + r.key.toLocaleString('en-US') + ' 결제 일부만 판매됨 — 직접 처리');
+      soldOnly = false;
+      if (open.length === 0) return block('정산 ' + r.key.toLocaleString('en-US') + ' 주문 줄 없음');
+      if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
+      //  같은 정산(결제 금액)이 서로 다른 주문의 줄에 걸쳐 있으면 한 결제로 묶을 수 없다.
+      const dates = [...new Set(open.map((o) => o.date))];
+      if (dates.length > 1) return block('정산 ' + r.key.toLocaleString('en-US') + ' 줄이 여러 주문일(' + dates.join(', ') + ')에 걸침 — 직접 처리');
+      if (open.some((o) => o.cancel)) return block('주문 비고에 취소 표시가 있는 줄 — 직접 처리');
+      if (open.some((o) => !o.code)) return block('상품번호를 못 읽은 주문 줄 — 직접 처리');
+      //  파일 상품명 '…외N건' → 상품 N+1종(§10.7). N≥1 이면 줄 수가 정확히 N+1 이고 상품번호가 모두 달라야 한다(같은 날 묶음을 두 번 산 경우 차단).
+      //  N=0 이면 상품번호가 하나여야 한다(같은 상품 여러 줄은 수량 — 허용).
+      const mm = /외(\d+)건$/.exec(String(r.name == null ? '' : r.name).trim());
+      const want = (mm ? Number(mm[1]) : 0) + 1;
+      const have = new Set(open.map((o) => o.code)).size;
+      if (want > 1 ? (open.length !== want || have !== want) : have !== 1) return block('상품 수 불일치(파일 ' + want + '종 · 주문 줄 ' + (want > 1 ? open.length + '줄/' : '') + have + '종) — 직접 처리');
+      const amts = slAllocateByWeight(r.amount, open.map((o) => o.price));
+      if (!amts) return block(r.orderNo + ': 주문가 합계가 0 — 배분 불가');
+      open.forEach((o, i) => {
+        lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: false, orderNo: r.orderNo, amount: amts[i] });
+        usedDates.add(o.date);
+      });
+    }
+    if (soldOnly) return { status: 'sold', reason: '이미 판매됨', lines: [], cash: 0 };
+    orders.filter((o) => o.gift && o.barcode && !sold.has(o.barcode) && usedDates.has(o.date))
+      .forEach((o) => lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: true, orderNo: '', amount: 0 }));
+    return { status: 'ok', reason: '', lines, cash: lines.reduce((s, l) => s + l.amount, 0) };
+  }
   //  고객 한 명: 같은 단가(W/qty) 끼리 필요 개수를 모아, 판매 안 된 본품 줄이 **정확히 그 개수**일 때만 자동.
-  function slMatchClient(rows, orders, sales) {
+  function slMatchClient(rows, orders, sales, mode) {
     const sold = new Set((sales || []).map((s) => s.barcode).filter(Boolean));
     const block = (reason) => ({ status: 'block', reason, lines: [], cash: 0 });
+    if (mode === 'perOrder') return matchPerOrder(rows, orders, sold, block);
     const need = new Map();   // unit → [{row, amounts[]}]
     for (const r of rows) {
       if (!(r.amount > 0)) return block(r.orderNo + ': 실판매가가 0 이하');
@@ -127,6 +216,7 @@
       const open = mains.filter((o) => !o.barcode || !sold.has(o.barcode));
       if (open.length === 0 && mains.length >= n) continue;             // 전부 이미 판매됨
       soldOnly = false;
+      if (open.some((o) => o.cancel)) return block('주문 비고에 취소 표시가 있는 줄 — 직접 처리');
       if (open.length !== n) return block('정산 ' + unit.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)');
       if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
       let k = 0;
@@ -140,6 +230,327 @@
     orders.filter((o) => o.gift && o.barcode && !sold.has(o.barcode) && usedDates.has(o.date))
       .forEach((o) => lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: true, orderNo: '', amount: 0 }));
     return { status: 'ok', reason: '', lines, cash: lines.reduce((s, l) => s + l.amount, 0) };
+  }
+
+  /* ------------------------------------------------------------ §10.8 아틀리에 원장 */
+  const digitsOf = (v) => String(v == null ? '' : v).replace(/\D/g, '');
+  const trimS = (v) => String(v == null ? '' : v).trim();
+  const isGiftRow = (x) => x && (x.is_gift === true || x.is_gift === 1 || x.is_gift === 'true' || x.is_gift === 't');
+  //  원장 행 → 주문번호별 Map. market 이 다른 행은 버린다(다른 마켓의 같은 번호와 섞이지 않게).
+  function slLedgerIndex(rows, market) {
+    const idx = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((x) => {
+      if (!x || trimS(x.market) !== market) return;
+      const no = trimS(x.order_no);
+      if (!no) return;
+      if (!idx.has(no)) idx.set(no, []);
+      idx.get(no).push(x);
+    });
+    return idx;
+  }
+  //  한 주문의 원장 행들 → 고객명({name, recipient}) 또는 차단({block}). 이름 = 수령자+전화 뒤4+/접미(주문 가져오기 규칙).
+  function slLedgerClient(orderRows, adapter) {
+    const rows = Array.isArray(orderRows) ? orderRows : [];
+    if (!rows.length) return { block: '원장에 없는 주문' };
+    if (rows.some((x) => /취소/.test(trimS(x.status)))) return { block: '원장 상태에 취소 — 직접 처리' };
+    const rec = new Set(rows.map((x) => trimS(x.recipient))), ph = new Set(rows.map((x) => digitsOf(x.phone)));
+    if (rec.size > 1 || ph.size > 1) return { block: '원장 수령자 불일치 — 직접 처리' };
+    const recipient = [...rec][0], d = [...ph][0];
+    if (!recipient) return { block: '원장 수령자 이름 없음 — 직접 처리' };
+    if (d.length < 4) return { block: '원장 전화번호 없음 — 직접 처리' };
+    return { name: recipient + d.slice(-4) + '/' + adapter.suffix, recipient };
+  }
+  //  파일 행 → 묶음. 원장에서 찾으면 원장 고객명으로, 못 찾으면 어댑터 기존 규칙(clientRule 'ledger' 는 차단).
+  //  idx = null 이면 열쇠 없음(기존 폴백). opts.lookupFailed = 열쇠가 있는데 조회가 실패 → 원장 연동 행은 전부 차단(폴백 없음).
+  //  idx 가 있는데 원장 번호 형식이 틀린 행도 조용히 빠지지 않고 차단한다.
+  //  group = { key, rows, source, ledger: Map(주문번호→원장 행), retOrders: Set, block, pickable }
+  const SPLIT_BUYER = '같은 구매자의 결제 일부만 원장에서 확인됨 — 직접 처리';
+  const LEDGER_NO_RE = /^[A-Za-z0-9-]{4,40}$/;
+  function slGroupLedger(rows, adapter, idx, opts) {
+    const failed = !!(opts && opts.lookupFailed), keyed = failed || !!idx;
+    const map = new Map();
+    const add = (key, init, r) => { if (!map.has(key)) map.set(key, Object.assign({ key, rows: [], client: null, ledger: new Map(), block: '', pickable: false }, init)); map.get(key).rows.push(r); return map.get(key); };
+    const retOrders = new Set(rows.filter((r) => r.isReturn && r.ledgerNo).map((r) => r.ledgerNo));
+    //  구매자 비교는 띄어쓰기·대소문자를 무시한다 — '고객C'·'고객 C'·'Kim'·'KIM' 이 갈려 규칙6 이 빠지지 않게(Opus 5R Nit-1).
+    const buyerKey = (v) => norm(v).toLowerCase();
+    const rest = [], ledgerBuyers = new Map();
+    rows.filter((r) => !r.isReturn).forEach((r) => {
+      const hard = (key, block) => add(key + (r.ledgerNo || r.orderNo), { source: '', buyer: trimS(r.buyer), retOrders, block }, r);
+      if (failed) { hard('원장 조회 실패 ', '원장 조회 실패 — 다시 시도하세요'); return; }
+      if (keyed && !LEDGER_NO_RE.test(trimS(r.ledgerNo))) { hard('원장 번호 오류 ', '원장 번호 형식 오류'); return; }
+      const lr = idx && r.ledgerNo ? idx.get(r.ledgerNo) : null;
+      if (lr && lr.length) {
+        const cl = slLedgerClient(lr, adapter);
+        const lg = cl.name ? add(cl.name, { source: '원장', buyer: cl.recipient, retOrders }, r) : null;
+        if (lg) lg.ledger.set(r.ledgerNo, lr);
+        if (trimS(r.buyer)) { const b = buyerKey(r.buyer); if (!ledgerBuyers.has(b)) ledgerBuyers.set(b, new Set()); if (lg) ledgerBuyers.get(b).add(lg); }
+        if (!lg) add('원장 주문 ' + r.ledgerNo, { source: '원장', buyer: '', retOrders, block: cl.block }, r);
+      } else rest.push(r);
+    });
+    if (adapter.clientRule === 'ledger') {
+      rest.forEach((r) => add('원장 없음 ' + (r.ledgerNo || r.orderNo), { source: '', buyer: trimS(r.buyer), retOrders, block: '원장에 없는 주문 — 직접 처리하세요' }, r));
+    } else {
+      slGroupByClient(rest, adapter).forEach((g) => {
+        //  같은 구매자의 결제 일부만 원장에서 확인됐으면 서로 다른 고객일 수 있다 — 그 구매자의 묶음을 전부(원장 묶음 포함) 차단.
+        const split = adapter.clientRule === 'prefix4' && g.buyer && ledgerBuyers.has(buyerKey(g.buyer));
+        if (split) ledgerBuyers.get(buyerKey(g.buyer)).forEach((lg) => { if (!lg.block) lg.block = SPLIT_BUYER; });
+        const m = add(g.key, { source: g.source, buyer: g.buyer, retOrders, block: split ? SPLIT_BUYER : '' }, g.rows[0]);
+        g.rows.slice(1).forEach((r) => m.rows.push(r));
+      });
+    }
+    return [...map.values()];
+  }
+  //  어떤 매칭 규칙으로 줄을 찾나 — 원장 줄 매칭(ledgerMatch: 쿠팡·퀸잇)이고 원장에서 찾은 묶음이면 'ledger', 아니면 어댑터 고유 모드.
+  function slMatchModeFor(adapter, viaLedger) { return (viaLedger && adapter.ledgerMatch) ? 'ledger' : adapter.matchMode; }
+  //  §10.8 원장 매칭 — 기대 줄 = 원장의 사은품 아닌 행들(열쇠 = 그 행 amount = 유비샵 비고 정산 N).
+  //  실판매가 = 파일의 그 주문 최종 금액 합을 원장 amount 비율로 배분(floor, 나머지 첫 줄). 사은품은 0원. opts.retOrders = 같은 주문에 반품 행이 있는 주문번호.
+  function slMatchLedger(rows, ledgerByOrder, orders, sales, opts) {
+    const sold = new Set((sales || []).map((s) => s.barcode).filter(Boolean));
+    const block = (reason) => ({ status: 'block', reason, lines: [], cash: 0 });
+    const retOrders = (opts && opts.retOrders) || new Set();
+    const getL = (no) => (ledgerByOrder instanceof Map ? ledgerByOrder.get(no) : (ledgerByOrder || {})[no]);
+    const byNo = new Map();
+    for (const r of rows || []) {
+      if (!r.ledgerNo) return block(r.orderNo + ': 원장 주문번호 없음');
+      if (!(r.amount > 0)) return block(r.orderNo + ': 실판매가가 0 이하');
+      if (!byNo.has(r.ledgerNo)) byNo.set(r.ledgerNo, []);
+      byNo.get(r.ledgerNo).push(r);
+    }
+    if (!byNo.size) return block('파일 행 없음');
+    const need = new Map();   // 금액 → [{no, orderNo, share}]
+    for (const [no, frs] of byNo) {
+      if (retOrders.has(no)) return block(no + ': 같은 주문에 반품·제외 행이 있음 — 직접 처리');
+      const lr = getL(no);
+      if (!lr || !lr.length) return block(no + ': 원장에 없는 주문');
+      const items = lr.filter((x) => !isGiftRow(x));
+      if (!items.length) return block(no + ': 원장에 본품 줄이 없음');
+      const amts = items.map((x) => slMoney(x.amount));
+      if (amts.some((a) => a == null || !Number.isInteger(a) || a <= 0)) return block(no + ': 원장 금액을 읽을 수 없음');
+      //  파일 합 F 와 원장 합 L 이 행 수(원)보다 더 벌어지면 이 파일은 그 주문의 일부만 정산한 것일 수 있다.
+      const F = frs.reduce((s, r) => s + r.amount, 0), L = amts.reduce((s, a) => s + a, 0);
+      if (Math.abs(F - L) > frs.length) return block(no + ': 파일 금액 ' + F.toLocaleString('en-US') + ' ≠ 원장 ' + L.toLocaleString('en-US') + ' — 주문 일부만 정산됐을 수 있음');
+      const shares = slAllocateByWeight(F, amts);
+      if (!shares) return block(no + ': 배분 불가');
+      amts.forEach((a, i) => { if (!need.has(a)) need.set(a, []); need.get(a).push({ no, orderNo: frs[0].orderNo, share: shares[i] }); });
+    }
+    //  서로 다른 두 주문이 같은 정산액이면 어느 줄이 어느 주문인지 알 수 없다(한 주문 안의 같은 금액은 허용).
+    for (const [, list] of need) {
+      const nos = new Set(list.map((x) => x.no));
+      if (nos.size > 1) return block('같은 정산액 주문이 ' + nos.size + '건 — 어느 줄인지 모름');
+    }
+    const lines = [], usedDates = new Set(), noDates = new Map();
+    let soldOnly = true;
+    for (const [a, list] of need) {
+      const n = list.length;
+      const mains = orders.filter((o) => !o.gift && o.settle === a);
+      const open = mains.filter((o) => !o.barcode || !sold.has(o.barcode));
+      if (open.length === 0 && mains.length >= n) continue;             // 전부 이미 판매됨
+      soldOnly = false;
+      if (open.some((o) => o.cancel)) return block('주문 비고에 취소 표시가 있는 줄 — 직접 처리');
+      if (open.length !== n) return block('정산 ' + a.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)');
+      if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
+      const dates = [...new Set(open.map((o) => o.date))];
+      if (dates.length > 1) return block('정산 ' + a.toLocaleString('en-US') + ' 줄이 여러 주문일(' + dates.join(', ') + ')에 걸침 — 직접 처리');
+      list.forEach((x, k) => {
+        const o = open[k];
+        lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: false, orderNo: x.orderNo, ledgerNo: x.no, amount: x.share });
+        usedDates.add(o.date);
+        if (!noDates.has(x.no)) noDates.set(x.no, new Set());
+        noDates.get(x.no).add(o.date);
+      });
+    }
+    for (const [no, ds] of noDates) if (ds.size > 1) return block(no + ': 한 주문의 줄이 여러 주문일에 걸침 — 직접 처리');
+    if (soldOnly) return { status: 'sold', reason: '이미 판매됨', lines: [], cash: 0 };
+    orders.filter((o) => o.gift && o.barcode && !sold.has(o.barcode) && usedDates.has(o.date))
+      .forEach((o) => lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: true, orderNo: '', amount: 0 }));
+    return { status: 'ok', reason: '', lines, cash: lines.reduce((s, l) => s + l.amount, 0) };
+  }
+
+  /* ------------------------------------------------------------ §10 마켓 어댑터 */
+  function parseGs(rows) {
+    const f = slComputeFinals(slParseSheet(rows));
+    if (!f.ok) return { ok: false, error: f.error };
+    return { ok: true, rows: f.rows.map((r) => ({ r: r.r, orderNo: r.orderNo, buyer: r.buyer, phone: r.phone, qty: r.qty, W: r.W, key: r.W, amount: r.amount,
+      isReturn: slIsReturn(r), name: r.name, option: r.option })) };
+  }
+  const INI_COLS = ['주문번호', '구매자', '상품명', '거래금액', '지급액', '상태'];
+  function parseInicis(rows) {
+    const h = (rows[0] || []).map(norm);
+    const ix = {}; INI_COLS.forEach((c) => { ix[c] = h.indexOf(c); });
+    const miss = INI_COLS.filter((c) => ix[c] < 0);
+    if (miss.length) return { ok: false, error: '필수 열 없음: ' + miss.join(', ') };
+    const cell = (r, c) => String(r[ix[c]] == null ? '' : r[ix[c]]).trim();
+    const tIdx = rows.findIndex((r, i) => i > 0 && String((r || [])[0] == null ? '' : r[0]).trim() === '합계');
+    if (tIdx < 0) return { ok: false, error: '합계 행 없음' };
+    const out = []; let sum = 0;
+    for (let i = 1; i < tIdx; i++) {
+      const r = rows[i] || [];
+      const orderNo = cell(r, '주문번호');
+      if (!orderNo) continue;
+      const pay = slMoney(cell(r, '지급액'));
+      if (pay == null || !Number.isInteger(pay)) return { ok: false, error: orderNo + ': 지급액을 읽을 수 없음' };
+      const gross = slMoney(cell(r, '거래금액'));
+      sum += pay;
+      out.push({ r: i, orderNo, ledgerNo: orderNo, buyer: cell(r, '구매자'), phone: '', qty: null, key: pay, amount: pay,
+        isReturn: (gross != null && gross < 0) || /취소/.test(cell(r, '상태')), name: cell(r, '상품명'), option: '' });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    const total = slMoney(cell(rows[tIdx], '지급액'));
+    if (total == null || total !== sum) return { ok: false, error: '검산 불일치' };
+    return { ok: true, rows: out };
+  }
+  //  §10.5 SSG — 한 행 = 주문 줄 하나. 합계 행 없음. 정산금액(VAT포함) 그대로.
+  const SSG_COLS = ['주문ID', '주문순번', '주문자명', '상품명', '수량', '정산금액(VAT포함)'];
+  function parseSsg(rows) {
+    const h = (rows[0] || []).map(norm);
+    const ix = {}; SSG_COLS.concat(['단품']).forEach((c) => { ix[c] = h.indexOf(norm(c)); });
+    const miss = SSG_COLS.filter((c) => ix[c] < 0);
+    if (miss.length) return { ok: false, error: '필수 열 없음: ' + miss.join(', ') };
+    const cell = (r, c) => (ix[c] < 0 ? '' : String(r[ix[c]] == null ? '' : r[ix[c]]).trim());
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const id = cell(r, '주문ID');
+      if (!id) continue;
+      const orderNo = id + '-' + cell(r, '주문순번');
+      const pay = slMoney(cell(r, '정산금액(VAT포함)')), qty = slMoney(cell(r, '수량'));
+      if (pay == null || !Number.isInteger(pay)) return { ok: false, error: orderNo + ': 정산금액을 읽을 수 없음' };
+      if (qty == null || !Number.isInteger(qty) || qty === 0) return { ok: false, error: orderNo + ': 수량을 읽을 수 없음' };
+      if (!cell(r, '주문자명')) return { ok: false, error: orderNo + ': 주문자명 없음' };
+      out.push({ r: i, orderNo, ledgerNo: id, buyer: cell(r, '주문자명'), phone: '', qty, W: pay, key: pay, amount: pay,   // W: perUnit 매칭이 읽는 단가 원천(GS 와 같은 이름)
+        isReturn: qty < 0 || pay < 0, name: cell(r, '상품명'), option: cell(r, '단품') });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    return { ok: true, rows: out };
+  }
+  //  §10.6 스마트스토어 — key = amount = A+B+C+D(수수료는 음수). D 열은 없을 수 있고, 빈칸은 0, 숫자가 아니면 파일 거부.
+  const SMART_COLS = ['상품주문번호', '구분', '상품명', '구매자명', '정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)'];
+  function parseSmartstore(rows) {
+    const h = (rows[0] || []).map(norm);
+    const ix = {}; SMART_COLS.concat(['무이자할부 수수료(D)']).forEach((c) => { ix[c] = h.indexOf(norm(c)); });
+    const miss = SMART_COLS.filter((c) => ix[c] < 0);
+    if (miss.length) return { ok: false, error: '필수 열 없음: ' + miss.join(', ') };
+    const cell = (r, c) => (ix[c] < 0 ? '' : String(r[ix[c]] == null ? '' : r[ix[c]]).trim());
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || [];
+      if (!r.some((v) => String(v == null ? '' : v).trim() !== '')) continue;
+      const orderNo = cell(r, '상품주문번호');
+      if (!orderNo) return { ok: false, error: i + '행: 상품주문번호 없음' };
+      const parts = {};
+      for (const c of ['정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)', '무이자할부 수수료(D)']) {
+        const raw = cell(r, c);
+        const v = raw === '' ? 0 : slMoney(raw);
+        if (v == null || !Number.isInteger(v)) return { ok: false, error: orderNo + ': ' + c + ' 를 읽을 수 없음' };
+        parts[c] = v;
+      }
+      const sum = parts['정산기준금액(A)'] + parts['Npay 수수료(B)'] + parts['매출연동 수수료 합계(C)'] + parts['무이자할부 수수료(D)'];
+      const isItem = cell(r, '구분') === '상품주문';
+      if (isItem && !cell(r, '구매자명')) return { ok: false, error: orderNo + ': 구매자명 없음' };
+      out.push({ r: i, orderNo, buyer: cell(r, '구매자명'), phone: '', qty: 1, W: sum, key: sum, amount: sum,
+        isReturn: !isItem || parts['정산기준금액(A)'] < 0, name: cell(r, '상품명'), option: '' });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    return { ok: true, rows: out };
+  }
+  //  표 공통: 헤더 이름(공백 무시)으로 열을 찾는다. 빠진 열이 있으면 {error}.
+  function colsOf(rows, need, opt) {
+    const h = (rows[0] || []).map(norm), ix = {};
+    need.concat(opt || []).forEach((c) => { ix[c] = h.indexOf(norm(c)); });
+    const miss = need.filter((c) => ix[c] < 0);
+    if (miss.length) return { error: '필수 열 없음: ' + miss.join(', ') };
+    return { cell: (r, c) => (ix[c] < 0 ? '' : String(r[ix[c]] == null ? '' : r[ix[c]]).trim()) };
+  }
+  const blankRow = (r) => !(r || []).some((v) => String(v == null ? '' : v).trim() !== '');
+  const intOrNull = (raw) => { const v = raw === '' ? 0 : slMoney(raw); return v == null || !Number.isInteger(v) ? null : v; };
+  //  §10.8 쿠팡 — 옵션 ID 가 '<' 로 시작하는 행(<기본배송료>…)은 처리 대상이 아니다. 정산금액 0 이면 버리고, 0 이 아니면 수동 목록.
+  //  환불수량은 음수로 오기도 한다(실측 -1) → 0 이 아니면 반품.
+  const CP_COLS = ['주문번호', '옵션 ID', '상품명', '옵션명', '판매수량', '환불수량', '정산금액', '구매자명'];
+  function parseCoupang(rows) {
+    const c = colsOf(rows, CP_COLS); if (c.error) return { ok: false, error: c.error };
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || []; if (blankRow(r)) continue;
+      const no = c.cell(r, '주문번호'), opt = c.cell(r, '옵션 ID');
+      if (!no) return { ok: false, error: i + '행: 주문번호 없음' };
+      const pay = intOrNull(c.cell(r, '정산금액'));
+      if (pay == null) return { ok: false, error: no + ': 정산금액을 읽을 수 없음' };
+      const shipping = opt.charAt(0) === '<';
+      if (shipping && pay === 0) continue;
+      const qty = intOrNull(c.cell(r, '판매수량')), refund = intOrNull(c.cell(r, '환불수량'));
+      if (qty == null || refund == null) return { ok: false, error: no + ': 수량을 읽을 수 없음' };
+      out.push({ r: i, orderNo: no + '-' + opt, ledgerNo: no, buyer: c.cell(r, '구매자명'), phone: '', qty, key: pay, amount: pay,
+        isReturn: shipping || refund !== 0 || pay < 0, name: shipping ? opt : c.cell(r, '상품명'), option: c.cell(r, '옵션명') });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    return { ok: true, rows: out };
+  }
+  //  §10.8 퀸잇 — 거래유형 '상품 구매' 만 처리. ledgerNo = 주문번호(개별주문번호 아님). 정산상태는 note 로 보인다.
+  const QN_COLS = ['주문번호', '개별주문번호', '거래유형', '상품명', '옵션명', '수량', '정산금액(A-B-C+D)'];
+  function parseQueenit(rows) {
+    const c = colsOf(rows, QN_COLS, ['정산상태']); if (c.error) return { ok: false, error: c.error };
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || []; if (blankRow(r)) continue;
+      const id = c.cell(r, '개별주문번호'), no = c.cell(r, '주문번호');
+      if (!id || !no) return { ok: false, error: i + '행: 주문번호 없음' };
+      const pay = intOrNull(c.cell(r, '정산금액(A-B-C+D)')), qty = intOrNull(c.cell(r, '수량'));
+      if (pay == null) return { ok: false, error: id + ': 정산금액을 읽을 수 없음' };
+      if (qty == null) return { ok: false, error: id + ': 수량을 읽을 수 없음' };
+      const st = c.cell(r, '정산상태');
+      out.push({ r: i, orderNo: id, ledgerNo: no, buyer: '', phone: '', qty, key: pay, amount: pay,
+        isReturn: c.cell(r, '거래유형') !== '상품 구매' || pay < 0, name: c.cell(r, '상품명'), option: c.cell(r, '옵션명'), note: st ? '정산상태 ' + st : '' });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    return { ok: true, rows: out };
+  }
+  //  §10.8 아몬즈 — 구분에 '배송비' 가 든 행은 제외(수동 목록). 수취인명·수취인 연락처로 파일 안에서 이름을 만들 수 있다(원장 없이도).
+  const AM_COLS = ['주문번호', '상품주문번호', '구분', '상품명', '수취인명', '수취인 연락처', '정산금액'];
+  function parseAmondz(rows) {
+    const c = colsOf(rows, AM_COLS); if (c.error) return { ok: false, error: c.error };
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || []; if (blankRow(r)) continue;
+      const no = c.cell(r, '주문번호'), po = c.cell(r, '상품주문번호');
+      if (!no) return { ok: false, error: i + '행: 주문번호 없음' };
+      const orderNo = po && po !== '-' ? po : no;
+      const pay = slMoney(c.cell(r, '정산금액'));
+      if (pay == null || !Number.isInteger(pay)) return { ok: false, error: orderNo + ': 정산금액을 읽을 수 없음' };
+      const ship = /배송비/.test(c.cell(r, '구분'));
+      if (!ship && !c.cell(r, '수취인명')) return { ok: false, error: orderNo + ': 수취인명 없음' };
+      out.push({ r: i, orderNo, ledgerNo: no, buyer: c.cell(r, '수취인명'), phone: c.cell(r, '수취인 연락처'), qty: 1, W: pay, key: pay, amount: pay,
+        isReturn: ship || pay < 0, name: ship ? c.cell(r, '구분') : c.cell(r, '상품명'), option: '' });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    return { ok: true, rows: out };
+  }
+  const hasAll = (header, names) => { const h = (header || []).map(norm); return names.every((n) => h.indexOf(norm(n)) >= 0); };
+  const SL_ADAPTERS = [
+    { id: 'gs', label: 'GS샵', suffix: 'G', clientRule: 'exact', matchMode: 'perUnit',
+      detect: (h) => hasAll(h, [COLS.W, COLS.AA, COLS.final]), parse: parseGs },
+    { id: 'cafe24-inicis-card', label: '카페24 이니시스 신용카드', suffix: '카', clientRule: 'prefix4', matchMode: 'perOrder', ledgerMarket: '카페24',
+      detect: (h) => hasAll(h, ['상점MID', 'TID', '구매자', '지급액', '상태']), parse: parseInicis },
+    { id: 'ssg-settle', label: 'SSG', suffix: 's', clientRule: 'prefix4', matchMode: 'perUnit', ledgerMarket: 'SSG',
+      detect: (h) => hasAll(h, ['원주문ID', '주문순번', '정산금액(VAT포함)', '순판매액']), parse: parseSsg },
+    { id: 'smartstore-daily', label: '스마트스토어', suffix: '스', clientRule: 'prefix4', matchMode: 'perUnit',
+      detect: (h) => hasAll(h, ['상품주문번호', '정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)']), parse: parseSmartstore },
+    //  §10.8 — 원장 연동 마켓. clientRule 'ledger' = 원장에서만 고객을 정한다(없으면 차단). ledgerMatch = 원장 줄 매칭(쿠팡·퀸잇만 — 나머지는 원장을 고객명에만 쓴다).
+    { id: 'coupang-revenue', label: '쿠팡', suffix: '쿠', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '쿠팡',
+      detect: (h) => hasAll(h, ['옵션 ID', '판매수량', '환불수량', '정산금액', '구매확정(출고)유형']), parse: parseCoupang },
+    { id: 'queenit-settle', label: '퀸잇', suffix: '퀸', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '퀸잇',
+      detect: (h) => hasAll(h, ['개별주문번호', '거래유형', '정산금액(A-B-C+D)']), parse: parseQueenit },
+    { id: 'amondz-settle', label: '아몬즈', suffix: '아', clientRule: 'exact', matchMode: 'perUnit', ledgerMarket: '아몬즈',
+      detect: (h) => hasAll(h, ['상품주문번호', '정산금액', '수취인명', '수취인 연락처']), parse: parseAmondz }
+  ];
+  function slDetectAdapter(header) {
+    const hit = SL_ADAPTERS.filter((a) => a.detect(header));
+    return hit.length === 1 ? hit[0] : null;
+  }
+  function slParseFile(rows) {
+    const a = Array.isArray(rows) && rows.length ? slDetectAdapter(rows[0]) : null;
+    if (!a) return { ok: false, error: '알 수 없는 파일 양식' };
+    const p = a.parse(rows);
+    return p.ok ? { ok: true, adapter: a, rows: p.rows } : p;
   }
 
   /* ------------------------------------------------------------ §3.2 거래내역 파싱 */
@@ -184,7 +595,8 @@
       return {
         date: (t.match(DATE_RE) || [])[1] || '', barcode: bc ? bc[1] : '', code: code ? code[0] : '',
         name: after.split(' ')[0] || '', gift: /\(사은품\)/.test(t),
-        settle: st ? Number(st[1].replace(/,/g, '')) : null, qty: n[n.length - 2], price: n[n.length - 1]
+        settle: st ? Number(st[1].replace(/,/g, '')) : null, qty: n[n.length - 2], price: n[n.length - 1],
+        cancel: /취소/.test(t)                                   // 비고에 '정계약 취소' 같은 문구 — 후보에 섞이면 매칭이 차단한다(§10.7)
       };
     });
   }
@@ -199,6 +611,19 @@
         price: n[n.length - 4], qty: n[n.length - 3], dc: n[n.length - 2], amount: n[n.length - 1]
       };
     });
+  }
+  //  고객 검색 결과(/etc/client.do) → {rows, truncated}. 목록은 No 내림차순이라 첫 행 No = 전체 건수 —
+  //  받은 행 수보다 크거나 100건 이상이면 잘렸을 수 있다(§10.7).
+  function slSearchResult(html) {
+    const h = String(html == null ? '' : html);
+    const rows = O.oiClientSearchRows(h).map((c) => ({ seq: c.seq, name: c.name, phone: c.phone }));
+    const at = h.search(/setSeting\s*\(\s*form1\s*,/);
+    let first = NaN;
+    if (at >= 0) {
+      const m = /<td\b[^>]*>\s*(\d+)\s*<\/td>/i.exec(h.slice(h.lastIndexOf('<tr', at), at));
+      if (m) first = Number(m[1]);
+    }
+    return { rows, truncated: rows.length >= 100 || (Number.isFinite(first) && first > rows.length) };
   }
   function slTradeUrl(vcode, client, clientName) {
     return '/info/clienttrade/infoClientTradeView.do?tcode=sale_item&vcode=' + vcode
@@ -491,6 +916,17 @@
     }
   }
 
+  //  실행 결과를 검토 표 묶음에 반영한다(§10.7) — done 은 st='done'(체크 불가·실행 대상 아님: 같은 줄 이중 판매 방지),
+  //  skipped·blocked 는 아무것도 쓰지 않았으므로 체크 상태를 그대로 두고, fatal 은 완료됐을 수 있어 체크만 푼다.
+  function slApplyResults(entries, results) {
+    (results || []).forEach((r) => {
+      const e = (entries || []).find((x) => x.key === r.key); if (!e) return;
+      e.result = r;
+      if (r.status !== 'skipped' && r.status !== 'blocked') e.checked = false;
+      if (r.status === 'done') e.st = 'done';
+    });
+  }
+
   //  고객 순차 실행. fatal 이면 이후 전부 blocked. 한 고객의 예외는 fatal 결과로 담는다(던지지 않는다).
   async function slRunAll(plans, erp, hooks) {
     const out = []; let halted = false;
@@ -505,8 +941,8 @@
     return out;
   }
 
-  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slMatchClient, slTradeUrl, slOrderRows, slSaleRows,
-    SL_FORM10_NAMES, slComma, slReadSaleForm, slSaleManager, slModifyPayload, slCashPayload, slJunCheck, slJunPayload, slNewResult, slRunClient, slRunAll };
+  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slLedgerIndex, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slClientCandidates, slAutoDecision, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
+    SL_FORM10_NAMES, slComma, slReadSaleForm, slSaleManager, slModifyPayload, slCashPayload, slJunCheck, slJunPayload, slNewResult, slRunClient, slApplyResults, slRunAll };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }
 })();

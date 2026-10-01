@@ -118,8 +118,36 @@
   }
   async function searchClient(word) {
     const r = await post('/etc/client.do?tcode=sale_item', Object.assign({}, POPUP_BASE, { searchWordType: 'clientName', searchWord: word, pageSize: '100' }), /\/etc\/client\.do$/);
-    return O.oiClientSearchRows(r.html).map((c) => ({ seq: c.seq, name: c.name, phone: c.phone }));
+    return S.slSearchResult(r.html);   // pageSize 100 — 100건 이상이거나 첫 행 No 가 받은 행 수보다 크면 잘렸을 수 있다(§10.7)
   }
 
-  globalThis.ubSlErp = { state, openClient, getSaleForm, postLine, getModify, postModify, getCash, postCash, postJun, deleteLines, trade, searchClient };
+  //  §10.8 아틀리에 원장 조회(읽기 전용). 열쇠는 헤더로만 보낸다 — URL·본문·오류 메시지·로그에 넣지 않는다.
+  //  fail-closed: 한 덩어리라도 non-2xx·타임아웃·형식 오류면 던진다(일부만 돌려주지 않는다).
+  const LEDGER_URL = 'https://sshwwwavcbgyiyojngav.supabase.co/functions/v1/ledger-lookup';
+  const LEDGER_NO_RE = /^[A-Za-z0-9-]{4,40}$/;
+  const LEDGER_CHUNK = 200;
+  async function ledgerLookup(orderNos, key) {
+    const k = String(key == null ? '' : key).trim();
+    if (!k) throw new Error('ledger_key_missing');
+    const nos = [...new Set((Array.isArray(orderNos) ? orderNos : []).map((n) => String(n == null ? '' : n).trim()).filter((n) => LEDGER_NO_RE.test(n)))];
+    const out = [];
+    for (let i = 0; i < nos.length; i += LEDGER_CHUNK) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+      let r, j;
+      try {   // 타임아웃은 응답 본문을 다 읽을 때까지 유지한다(본문 읽기 중 멈춤도 끊기게)
+        try {
+          r = await fetch(LEDGER_URL, { method: 'POST', credentials: 'omit', signal: ctl.signal,
+            headers: { 'x-ledger-key': k, 'content-type': 'application/json' }, body: JSON.stringify({ orderNos: nos.slice(i, i + LEDGER_CHUNK) }) });
+        } catch (e) { throw new Error(ctl.signal.aborted ? 'ledger_lookup_timeout' : 'ledger_lookup_network'); }
+        if (!r || !r.ok) throw new Error('ledger_lookup_http_' + (r ? r.status : 0));
+        try { j = await r.json(); } catch (_) { throw new Error(ctl.signal.aborted ? 'ledger_lookup_timeout' : 'ledger_lookup_bad_json'); }
+      } finally { clearTimeout(timer); }
+      if (!j || !Array.isArray(j.rows)) throw new Error('ledger_lookup_bad_shape');
+      j.rows.forEach((x) => out.push(x));
+    }
+    return out;
+  }
+
+  globalThis.ubSlErp = { ledgerLookup, state, openClient, getSaleForm, postLine, getModify, postModify, getCash, postCash, postJun, deleteLines, trade, searchClient };
 })();

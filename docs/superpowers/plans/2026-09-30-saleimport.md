@@ -691,3 +691,53 @@ git commit -m "docs(판매 처리): Phase 0 판매 쓰기 계약 실측(민*금 
 - gate: `node --test tests/saleimport-*.test.js tests/loader-integrity.test.js` 전부 PASS.
 - 검수 T3: 외부 1명(Terra) 반복 + Opus 4.7/4.6(메인 Opus 가 직접 짠 코드일 때; Sonnet worker 코드면 opus-reviewer) + 교차 DeepSeek. **Fable 제외(2026-09-30 사장님 지시).** 원장 `docs/REVIEW-LEDGER.md` 갱신.
 - 라이브: 사장님 입회로 1~2 고객만 체크해 실행 → 판매내역 대조 → main 머지·push → ExtSync.
+
+---
+
+## 2차: 마켓별 읽기 규칙 (2026-10-01, 브랜치 `feat/saleimport-markets`)
+
+스펙 §10 이 정본이다. 착수 전 §10 전체를 읽어라. 버전 4.3.0 → **4.3.1**.
+
+### Task 8: 마켓 어댑터·perOrder 매칭 (core)
+
+**Files:**
+- Create: `tools/make-saleimport-inicis-fixture.js`, `tests/fixtures/saleimport/rows-inicis-card.json`, `tests/saleimport-markets.test.js`
+- Modify: `src/saleimport-core.js` (기존 함수의 GS 동작은 그대로 — 기존 테스트 전부 통과 유지)
+
+**Interfaces (Produces):**
+- `SL_ADAPTERS: Adapter[]` (스펙 §10.1 계약), 최소 `gs`, `cafe24-inicis-card`.
+- `slDetectAdapter(header: string[]) → Adapter | null` — detect 가 정확히 1개일 때만 그 어댑터, 아니면 null.
+- `slParseFile(rows: string[][]) → { ok: true, adapter, rows: Row[] } | { ok: false, error }` — 판별 실패면 `error: '알 수 없는 파일 양식'`.
+  - `gs` 의 parse = 기존 `slParseSheet` → `slComputeFinals` 결과를 Row 로: `key=W`, `amount`, `qty`, `isReturn=slIsReturn(r)`, `buyer`, `phone`, `orderNo`, `name`, `option`.
+  - `cafe24-inicis-card` 의 parse: 헤더 이름으로 열을 찾는다(`주문번호 구매자 상품명 거래금액 지급액 상태`, 없으면 거부). 데이터 = 헤더 다음 ~ 첫 칸 `합계` 행 전, 주문번호 빈 행 버림. `key = amount = slMoney(지급액)`(정수 아니면 거부), `qty = null`, `phone = ''`, `isReturn = 거래금액 < 0 || /취소/.test(상태)`. 검산: 데이터 행 지급액 합 === 합계 행 지급액, 아니면 `{ ok:false, error:'검산 불일치' }`. 합계 행 없으면 거부.
+- `slGroupByClient(rows, adapter?)` — adapter 없으면 기존(GS) 동작. `adapter.clientRule === 'prefix4'` 이면 묶음 키 = `buyer + '/' + adapter.suffix`, 그룹에 `buyer` 보관. 반품 제외는 `isReturn` 을 따른다(GS Row 는 기존 slIsReturn 과 같다).
+- `slClientCandidates(hits: {seq,name}[], group, adapter) → {seq,name}[]` — `exact`: `name === group.key`; `prefix4`: `new RegExp('^' + 이스케이프(buyer) + '\\d{4}/' + 이스케이프(suffix) + '$')` 에 맞는 것.
+- `slAllocateByWeight(total: number, weights: number[]) → number[] | null` — 각 `Math.floor(total*w/Σw)`, 나머지는 첫 칸. Σw ≤ 0 이면 null.
+- `slMatchClient(rows, orders, sales, mode = 'perUnit')` — `perUnit` 은 기존 그대로. `perOrder`(스펙 §10.4):
+  - row 마다 open = `!gift && settle === row.key && 바코드 미판매` 인 줄 **전부**. 판매된 줄만 있으면 그 row 는 sold 로 건너뜀.
+  - open 0개 → block `'정산 <key> 주문 줄 없음'`. 바코드 없는 줄 포함 → block(기존 문구). 두 row 가 같은 key → block `'같은 정산 <key> 결제가 2건 — 어느 줄인지 모름'`.
+  - 금액 = `slAllocateByWeight(row.amount, open.map(o => o.price))`, null 이면 block.
+  - 사은품 0원·cash·status 규칙은 perUnit 과 같다(같은 주문일, 판매 안 됨).
+
+**테스트(`tests/saleimport-markets.test.js`) — 기대값:**
+1. 픽스처 생성: `node tools/make-saleimport-inicis-fixture.js "<xlsx>"` — 브라우저와 같은 SheetJS 옵션(`cellText:true`, `raw:false`, `header:1`, `defval:''`)으로 첫 시트를 읽고 **`구매자` 실명을 가명으로 치환**(`고객A`, `고객B` … 같은 실명 → 같은 가명), `상점MID`·`TID`·`승인번호` 는 `X` 로. 금액·상태·주문번호·상품명은 그대로. 소스: `C:/Users/D102/Downloads/지급일_신용카드(20260919~20260930).xlsx`.
+2. `slDetectAdapter`: GS 픽스처 헤더 → `gs`, 이니시스 헤더 → `cafe24-inicis-card`, `['a','b']` → null.
+3. `slParseFile(이니시스)`: 7행, 반품 1행(`매입후취소`, 지급액 −177,685), 첫 행 key=amount=89,996, 상품명 `…외1건` 행 amount 5,365. 합계 행 지급액을 1,637,224 로 바꾸면 `검산 불일치`. 합계 행 지우면 거부.
+4. `slParseFile(GS 픽스처)`: 18행, 첫 행 amount 28,396 · key 29,400 · qty 1 (기존 계산과 동일).
+5. `slGroupByClient(이니시스 rows, adapter)`: 반품 제외 6묶음, 키는 `가명/카`.
+6. `slClientCandidates` prefix4: hits `[홍길동1234/카, 홍길동/임나영, 홍길동12340/카, 홍길동1234/아]`(테스트에선 가명이 아닌 이 합성 이름 사용) 중 `홍길동1234/카` 하나만. buyer 에 정규식 특수문자(`(`)가 있어도 안전.
+7. `slAllocateByWeight(5365, [18000, 50000])` → `[1421, 3944]` (합 5365, 나머지 첫 칸); `([0,0])` → null.
+8. `slMatchClient(…,'perOrder')`: (a) 같은 정산 2줄(가격 18,000·50,000) → ok, 금액 위 배분 (b) + 같은 주문일 사은품 1줄 → 0원으로 포함 (c) 정산 줄이 이미 판매 → sold (d) 정산 일치 줄 0 → block (e) 바코드 없는 줄 → block (f) 같은 고객 두 row 가 같은 key → block (g) 기존 `perUnit` 테스트는 그대로 통과.
+- 게이트: `node --test tests/saleimport-*.test.js tests/loader-integrity.test.js`. 변이: perOrder 의 '같은 key 2건 차단'·검산 을 하나씩 지우면 각 테스트가 실패해야 한다.
+
+### Task 9: 패널 배선·배포 준비 (4.3.1)
+
+**Files:** Modify `src/saleimport.js`, `src/skin.js`(섹션 문구), `manifest.json`(version 4.3.1), `shell-files.json`(재생성)
+
+- `buildEntries` 가 `slParseFile` 을 쓰고 `S.adapter` 를 보관. 판별 실패면 오류 배너('알 수 없는 파일 양식 — 지원: GS 판처, 카페24 이니시스 신용카드').
+- `resolveEntry` 는 `slClientCandidates(hits, e, S.adapter)` 로 후보를 고른다. 검색어는 `exact` 면 `e.key`, `prefix4` 면 `e.buyer`. 후보 1명이면 자동 → `matchEntry`; `prefix4` 는 **매칭 결과가 ok 가 아니면 자동 확정을 취소하고 차단**(스펙 §10.3 "정산 일치일 때만 자동").
+- `matchEntry` 는 `slMatchClient(e.rows, tr.orders, tr.sales, S.adapter.matchMode)`.
+- 요약 줄에 마켓 이름(`adapter.label`), 반품 목록은 `isReturn` 행, 장부 키 `adapter.id + '|' + orderNo`(기존 GS 장부 키와 겹치지 않게).
+- skin.js 섹션 버튼 문구: `판처 xlsx 불러오기` / 설명 `GS샵 · 카페24 이니시스(신용카드). 파일 → 검토 → 판매 시작.`
+- 렌더 확인: 지난번 하네스(`…\scratchpad\sl-harness\`)에 이니시스 픽스처를 넣어 스크린샷 1장. 기대: 마켓 '카페24 이니시스(신용카드)', 반품 1, 묶음 6.
+- `pwsh -File build-shell-index.ps1`(코드 확정 후) → 게이트 전부 통과.

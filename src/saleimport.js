@@ -12,10 +12,10 @@
   const C = globalThis.ubSl, E = globalThis.ubSlErp;
   if (!C || !E) { console.warn('[UB][sl] core/erp 미로드 — manifest 순서 확인'); return; }
 
-  const KEY_LEDGER = 'ubSlLedger', PANEL_ID = 'ub-sl-panel', VEIL_ID = 'ub-sl-veil', STYLE_ID = 'ub-sl-style';
+  const KEY_LEDGER = 'ubSlLedger', KEY_LKEY = 'ubSlLedgerKey', PANEL_ID = 'ub-sl-panel', VEIL_ID = 'ub-sl-veil', STYLE_ID = 'ub-sl-style';
   //  entries = 고객 단위. st: pending(조회 전) | ok(체크 가능) | sold(이미 판매됨) | block(차단)
   const S = { enabled: false, ledger: {}, entries: [], returns: [], error: '', running: false, starting: false, enriching: null,
-    results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '',
+    results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '', adapter: null, parsed: null, notice: '', ledgerFailed: false,
     phase: 'idle', progress: { done: 0, total: 0, key: '', label: '' } };
 
   /* ------------------------------------------------------------ storage */
@@ -66,15 +66,39 @@
   const fmt = (n) => Number(n).toLocaleString('en-US');
   function newEntry(g) {
     const buyer = g.rows[0].buyer;
-    return { key: g.key, rows: g.rows, buyer, client: null, how: '', st: 'pending', reason: '', match: null, checked: false, cands: null, q: buyer, note: '', qGen: 0, result: null };
+    //  §10.8 — source: 원장 | 이름 추정 | 파일 연락처. ledger: 원장에서 찾은 주문 Map(있으면 원장 줄 매칭). block: 처음부터 차단 사유. pickable: 직접 고르기 허용.
+    const blocked = !!g.block;
+    return { key: g.key, rows: g.rows, buyer, client: null, how: '', st: blocked ? 'block' : 'pending', reason: g.block || '', match: null, checked: false, cands: null, q: /^\*+$/.test(buyer) ? '' : buyer, note: '', qGen: 0, result: null,
+      source: g.source || '', ledger: g.ledger || new Map(), retOrders: g.retOrders || new Set(), hard: blocked && !g.pickable };
   }
-  function buildEntries(parsed) {
-    const p = C.slParseSheet(parsed.rows);
-    const f = C.slComputeFinals(p);
-    if (!f.ok) throw new Error(f.error);
-    S.returns = f.rows.filter(C.slIsReturn);
-    S.entries = C.slGroupByClient(f.rows).map(newEntry);
+  function parseEntries(parsed) {
+    const p = C.slParseFile(parsed.rows);
+    if (!p.ok) throw new Error(p.error === '알 수 없는 파일 양식' ? '알 수 없는 파일 양식 — 지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈' : p.error);
+    S.adapter = p.adapter;
+    S.parsed = p.rows;
+    S.returns = p.rows.filter((r) => r.isReturn);
   }
+  //  idx = 원장 색인(없으면 null). 원장 연동 마켓은 원장 고객명으로, 아니면 기존 규칙으로 묶는다.
+  function buildEntries(idx) {
+    S.entries = (S.adapter.ledgerMarket ? C.slGroupLedger(S.parsed, S.adapter, idx, { lookupFailed: S.ledgerFailed }) : C.slGroupByClient(S.parsed, S.adapter)).map(newEntry);
+  }
+  //  §10.8 — 원장 조회는 파일당 한 번, 읽기 대기열 안에서(실행기 요청 사이에 끼지 않게). 열쇠는 이 함수 지역 변수로만 다룬다.
+  //  결과는 { idx, failed, notice } 로만 돌려준다 — S 는 건드리지 않는다(늦게 끝난 이전 파일의 실패가 지금 파일에 번지지 않게, 반영은 loadFile 이 세대 확인 뒤에).
+  async function fetchLedgerIndex() {
+    const ad = S.adapter, nos = [...new Set(S.parsed.filter((r) => !r.isReturn && r.ledgerNo).map((r) => r.ledgerNo))];
+    const d = await sget({ [KEY_LKEY]: '' });
+    const key = String(d[KEY_LKEY] || '').trim();
+    if (!key) return { idx: null, failed: false, notice: '아틀리에 조회 열쇠가 없어요 — 팝업에서 넣어 주세요' };
+    if (!nos.length) return { idx: C.slLedgerIndex([], ad.ledgerMarket), failed: false, notice: '' };   // 번호가 없는 행도 코어가 차단한다
+    S.phase = 'ledger'; render();
+    try {
+      const rows = await enqueue(() => E.ledgerLookup(nos, key));
+      if (rows == null) return { idx: null, failed: true, notice: '아틀리에 원장을 조회하지 못했어요 — 원장 연동 주문은 차단했습니다. 파일을 다시 올려 주세요' };
+      return { idx: C.slLedgerIndex(rows, ad.ledgerMarket), failed: false, notice: '' };
+    } catch (err) { return { idx: null, failed: true, notice: '아틀리에 원장 조회 실패(' + (err && err.message || err) + ') — 원장 연동 주문은 차단했습니다. 파일을 다시 올려 주세요' }; }
+  }
+  //  장부 키 — GS 는 기존 장부(주문번호 그대로)와 이어지게 두고, 다른 마켓은 어댑터 id 를 붙여 서로 겹치지 않게 한다.
+  const ledgerKey = (r) => (!S.adapter || S.adapter.id === 'gs') ? r.orderNo : S.adapter.id + '|' + r.orderNo;
   //  D8 — 고객 판매폼 form10 의 거래 전 미수(beforePrice). 읽지 못했거나 0 이 아니면 차단(fail-closed).
   function receivable(form) {
     const raw = form && form.form10 ? form.form10.beforePrice : null;
@@ -84,23 +108,41 @@
   }
   function setBlock(e, reason) { e.st = 'block'; e.reason = reason; e.match = null; e.checked = false; }
   //  고객이 확정된 뒤: 미수 확인(GET) → 주문·판매내역(GET) → 줄 매칭. 쓰기 없음.
+  const viaLedger = (e) => !!(e.ledger && e.ledger.size);
   async function matchEntry(e) {
     const cl = e.client;
+    if (e.hard) { setBlock(e, e.reason); return; }
+    const lm = !!S.adapter.ledgerMatch;   // 원장 줄 매칭은 쿠팡·퀸잇만 — 그 밖의 마켓은 원장을 고객명에만 쓴다(§10.8)
+    if (lm && !viaLedger(e)) { setBlock(e, '원장 없이는 주문 줄을 찾을 수 없음 — 직접 처리'); return; }
     const form = await E.openClient(String(cl.seq), cl.name);
     if (String((form.values || {}).client) !== String(cl.seq)) { setBlock(e, '고객 지정 확인 실패'); return; }
     const rc = receivable(form);
     if (!rc.ok) { setBlock(e, rc.reason); return; }
     const tr = await E.trade(String(cl.seq), cl.name);
-    const m = C.slMatchClient(e.rows, tr.orders, tr.sales);
+    const mode = C.slMatchModeFor(S.adapter, viaLedger(e));
+    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
     e.match = m; e.st = m.status; e.reason = m.reason;
     e.checked = m.status === 'ok';
+    applyOverlaps();
+  }
+  //  §10.4 — 다른 묶음이 같은 주문 줄(바코드)을 잡았으면 양쪽 모두 차단한다.
+  function applyOverlaps() {
+    C.slOverlaps(S.entries).forEach((k) => { const x = S.entries.find((y) => y.key === k); if (x) setBlock(x, '다른 묶음과 같은 주문 줄을 잡음 — 직접 처리'); });
   }
   async function resolveEntry(e) {
     try {
-      const hits = await E.searchClient(e.key);
-      const exact = hits.filter((c) => c.name === e.key);
-      if (exact.length === 1) { e.client = { seq: String(exact[0].seq), name: exact[0].name }; e.how = '자동'; await matchEntry(e); return; }
-      setBlock(e, exact.length ? '같은 이름의 고객이 ' + exact.length + '명 — 아래에서 직접 고르세요' : '유비샵에 "' + e.key + '" 고객이 없음 — 아래에서 직접 찾아 고르세요');
+      //  원장 고객명은 '수령자+뒤4/접미' 정확일치 규칙(§10.8) — 어댑터가 prefix4 여도 그 묶음은 exact.
+      const ad = viaLedger(e) ? { clientRule: 'exact', suffix: S.adapter.suffix, ciSuffix: true } : S.adapter;
+      const p4 = ad.clientRule === 'prefix4';
+      const sr = await E.searchClient(p4 ? e.buyer : e.key);
+      const dec = C.slAutoDecision({ hits: sr.rows, truncated: sr.truncated }, e, ad);
+      if (dec.auto) {
+        e.client = dec.auto; e.how = '자동'; await matchEntry(e);
+        //  §10.3 — 이름+4자리 후보는 주문내역 정산이 일치할 때만 자동. 아니면 자동 확정을 취소하고 사장님이 고르게 한다.
+        if (p4 && e.st !== 'ok') { const why = e.reason; e.client = null; e.how = ''; setBlock(e, '후보 "' + dec.auto.name + '" 의 주문내역이 이 결제와 맞지 않음(' + why + ') — 아래에서 직접 고르세요'); }
+        return;
+      }
+      setBlock(e, dec.reason);
     } catch (err) { setBlock(e, '조회 실패: ' + (err && err.message || err)); }
   }
   //  읽기 요청(GET/검색)은 한 줄로 직렬화한다 — 실행기의 sKey GET→POST 사이에 끼면 안 되므로 run() 이 S.enriching 을 끝까지 기다린다.
@@ -138,10 +180,11 @@
     e.note = '검색 중…'; render();
     try {
       await enqueue(async () => {
-        const hits = await E.searchClient(q);
+        const sr = await E.searchClient(q);
+        const hits = sr.rows;
         if (gen !== e.qGen) return;
         e.cands = hits.slice(0, 50);
-        e.note = hits.length ? hits.length + '건 — 목록에서 선택' : '검색 결과 0건';
+        e.note = hits.length ? (sr.truncated ? '100건 이상(일부만 표시) — 검색어를 좁히세요' : hits.length + '건 — 목록에서 선택') : '검색 결과 0건';
       });
     } catch (err) { if (gen === e.qGen) e.note = '검색 실패: ' + (err && err.message || err); }
     render();
@@ -155,8 +198,10 @@
     render();
   }
   //  일부 행만 이미 판매된 경우 — ok 인데 줄이 하나도 안 붙은 GS 행.
-  const rowLines = (e, r) => (e.match && e.st === 'ok') ? e.match.lines.filter((l) => l.orderNo === r.orderNo) : [];
-  const rowSold = (e, r) => e.st === 'sold' || (e.st === 'ok' && !rowLines(e, r).length);
+  const rowLines = (e, r) => (e.match && (e.st === 'ok' || e.st === 'done')) ? e.match.lines.filter((l) => l.orderNo === r.orderNo) : [];
+  //  원장 매칭은 줄이 '주문' 단위라 같은 주문의 첫 파일 행에만 붙는다 — 나머지 행은 '이미 판매됨'이 아니라 '위 줄에 합산'.
+  const rowMerged = (e, r) => viaLedger(e) && (e.st === 'ok' || e.st === 'done') && !rowLines(e, r).length && !!e.match && e.match.lines.some((l) => l.ledgerNo && l.ledgerNo === r.ledgerNo);
+  const rowSold = (e, r) => e.st === 'sold' || (e.st === 'ok' && !rowLines(e, r).length && !rowMerged(e, r));
   const entryReady = (e) => e.st === 'ok' && !!e.match && !!e.client;
 
   /* ------------------------------------------------------------ 실행 */
@@ -188,16 +233,19 @@
     try {
       await loadState();                                     // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다 — 실행 직전에 다시 읽는다
       if (!S.enabled) { alert('[유비샵 스킨모드]·[GS 판매 처리 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
+      applyOverlaps();
       const targets = S.entries.filter((e) => e.checked && entryReady(e));
       if (!targets.length) { alert('실행할 고객이 없습니다(차단·이미 판매된 고객은 체크되지 않습니다).'); return; }
       const cash = targets.reduce((s, e) => s + e.match.cash, 0);
       const nLines = targets.reduce((n, e) => n + e.match.lines.length, 0);
-      const nPrev = targets.filter((e) => e.rows.some((r) => S.ledger[r.orderNo])).length;
+      const nPrev = targets.filter((e) => e.rows.some((r) => S.ledger[ledgerKey(r)])).length;
       if (!confirm(targets.length + '명(' + nLines + '줄)을 판매 처리합니다.\n현금 합계 ' + fmt(cash) + '원 (고객별 현금 = 실판매가 합계, 미수금 0)'
-        + (nPrev ? '\n※ 이전에 처리한 적 있는 GS 주문번호가 든 고객 ' + nPrev + '명이 포함돼 있습니다.' : '')
+        + (nPrev ? '\n※ 이전에 처리한 적 있는 주문번호가 든 고객 ' + nPrev + '명이 포함돼 있습니다.' : '')
         + '\n실행 중에는 유비샵 판매 화면을 조작하지 마세요. 진행할까요?')) return;
       plans = targets.map(toPlan);                           // confirm 한 집합을 그대로 실행한다
       while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다
+      applyOverlaps();                                       // 기다리는 동안 끝난 조회가 새 겹침을 만들었을 수 있다
+      if (!targets.every(entryReady)) { alert('그동안 조회 결과가 바뀌어 실행을 취소했습니다. 목록을 다시 확인하세요.'); return; }
       S.running = true;
     } finally { S.starting = false; if (!S.running) render(); }
     if (!S.running) return;
@@ -218,15 +266,14 @@
       });
       S.results = results;
       const at = new Date().toISOString();
+      C.slApplyResults(S.entries, results);                  // done → st='done'(다시 체크·실행 불가), fatal 도 다시 체크되지 않게
       results.forEach((r) => {
         const e = S.entries.find((x) => x.key === r.key); if (!e) return;
-        e.result = r;
-        if (r.status !== 'skipped' && r.status !== 'blocked') e.checked = false;   // 완료됐을 수 있는 fatal 도 다시 체크되지 않게
         if (r.status === 'done') {
           const gifts = e.match.lines.filter((l) => l.gift).map((l) => l.barcode);
           e.rows.forEach((row, i) => {
-            const bcs = e.match.lines.filter((l) => l.orderNo === row.orderNo).map((l) => l.barcode);
-            if (bcs.length) S.ledger[row.orderNo] = { at, tradeJun: r.tradeJun, barcodes: i === 0 ? bcs.concat(gifts) : bcs };
+            const bcs = e.match.lines.filter((l) => l.orderNo === row.orderNo || (l.ledgerNo && l.ledgerNo === row.ledgerNo)).map((l) => l.barcode);
+            if (bcs.length) S.ledger[ledgerKey(row)] = { at, tradeJun: r.tradeJun, barcodes: i === 0 ? bcs.concat(gifts) : bcs };
           });
         }
       });
@@ -387,27 +434,28 @@
       + (e.note ? '<span class="sl-muted">' + esc(e.note) + '</span>' : '') + '</div>';
   }
   function entryRows(e, ei) {
-    const cash = e.match && e.st === 'ok' ? e.match.cash : 0;
+    const cash = e.match && (e.st === 'ok' || e.st === 'done') ? e.match.cash : 0;
     const cls = e.result ? (e.result.status === 'done' ? ' res-done' : ' res-bad') : e.st === 'block' ? ' bad' : e.st === 'sold' ? ' sold' : '';
     const chkOn = e.checked && entryReady(e);
     const head = '<tr class="sl-o' + cls + '"><td><input type="checkbox" class="sl-chk" data-f="chk" data-o="' + ei + '"' + (chkOn ? ' checked' : '') + (entryReady(e) && !S.running && !S.starting ? '' : ' disabled') + '></td>'
       + '<td colspan="2"><span class="sl-cust">' + esc(e.key) + '</span> '
       + (e.client ? '<span class="sl-muted">→ ' + esc(e.client.name) + ' #' + esc(e.client.seq) + '</span> ' + chip(e.how === '자동' ? 'reuse' : 'gray', e.how === '자동' ? '자동 매칭' : '직접 선택') : '')
+      + (e.source ? ' ' + chip('gray', '근거 ' + e.source) : '')
       + '</td><td>' + verdictChips(e)
-      + (e.st === 'block' && !e.result ? '<div class="sl-issue">' + ico('warn') + esc(e.reason) + '</div>' + findUi(e, ei) : '')
+      + (e.st === 'block' && !e.result ? '<div class="sl-issue">' + ico('warn') + esc(e.reason) + '</div>' + (e.hard ? '' : findUi(e, ei)) : '')
       + '</td>'
       + '<td class="num">' + (cash ? '현금 ' + fmt(cash) + '원' : '') + '</td></tr>';
     const body = e.rows.map((r) => {
       const sold = rowSold(e, r), lines = rowLines(e, r);
-      const prev = S.ledger[r.orderNo] && !e.result ? ' ' + chip('prev', '이전에 처리함 ' + fmtAt(S.ledger[r.orderNo].at), 'warn') : '';
-      const uv = sold ? chip('gray', '이미 판매됨')
+      const prev = S.ledger[ledgerKey(r)] && !e.result ? ' ' + chip('prev', '이전에 처리함 ' + fmtAt(S.ledger[ledgerKey(r)].at), 'warn') : '';
+      const uv = sold ? chip('gray', '이미 판매됨') : rowMerged(e, r) ? '<span class="sl-muted">같은 주문 — 위 줄에 합산</span>'
         : lines.length ? '<div class="sl-uv">' + lines.map((l) => '<div><span class="amt">' + fmt(l.amount) + '원</span><span class="bc">' + esc(l.barcode) + '</span>' + esc(l.name) + '</div>').join('') + '</div>'
         : '<span class="sl-muted">—</span>';
       return '<tr class="sl-l' + (sold ? ' sold' : '') + '"><td></td><td>' + esc(r.orderNo) + prev + '</td>'
-        + '<td><div>' + esc(r.name) + (r.qty > 1 ? ' × ' + r.qty : '') + '</div>' + (r.option ? '<div class="sl-opt">' + esc(r.option) + '</div>' : '') + '</td>'
+        + '<td><div>' + esc(r.name) + (r.qty > 1 ? ' × ' + r.qty : '') + '</div>' + (r.option ? '<div class="sl-opt">' + esc(r.option) + '</div>' : '') + (r.note ? '<div class="sl-opt">' + esc(r.note) + '</div>' : '') + '</td>'
         + '<td>' + uv + '</td><td class="num">' + (sold ? '' : fmt(r.amount) + '원') + '</td></tr>';
     }).join('');
-    const gifts = (e.match && e.st === 'ok' ? e.match.lines.filter((l) => l.gift) : []).map((l) =>
+    const gifts = (e.match && (e.st === 'ok' || e.st === 'done') ? e.match.lines.filter((l) => l.gift) : []).map((l) =>
       '<tr class="sl-l"><td></td><td class="sl-muted">사은품</td><td class="sl-muted">같은 주문일 사은품 줄</td><td><div class="sl-uv"><div class="gift"><span class="bc">' + esc(l.barcode) + '</span>' + esc(l.name) + '</div></div></td><td class="num sl-muted">0원</td></tr>').join('');
     return head + body + gifts;
   }
@@ -416,6 +464,7 @@
     const pr = S.progress;
     const bar = (done, total) => '<span class="bar"><i style="width:' + (total ? Math.round(done / total * 100) : 0) + '%"></i></span><span class="cnt">' + done + '/' + total + '</span>';
     if (S.phase === 'reading') return '<div class="sl-prog" role="status" aria-live="polite">' + ico('spin', 'sl-spin') + '<span class="txt">xlsx 읽는 중…</span><span class="bar indet"><i></i></span></div>';
+    if (S.phase === 'ledger') return '<div class="sl-prog" role="status" aria-live="polite">' + ico('spin', 'sl-spin') + '<span class="txt">아틀리에 원장 조회 중</span><span class="sub">— 주문번호로 수령자 찾기 (읽기만)</span><span class="bar indet"><i></i></span></div>';
     if (S.phase === 'enriching') return '<div class="sl-prog" role="status" aria-live="polite">' + ico('spin', 'sl-spin') + '<span class="txt">유비샵 조회 중</span><span class="sub">— 고객·주문내역·판매내역 (읽기만)</span>' + bar(pr.done, pr.total) + '</div>';
     if (S.phase === 'running') return '<div class="sl-prog run" role="status" aria-live="polite">' + ico('spin', 'sl-spin') + '<span class="txt">판매 중 ' + Math.min(pr.done + 1, pr.total) + '/' + pr.total + '</span><span class="sub">— ' + esc(pr.key) + (pr.label ? ' · ' + esc(pr.label) : '') + '</span>' + bar(pr.done, pr.total) + '<span class="warn">이 창과 유비샵 판매 화면을 조작하지 마세요</span></div>';
     return '';
@@ -453,28 +502,30 @@
     p.querySelector('.sl-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.sl-top').innerHTML =
       '<div class="sl-bar"><label class="sl-btn">' + ico('file') + 'xlsx 선택<input type="file" id="ub-sl-file" accept=".xls,.xlsx" hidden' + lock + '></label>'
-      + (nEnt ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 반품 <b>' + c.nRet + '</b></span>' : '<span class="sl-muted">GS샵 판매처리(판처) xlsx 를 선택하세요</span>')
+      + (nEnt ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter ? S.adapter.label : '') + '</b></span><span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 반품 <b>' + c.nRet + '</b></span>' : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 — xlsx 를 선택하세요</span>')
       + '<span class="sl-spacer"></span>'
       + '<button class="sl-btn pri" data-act="run"' + (c.nChk && !S.running && !S.starting && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '판매 중…' : '판매 시작') + '</button>'
       + '<button class="sl-btn quiet" data-act="export-log">로그 JSON</button></div>'
       + progStrip();
     renderBody();
   }
+  const mk = () => (!S.adapter || S.adapter.id === 'gs') ? 'GS ' : '';
   function renderBody() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
     const c = counts(), nEnt = S.entries.length;
     const done = S.results.filter((r) => r.status === 'done').length, other = S.results.length - done;
-    const nUnprev = S.entries.filter((e) => e.st === 'ok' && e.rows.some((r) => S.ledger[r.orderNo])).length;
+    const nUnprev = S.entries.filter((e) => e.st === 'ok' && e.rows.some((r) => S.ledger[ledgerKey(r)])).length;
     const banners = [];
     if (S.error) banners.push({ cls: '', text: S.error });
-    if (nUnprev && !S.results.length) banners.push({ cls: 'warn', text: '이전에 처리한 적 있는 GS 주문번호가 든 고객 ' + nUnprev + '명이 있습니다 — 주황색 표시를 확인하고 판매하세요.' });
-    const ret = S.returns.length ? '<div class="sl-res ret"><h3>수동 처리 필요 — 반품 <span class="sl-muted">' + S.returns.length + '건은 자동 처리에서 제외됩니다</span></h3><table class="sl-t" style="margin-top:6px"><thead><tr><th>GS 주문번호</th><th>수취인</th><th>상품</th><th class="num">수량</th><th class="num">최종 판처금액</th></tr></thead><tbody>'
-      + S.returns.map((r) => '<tr class="sl-muted"><td>' + esc(r.orderNo) + '</td><td>' + esc(r.buyer) + '</td><td>' + esc(r.name) + '</td><td class="num">' + r.qty + '</td><td class="num">' + fmt(r.amount) + '원</td></tr>').join('') + '</tbody></table></div>' : '';
+    if (S.notice) banners.push({ cls: 'warn', text: S.notice });
+    if (nUnprev && !S.results.length) banners.push({ cls: 'warn', text: '이전에 처리한 적 있는 주문번호가 든 고객 ' + nUnprev + '명이 있습니다 — 주황색 표시를 확인하고 판매하세요.' });
+    const ret = S.returns.length ? '<div class="sl-res ret"><h3>수동 처리 필요 — 반품 <span class="sl-muted">' + S.returns.length + '건은 자동 처리에서 제외됩니다</span></h3><table class="sl-t" style="margin-top:6px"><thead><tr><th>' + mk() + '주문번호</th><th>수취인</th><th>상품</th><th class="num">수량</th><th class="num">' + (S.adapter && S.adapter.id === 'gs' ? '최종 판처금액' : '지급액') + '</th></tr></thead><tbody>'
+      + S.returns.map((r) => '<tr class="sl-muted"><td>' + esc(r.orderNo) + '</td><td>' + esc(r.buyer) + '</td><td>' + esc(r.name) + '</td><td class="num">' + (r.qty == null ? '' : r.qty) + '</td><td class="num">' + fmt(r.amount) + '원</td></tr>').join('') + '</tbody></table></div>' : '';
     p.querySelector('.sl-b').innerHTML =
       banners.map((b) => '<div class="sl-banner ' + b.cls + '">' + ico('warn') + esc(b.text) + '</div>').join('')
       + (nEnt ? '<div class="sl-sum"><span>처리 대상 고객 <b>' + c.nChk + '</b>명</span><span>줄 <b>' + c.nLines + '</b></span><span>현금 합계 <b>' + fmt(c.cash) + '</b>원</span><span class="sl-muted">차단 ' + c.nBlock + ' · 제외 ' + (c.nSold + c.nRet) + '(이미 판매 ' + c.nSold + ' · 반품 ' + c.nRet + ')</span></div>' : '')
       + (nEnt ? '<table class="sl-t"><colgroup><col style="width:36px"><col class="c-no"><col class="c-gs"><col><col class="c-amt"></colgroup>'
-        + '<thead><tr><th><input type="checkbox" class="sl-chk" data-f="chkall" title="체크 가능한 고객 전체 체크/해제"' + (c.nOk && c.nChk === c.nOk ? ' checked' : '') + (c.nOk && !S.running && !S.starting ? '' : ' disabled') + '></th><th>GS 주문번호</th><th>GS 상품</th><th>유비샵 바코드 · 상품</th><th class="num">실판매가</th></tr></thead><tbody>'
+        + '<thead><tr><th><input type="checkbox" class="sl-chk" data-f="chkall" title="체크 가능한 고객 전체 체크/해제"' + (c.nOk && c.nChk === c.nOk ? ' checked' : '') + (c.nOk && !S.running && !S.starting ? '' : ' disabled') + '></th><th>' + mk() + '주문번호</th><th>' + mk() + '상품</th><th>유비샵 바코드 · 상품</th><th class="num">실판매가</th></tr></thead><tbody>'
         + S.entries.map(entryRows).join('') + '</tbody></table>' : (S.phase === 'reading' || S.error ? '' : '<div class="sl-empty">파일을 선택하면 고객별 검토 표가 여기에 뜹니다.</div>'))
       + ret
       + (S.results.length ? '<div class="sl-res"><h3>결과 <span class="sl-muted">— 완료 ' + done + ' · 건너뜀/중단 ' + other + '</span></h3><table class="sl-t" style="margin-top:6px"><thead><tr><th>고객</th><th>상태</th><th>사유</th><th>판매전표</th><th>결제전표</th><th class="num">되돌림</th></tr></thead><tbody>'
@@ -486,7 +537,7 @@
     if (document.getElementById(PANEL_ID)) return;
     const veil = document.createElement('div'); veil.id = VEIL_ID; document.body.appendChild(veil);
     const p = document.createElement('div'); p.id = PANEL_ID;
-    p.innerHTML = ICON_DEFS + '<div class="sl-h"><span class="sl-title">GS 판매 처리 가져오기</span><span class="sl-steps-slot"></span><button class="sl-x" data-act="close" title="닫기" aria-label="닫기">' + ico('x') + '</button></div><div class="sl-top"></div><div class="sl-b"></div>';
+    p.innerHTML = ICON_DEFS + '<div class="sl-h"><span class="sl-title">판매 처리 가져오기</span><span class="sl-steps-slot"></span><button class="sl-x" data-act="close" title="닫기" aria-label="닫기">' + ico('x') + '</button></div><div class="sl-top"></div><div class="sl-b"></div>';
     document.body.appendChild(p);
     p.addEventListener('click', onClick);
     p.addEventListener('change', onChange);
@@ -533,19 +584,23 @@
   async function loadFile(file) {
     //  파일을 연달아 고르면 먼저 고른 파일의 결과가 나중 표를 덮어쓴다 — 세대 토큰으로 최신 선택만 반영.
     const gen = ++S.fileGen;
-    S.fileName = file.name; S.results = []; S.entries = []; S.returns = []; S.error = '';
+    S.fileName = file.name; S.results = []; S.entries = []; S.returns = []; S.error = ''; S.adapter = null; S.parsed = null; S.notice = ''; S.ledgerFailed = false;
     try {
       S.phase = 'reading'; render();
       const parsed = await readXls(file);
       if (gen !== S.fileGen) return;
-      buildEntries(parsed);
+      parseEntries(parsed);
+      const li = S.adapter.ledgerMarket ? await fetchLedgerIndex() : { idx: null, failed: false, notice: '' };
+      if (gen !== S.fileGen) return;
+      S.ledgerFailed = li.failed; if (li.notice) S.notice = li.notice;
+      buildEntries(li.idx);
       S.phase = 'idle'; render();
       await enrich();
       if (gen !== S.fileGen) return;
       render();
     } catch (err) {
       if (gen !== S.fileGen) return;
-      S.phase = 'idle'; S.entries = []; S.returns = []; S.error = '파일을 처리하지 못했습니다: ' + (err && err.message || err); render();
+      S.phase = 'idle'; S.entries = []; S.returns = []; S.adapter = null; S.parsed = null; S.error = '파일을 처리하지 못했습니다: ' + (err && err.message || err); render();
     }
   }
 

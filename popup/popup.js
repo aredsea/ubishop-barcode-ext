@@ -46,6 +46,19 @@
   orderImport.addEventListener('change', () => save({ ubOrderImport: orderImport.checked }));
   saleImport.addEventListener('change',  () => save({ ubSaleImport: saleImport.checked }));
 
+  // 아틀리에 조회 열쇠 — 입력란은 password 형식, 저장 후 값은 다시 보이지 않고 '저장됨/없음' 만 표시한다.
+  const LKEY = 'ubSlLedgerKey';
+  const lkInput = $('ledgerKey'), lkState = $('ledgerKeyState');
+  function showLedgerKeyState() {
+    chrome.storage.local.get({ [LKEY]: '' }, (r) => { lkState.textContent = String(r[LKEY] || '').trim() ? '저장됨' : '없음'; });
+  }
+  showLedgerKeyState();
+  $('ledgerKeySave').addEventListener('click', () => {
+    const v = lkInput.value.trim();
+    const done = () => { lkInput.value = ''; showLedgerKeyState(); };
+    if (v) chrome.storage.local.set({ [LKEY]: v }, done); else chrome.storage.local.remove(LKEY, done);
+  });
+
   // 새 버전 감지 시 알림 블록 노출 + 재로드 버튼.
   // background.js checkUpdate 가 chrome.storage.local.ubUpdateAvailable 에 신버전
   // 문자열을 세팅한다(같지 않으면 반영). 팝업 열 때마다 이 값을 확인.
