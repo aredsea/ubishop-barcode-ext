@@ -248,6 +248,53 @@
     });
     return idx;
   }
+  //  §10.9 시각 연결 — 파일 행(paidAt ms)마다 원장 주문(order_no 숫자값 = 주문 시각 ms, 서로 다른 번호)을 찾는다.
+  //  주문은 결제보다 먼저 만들어지므로 한쪽 창만 본다: paidAt − windowMs ≤ 주문 시각 ≤ paidAt + 5초.
+  //  정확히 1개 → { no }, 0개 → { absent: true }, 2개 이상 → { ambiguous: true }. 행과 같은 순서의 배열을 돌려준다(순수 함수).
+  const TIME_AFTER_MS = 5000;
+  function slLedgerIndexByTime(rows, ledgerRows, windowMs) {
+    const w = windowMs == null ? 60000 : windowMs;
+    const times = new Map();
+    (Array.isArray(ledgerRows) ? ledgerRows : []).forEach((x) => {
+      const no = trimS(x && x.order_no);
+      if (/^\d{9,}$/.test(no)) times.set(no, Number(no));
+    });
+    return (Array.isArray(rows) ? rows : []).map((r) => {
+      const hit = [...times].filter(([, t]) => Number.isFinite(r.paidAt) && t >= r.paidAt - w && t <= r.paidAt + TIME_AFTER_MS).map(([no]) => no);
+      return hit.length === 1 ? { no: hit[0] } : hit.length ? { ambiguous: true } : { absent: true };
+    });
+  }
+  //  slLedgerIndexByTime 결과를 행에 입힌 새 행 배열. 없음 → 자리표 번호(원장 색인에 없으니 '원장에 없는 주문' 으로 차단), 모호 → ledgerBlock(차단).
+  //  연결된 원장 주문마다 추가 검사(전부 fail-closed 차단):
+  //   ① 연결된 파일 행의 결제 시각이 둘 이상이거나 상품 주문 번호가 겹치면 서로 다른 결제가 섞인 것
+  //   ② 원장 본품 금액 합 L 이 Σ정산금 ≤ L ≤ Σ(결제 금액 + 프로모션 지원금) 범위 밖이면 남의 주문일 수 있다
+  const AMBIG_TIME = '결제 시각이 가까운 주문이 여러 건 — 직접 처리';
+  const MIXED_PAY = '서로 다른 결제가 한 원장 주문에 연결됨 — 직접 처리';
+  const AMT_RANGE = '원장 금액이 결제 금액과 맞지 않음 — 직접 처리';
+  function slApplyTimeLedger(rows, ledgerRows, windowMs) {
+    const res = slLedgerIndexByTime(rows, ledgerRows, windowMs);
+    const out = rows.map((r, i) => Object.assign({}, r, res[i].no ? { ledgerNo: res[i].no } : { ledgerNo: 'time-' + r.paidAt, ledgerBlock: res[i].ambiguous ? AMBIG_TIME : '' }));
+    const byNo = new Map();
+    out.forEach((r, i) => { if (res[i].no) { if (!byNo.has(res[i].no)) byNo.set(res[i].no, []); byNo.get(res[i].no).push(r); } });
+    byNo.forEach((frs, no) => {
+      let why = '';
+      if (new Set(frs.map((r) => r.paidAt)).size > 1 || new Set(frs.map((r) => r.orderNo)).size < frs.length) why = MIXED_PAY;
+      else {
+        const sale = frs.filter((r) => !r.isReturn);
+        const amts = (Array.isArray(ledgerRows) ? ledgerRows : []).filter((x) => x && trimS(x.order_no) === no && !isGiftRow(x)).map((x) => slMoney(x.amount));
+        if (sale.length && ![...sale.map((r) => r.amount), ...sale.map((r) => r.payTotal)].every(Number.isFinite)) why = AMT_RANGE;
+        else if (sale.length) {
+          if (!amts.length || amts.some((a) => a == null || !Number.isInteger(a))) why = AMT_RANGE;
+          else {
+            const L = amts.reduce((a, b) => a + b, 0), lo = sale.reduce((a, r) => a + r.amount, 0), hi = sale.reduce((a, r) => a + r.payTotal, 0);
+            if (L < lo || L > hi) why = AMT_RANGE;
+          }
+        }
+      }
+      if (why) frs.forEach((r) => { r.ledgerBlock = why; });
+    });
+    return out;
+  }
   //  한 주문의 원장 행들 → 고객명({name, recipient}) 또는 차단({block}). 이름 = 수령자+전화 뒤4+/접미(주문 가져오기 규칙).
   function slLedgerClient(orderRows, adapter) {
     const rows = Array.isArray(orderRows) ? orderRows : [];
@@ -277,6 +324,7 @@
     rows.filter((r) => !r.isReturn).forEach((r) => {
       const hard = (key, block) => add(key + (r.ledgerNo || r.orderNo), { source: '', buyer: trimS(r.buyer), retOrders, block }, r);
       if (failed) { hard('원장 조회 실패 ', '원장 조회 실패 — 다시 시도하세요'); return; }
+      if (r.ledgerBlock) { hard('원장 시각 모호 ', r.ledgerBlock); return; }
       if (keyed && !LEDGER_NO_RE.test(trimS(r.ledgerNo))) { hard('원장 번호 오류 ', '원장 번호 형식 오류'); return; }
       const lr = idx && r.ledgerNo ? idx.get(r.ledgerNo) : null;
       if (lr && lr.length) {
@@ -328,7 +376,9 @@
       if (amts.some((a) => a == null || !Number.isInteger(a) || a <= 0)) return block(no + ': 원장 금액을 읽을 수 없음');
       //  파일 합 F 와 원장 합 L 이 행 수(원)보다 더 벌어지면 이 파일은 그 주문의 일부만 정산한 것일 수 있다.
       const F = frs.reduce((s, r) => s + r.amount, 0), L = amts.reduce((s, a) => s + a, 0);
-      if (Math.abs(F - L) > frs.length) return block(no + ': 파일 금액 ' + F.toLocaleString('en-US') + ' ≠ 원장 ' + L.toLocaleString('en-US') + ' — 주문 일부만 정산됐을 수 있음');
+      if (opts && opts.amountCheck === 'count') {   // §10.9 에이블리 — 금액 기준이 달라 행 수로 부분 정산을 막는다
+        if (frs.length !== items.length) return block(no + ': 파일 상품 수 ≠ 원장 상품 수 — 주문 일부만 정산됐을 수 있음');
+      } else if (Math.abs(F - L) > frs.length) return block(no + ': 파일 금액 ' + F.toLocaleString('en-US') + ' ≠ 원장 ' + L.toLocaleString('en-US') + ' — 주문 일부만 정산됐을 수 있음');
       const shares = slAllocateByWeight(F, amts);
       if (!shares) return block(no + ': 배분 불가');
       amts.forEach((a, i) => { if (!need.has(a)) need.set(a, []); need.get(a).push({ no, orderNo: frs[0].orderNo, share: shares[i] }); });
@@ -524,6 +574,34 @@
     if (!out.length) return { ok: false, error: '데이터 행 없음' };
     return { ok: true, rows: out };
   }
+  //  §10.9 에이블리 — 정산금 ≤ 0 은 반품(수동 목록). 파일에 원장 주문번호가 없다: 결제 완료일(KST)을 epoch ms 로 바꿔 paidAt 에 두고 원장 시각 조회에 쓴다.
+  const AB_COLS = ['상품 주문 번호', '결제 완료일', '정산금', '플랫폼 수수료', '결제 금액', '프로모션 지원금'];
+  function slParseKst(v) {
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(trimS(v));
+    if (!m) return null;
+    const [y, mo, d, h, mi, se] = m.slice(1).map(Number);
+    const t = Date.UTC(y, mo - 1, d, h - 9, mi, se), k = new Date(t + 9 * 3600000);   // KST = UTC+9
+    return k.getUTCFullYear() === y && k.getUTCMonth() === mo - 1 && k.getUTCDate() === d && k.getUTCHours() === h && k.getUTCMinutes() === mi && k.getUTCSeconds() === se ? t : null;
+  }
+  function parseAbly(rows) {
+    const c = colsOf(rows, AB_COLS, ['카테고리', '조정 사유']); if (c.error) return { ok: false, error: c.error };
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || []; if (blankRow(r)) continue;
+      const orderNo = c.cell(r, '상품 주문 번호');
+      if (!orderNo) return { ok: false, error: i + '행: 상품 주문 번호 없음' };
+      const pay = slMoney(c.cell(r, '정산금'));
+      if (pay == null || !Number.isInteger(pay)) return { ok: false, error: orderNo + ': 정산금을 읽을 수 없음' };
+      const paidAt = slParseKst(c.cell(r, '결제 완료일'));
+      if (paidAt == null) return { ok: false, error: orderNo + ': 결제 완료일을 읽을 수 없음' };
+      const gross = slMoney(c.cell(r, '결제 금액')), promo = slMoney(c.cell(r, '프로모션 지원금'));
+      if (gross == null || !Number.isInteger(gross) || promo == null || !Number.isInteger(promo)) return { ok: false, error: orderNo + ': 결제 금액·프로모션 지원금을 읽을 수 없음' };
+      out.push({ r: i, orderNo, ledgerNo: '', paidAt, buyer: '', phone: '', qty: 1, key: pay, amount: pay, payTotal: gross + promo,
+        isReturn: pay <= 0 || !!c.cell(r, '조정 사유'), name: c.cell(r, '카테고리'), option: '' });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    return { ok: true, rows: out };
+  }
   const hasAll = (header, names) => { const h = (header || []).map(norm); return names.every((n) => h.indexOf(norm(n)) >= 0); };
   const SL_ADAPTERS = [
     { id: 'gs', label: 'GS샵', suffix: 'G', clientRule: 'exact', matchMode: 'perUnit',
@@ -540,7 +618,10 @@
     { id: 'queenit-settle', label: '퀸잇', suffix: '퀸', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '퀸잇',
       detect: (h) => hasAll(h, ['개별주문번호', '거래유형', '정산금액(A-B-C+D)']), parse: parseQueenit },
     { id: 'amondz-settle', label: '아몬즈', suffix: '아', clientRule: 'exact', matchMode: 'perUnit', ledgerMarket: '아몬즈',
-      detect: (h) => hasAll(h, ['상품주문번호', '정산금액', '수취인명', '수취인 연락처']), parse: parseAmondz }
+      detect: (h) => hasAll(h, ['상품주문번호', '정산금액', '수취인명', '수취인 연락처']), parse: parseAmondz },
+    //  §10.9 — 파일에 원장 번호가 없어 결제 시각으로 원장을 찾는다(ledgerBy 'time'). 파일 정산금과 원장 금액의 기준이 달라 금액 대조 대신 행 수 대조(ledgerAmountCheck 'count').
+    { id: 'ably-settle', label: '에이블리', suffix: '에', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '에이블리', ledgerBy: 'time', ledgerAmountCheck: 'count',
+      detect: (h) => hasAll(h, AB_COLS), parse: parseAbly }
   ];
   function slDetectAdapter(header) {
     const hit = SL_ADAPTERS.filter((a) => a.detect(header));
@@ -941,7 +1022,7 @@
     return out;
   }
 
-  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slLedgerIndex, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slClientCandidates, slAutoDecision, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
+  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slLedgerIndex, slLedgerIndexByTime, slApplyTimeLedger, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slClientCandidates, slAutoDecision, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
     SL_FORM10_NAMES, slComma, slReadSaleForm, slSaleManager, slModifyPayload, slCashPayload, slJunCheck, slJunPayload, slNewResult, slRunClient, slApplyResults, slRunAll };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }

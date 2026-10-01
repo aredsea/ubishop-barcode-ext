@@ -68,7 +68,7 @@ test('erp.searchClient 는 core slSearchResult(잘림 판정 한 곳)를 쓴다'
 });
 
 test('지원 마켓 문구: 알 수 없는 양식 배너 · 빈 화면 안내 · 사이드바 섹션', () => {
-  const LIST = 'GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈';
+  const LIST = 'GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리';
   assert.ok(UI.includes("'알 수 없는 파일 양식 — 지원: " + LIST + "'"), '알 수 없는 양식 배너');
   assert.ok(UI.includes('지원: ' + LIST + ' — xlsx 를 선택하세요'), '파일 선택 안내');
   assert.ok(read('src/skin.js').includes(LIST + '. 파일 → 검토 → 판매 시작.'), '사이드바 섹션 문구');

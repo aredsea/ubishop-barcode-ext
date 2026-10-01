@@ -126,28 +126,42 @@
   const LEDGER_URL = 'https://sshwwwavcbgyiyojngav.supabase.co/functions/v1/ledger-lookup';
   const LEDGER_NO_RE = /^[A-Za-z0-9-]{4,40}$/;
   const LEDGER_CHUNK = 200;
+  //  본문 하나를 POST 해 rows 를 돌려준다(두 조회 방식 공통). 타임아웃은 응답 본문을 다 읽을 때까지 유지한다(본문 읽기 중 멈춤도 끊기게).
+  async function ledgerPost(body, k) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+    let r, j;
+    try {
+      try {
+        r = await fetch(LEDGER_URL, { method: 'POST', credentials: 'omit', signal: ctl.signal,
+          headers: { 'x-ledger-key': k, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      } catch (e) { throw new Error(ctl.signal.aborted ? 'ledger_lookup_timeout' : 'ledger_lookup_network'); }
+      if (!r || !r.ok) throw new Error('ledger_lookup_http_' + (r ? r.status : 0));
+      try { j = await r.json(); } catch (_) { throw new Error(ctl.signal.aborted ? 'ledger_lookup_timeout' : 'ledger_lookup_bad_json'); }
+    } finally { clearTimeout(timer); }
+    if (!j || !Array.isArray(j.rows)) throw new Error('ledger_lookup_bad_shape');
+    return j.rows;
+  }
   async function ledgerLookup(orderNos, key) {
     const k = String(key == null ? '' : key).trim();
     if (!k) throw new Error('ledger_key_missing');
     const nos = [...new Set((Array.isArray(orderNos) ? orderNos : []).map((n) => String(n == null ? '' : n).trim()).filter((n) => LEDGER_NO_RE.test(n)))];
     const out = [];
-    for (let i = 0; i < nos.length; i += LEDGER_CHUNK) {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
-      let r, j;
-      try {   // 타임아웃은 응답 본문을 다 읽을 때까지 유지한다(본문 읽기 중 멈춤도 끊기게)
-        try {
-          r = await fetch(LEDGER_URL, { method: 'POST', credentials: 'omit', signal: ctl.signal,
-            headers: { 'x-ledger-key': k, 'content-type': 'application/json' }, body: JSON.stringify({ orderNos: nos.slice(i, i + LEDGER_CHUNK) }) });
-        } catch (e) { throw new Error(ctl.signal.aborted ? 'ledger_lookup_timeout' : 'ledger_lookup_network'); }
-        if (!r || !r.ok) throw new Error('ledger_lookup_http_' + (r ? r.status : 0));
-        try { j = await r.json(); } catch (_) { throw new Error(ctl.signal.aborted ? 'ledger_lookup_timeout' : 'ledger_lookup_bad_json'); }
-      } finally { clearTimeout(timer); }
-      if (!j || !Array.isArray(j.rows)) throw new Error('ledger_lookup_bad_shape');
-      j.rows.forEach((x) => out.push(x));
-    }
+    for (let i = 0; i < nos.length; i += LEDGER_CHUNK) (await ledgerPost({ orderNos: nos.slice(i, i + LEDGER_CHUNK) }, k)).forEach((x) => out.push(x));
+    return out;
+  }
+  //  §10.9 시각 조회 — 파일에 원장 주문번호가 없는 마켓(에이블리). times = 결제 시각 epoch ms(정수만, 중복 제거, 한 번에 ≤100 — 넘으면 나눠 보낸다). fail-closed.
+  const LEDGER_TIME_CHUNK = 100;
+  async function ledgerLookupByTime(market, times, key) {
+    const k = String(key == null ? '' : key).trim();
+    if (!k) throw new Error('ledger_key_missing');
+    const m = String(market == null ? '' : market).trim();
+    if (!m) throw new Error('ledger_market_missing');
+    const ts = [...new Set((Array.isArray(times) ? times : []).filter((t) => typeof t === 'number' && Number.isSafeInteger(t) && t > 0))];
+    const out = [];
+    for (let i = 0; i < ts.length; i += LEDGER_TIME_CHUNK) (await ledgerPost({ market: m, times: ts.slice(i, i + LEDGER_TIME_CHUNK) }, k)).forEach((x) => out.push(x));
     return out;
   }
 
-  globalThis.ubSlErp = { ledgerLookup, state, openClient, getSaleForm, postLine, getModify, postModify, getCash, postCash, postJun, deleteLines, trade, searchClient };
+  globalThis.ubSlErp = { ledgerLookup, ledgerLookupByTime, state, openClient, getSaleForm, postLine, getModify, postModify, getCash, postCash, postJun, deleteLines, trade, searchClient };
 })();

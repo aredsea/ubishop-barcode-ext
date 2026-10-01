@@ -300,22 +300,22 @@ test('열쇠 안전: 팝업 입력은 password, 저장 키 ubSlLedgerKey, 패널
   const fn = ui.slice(ui.indexOf('async function fetchLedgerIndex'), ui.indexOf('\n  }\n', ui.indexOf('async function fetchLedgerIndex')));
   assert.ok(/const key = String\(d\[KEY_LKEY\]/.test(fn) && /E\.ledgerLookup\(nos, key\)/.test(fn));
   assert.ok(!/notice = [^;]*\bkey\b/.test(fn.replace(/notice = '아틀리에 조회 열쇠[^']*'/, '')), '알림에 열쇠 값');
-  assert.ok(/enqueue\(\(\) => E\.ledgerLookup/.test(fn), '읽기 대기열 안에서 조회');
+  assert.ok(/enqueue\(\(\) => byTime \? E\.ledgerLookupByTime\(ad\.ledgerMarket, nos, key\) : E\.ledgerLookup\(nos, key\)\)/.test(fn), '읽기 대기열 안에서 조회(번호·시각 둘 다)');
   //  erp: 열쇠는 헤더만 — URL·본문에 없다. 오류 메시지에 변수 k 를 쓰지 않는다.
-  const lk = erp.slice(erp.indexOf('async function ledgerLookup'), erp.indexOf('globalThis.ubSlErp'));
+  const lk = erp.slice(erp.indexOf('async function ledgerPost'), erp.indexOf('globalThis.ubSlErp'));
   assert.ok(/headers: \{ 'x-ledger-key': k,/.test(lk));
   assert.ok(!/JSON\.stringify\(\{[^}]*\bk\b/.test(lk));
   assert.ok(!/new Error\([^)]*\bk\b/.test(lk));
   assert.ok(!/console\./.test(lk));
 });
 
-test('패널 배선: 조회는 파싱 뒤 · 묶음 전, 열쇠 없으면 한 줄 안내, 마켓 문구 7종', () => {
+test('패널 배선: 조회는 파싱 뒤 · 묶음 전, 열쇠 없으면 한 줄 안내, 마켓 문구 8종', () => {
   const ui = read('src/saleimport.js');
   const i = ui.indexOf('async function loadFile'), b = ui.slice(i, ui.indexOf('\n  }\n', i));
   assert.ok(b.indexOf('parseEntries(parsed)') < b.indexOf('fetchLedgerIndex()') && b.indexOf('fetchLedgerIndex()') < b.indexOf('buildEntries(li.idx)'));
   assert.ok(ui.includes("'아틀리에 조회 열쇠가 없어요 — 팝업에서 넣어 주세요'"));
   assert.ok(ui.includes("chip('gray', '근거 ' + e.source)"));
-  assert.ok(ui.includes('GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈'));
+  assert.ok(ui.includes('GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리'));
 });
 
 test('slMatchLedger: 같은 금액 줄이 여러 주문일(두 주문)이거나 한 주문의 줄이 다른 날짜면 각각 차단', () => {

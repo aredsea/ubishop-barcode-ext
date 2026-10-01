@@ -72,11 +72,11 @@
       <label class="sw"><input type="checkbox" id="orderImport"><span class="track"></span></label>
     </div>
     <div class="row">
-      <div class="label"><span class="name">GS 판매 처리 가져오기</span><span class="desc">상품판매 화면 사이드바에 GS샵 판처 xlsx 가져오기 버튼(실제로 판매를 처리합니다)</span></div>
+      <div class="label"><span class="name">판매 처리 가져오기</span><span class="desc">상품판매 화면 사이드바에 마켓 정산 파일(GS샵·카페24·SSG·스마트스토어·쿠팡·퀸잇·아몬즈·에이블리) 가져오기 버튼(실제로 판매를 처리합니다)</span></div>
       <label class="sw"><input type="checkbox" id="saleImport"><span class="track"></span></label>
     </div>
     <div class="row" style="flex-wrap:wrap">
-      <div class="label"><span class="name">아틀리에 조회 열쇠 <span class="badge" id="ledgerKeyState">없음</span></span><span class="desc">쿠팡·퀸잇·아몬즈 판매 처리에서 아틀리에 원장으로 고객을 찾을 때 씁니다. 이 PC에만 저장되며 화면에 다시 보이지 않아요. 비우고 저장하면 삭제됩니다</span></div>
+      <div class="label" style="flex:1 1 100%"><span class="name">아틀리에 조회 열쇠 <span class="badge" id="ledgerKeyState">없음</span></span><span class="desc">쿠팡·퀸잇·에이블리 등 판매 처리에서 아틀리에 원장으로 고객을 찾을 때 씁니다. 이 PC에만 저장되며 화면에 다시 보이지 않아요. 비우고 저장하면 삭제됩니다</span></div>
       <input id="ledgerKey" type="password" autocomplete="new-password" placeholder="열쇠 입력" style="flex:1 1 150px;min-width:0;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:12px">
       <button id="ledgerKeySave" style="padding:6px 12px;background:var(--on);color:#fff;border:0;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer">저장</button>
     </div>

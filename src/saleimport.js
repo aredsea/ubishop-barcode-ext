@@ -73,7 +73,7 @@
   }
   function parseEntries(parsed) {
     const p = C.slParseFile(parsed.rows);
-    if (!p.ok) throw new Error(p.error === '알 수 없는 파일 양식' ? '알 수 없는 파일 양식 — 지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈' : p.error);
+    if (!p.ok) throw new Error(p.error === '알 수 없는 파일 양식' ? '알 수 없는 파일 양식 — 지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리' : p.error);
     S.adapter = p.adapter;
     S.parsed = p.rows;
     S.returns = p.rows.filter((r) => r.isReturn);
@@ -85,16 +85,19 @@
   //  §10.8 — 원장 조회는 파일당 한 번, 읽기 대기열 안에서(실행기 요청 사이에 끼지 않게). 열쇠는 이 함수 지역 변수로만 다룬다.
   //  결과는 { idx, failed, notice } 로만 돌려준다 — S 는 건드리지 않는다(늦게 끝난 이전 파일의 실패가 지금 파일에 번지지 않게, 반영은 loadFile 이 세대 확인 뒤에).
   async function fetchLedgerIndex() {
-    const ad = S.adapter, nos = [...new Set(S.parsed.filter((r) => !r.isReturn && r.ledgerNo).map((r) => r.ledgerNo))];
+    const ad = S.adapter, byTime = ad.ledgerBy === 'time', parsed = S.parsed;
+    //  §10.9 에이블리 — 파일에 원장 번호가 없다: 결제 시각(ms)으로 조회한다(반품 행도 — 같은 주문의 반품을 알아야 한다).
+    const nos = byTime ? [...new Set(parsed.map((r) => r.paidAt))] : [...new Set(parsed.filter((r) => !r.isReturn && r.ledgerNo).map((r) => r.ledgerNo))];
     const d = await sget({ [KEY_LKEY]: '' });
     const key = String(d[KEY_LKEY] || '').trim();
     if (!key) return { idx: null, failed: false, notice: '아틀리에 조회 열쇠가 없어요 — 팝업에서 넣어 주세요' };
     if (!nos.length) return { idx: C.slLedgerIndex([], ad.ledgerMarket), failed: false, notice: '' };   // 번호가 없는 행도 코어가 차단한다
     S.phase = 'ledger'; render();
     try {
-      const rows = await enqueue(() => E.ledgerLookup(nos, key));
+      const rows = await enqueue(() => byTime ? E.ledgerLookupByTime(ad.ledgerMarket, nos, key) : E.ledgerLookup(nos, key));
       if (rows == null) return { idx: null, failed: true, notice: '아틀리에 원장을 조회하지 못했어요 — 원장 연동 주문은 차단했습니다. 파일을 다시 올려 주세요' };
-      return { idx: C.slLedgerIndex(rows, ad.ledgerMarket), failed: false, notice: '' };
+      const mine = rows.filter((x) => x && String(x.market == null ? '' : x.market).trim() === ad.ledgerMarket);
+      return { idx: C.slLedgerIndex(rows, ad.ledgerMarket), failed: false, notice: '', parsed: byTime ? C.slApplyTimeLedger(parsed, mine) : null };
     } catch (err) { return { idx: null, failed: true, notice: '아틀리에 원장 조회 실패(' + (err && err.message || err) + ') — 원장 연동 주문은 차단했습니다. 파일을 다시 올려 주세요' }; }
   }
   //  장부 키 — GS 는 기존 장부(주문번호 그대로)와 이어지게 두고, 다른 마켓은 어댑터 id 를 붙여 서로 겹치지 않게 한다.
@@ -120,7 +123,7 @@
     if (!rc.ok) { setBlock(e, rc.reason); return; }
     const tr = await E.trade(String(cl.seq), cl.name);
     const mode = C.slMatchModeFor(S.adapter, viaLedger(e));
-    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
+    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, amountCheck: S.adapter.ledgerAmountCheck }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
     e.match = m; e.st = m.status; e.reason = m.reason;
     e.checked = m.status === 'ok';
     applyOverlaps();
@@ -232,7 +235,7 @@
     let plans = [];
     try {
       await loadState();                                     // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다 — 실행 직전에 다시 읽는다
-      if (!S.enabled) { alert('[유비샵 스킨모드]·[GS 판매 처리 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
+      if (!S.enabled) { alert('[유비샵 스킨모드]·[판매 처리 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
       applyOverlaps();
       const targets = S.entries.filter((e) => e.checked && entryReady(e));
       if (!targets.length) { alert('실행할 고객이 없습니다(차단·이미 판매된 고객은 체크되지 않습니다).'); return; }
@@ -501,8 +504,8 @@
     const lock = (S.running || S.starting) ? ' disabled' : '';
     p.querySelector('.sl-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.sl-top').innerHTML =
-      '<div class="sl-bar"><label class="sl-btn">' + ico('file') + 'xlsx 선택<input type="file" id="ub-sl-file" accept=".xls,.xlsx" hidden' + lock + '></label>'
-      + (nEnt ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter ? S.adapter.label : '') + '</b></span><span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 반품 <b>' + c.nRet + '</b></span>' : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 — xlsx 를 선택하세요</span>')
+      '<div class="sl-bar"><label class="sl-btn">' + ico('file') + '정산 파일 선택<input type="file" id="ub-sl-file" accept=".xls,.xlsx,.csv" hidden' + lock + '></label>'
+      + (nEnt ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter ? S.adapter.label : '') + '</b></span><span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 반품 <b>' + c.nRet + '</b></span>' : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
       + '<span class="sl-spacer"></span>'
       + '<button class="sl-btn pri" data-act="run"' + (c.nChk && !S.running && !S.starting && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '판매 중…' : '판매 시작') + '</button>'
       + '<button class="sl-btn quiet" data-act="export-log">로그 JSON</button></div>'
@@ -593,6 +596,7 @@
       const li = S.adapter.ledgerMarket ? await fetchLedgerIndex() : { idx: null, failed: false, notice: '' };
       if (gen !== S.fileGen) return;
       S.ledgerFailed = li.failed; if (li.notice) S.notice = li.notice;
+      if (li.parsed) S.parsed = li.parsed;
       buildEntries(li.idx);
       S.phase = 'idle'; render();
       await enrich();
@@ -609,7 +613,7 @@
     const b = e.target.closest && e.target.closest('#ub-sl-open');
     if (!b) return;
     e.preventDefault();
-    if (!S.enabled) { alert('팝업에서 [유비샵 스킨모드]와 [GS 판매 처리 가져오기]를 켜세요.'); return; }
+    if (!S.enabled) { alert('팝업에서 [유비샵 스킨모드]와 [판매 처리 가져오기]를 켜세요.'); return; }
     openPanel();
   }, true);
   chrome.storage.onChanged.addListener((ch, area) => {

@@ -3458,7 +3458,7 @@
         <div class="ub-sb-sect">
           <div class="ub-sb-sect-t">${ICONS.database}<span>판매 처리 가져오기</span></div>
           <button class="ub-sb-btn ub-sb-wide" id="ub-sl-open">판처 xlsx 불러오기</button>
-          <div class="ub-sb-empty" style="margin-top:6px">GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈. 파일 → 검토 → 판매 시작.<br>실행 중엔 판매 화면을 건드리지 마세요.</div>
+          <div class="ub-sb-empty" style="margin-top:6px">GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리. 파일 → 검토 → 판매 시작.<br>실행 중엔 판매 화면을 건드리지 마세요.</div>
         </div>
       ` : ''}
 
