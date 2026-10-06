@@ -1,9 +1,9 @@
 {
-  "version": "4.3.4",
+  "version": "4.3.5",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "2843c6242101ae791be1725c790c6b204d1080544b9d383519a39632de7e88b1"
+      "sha256": "993b0d2129443d411deb482574cf883a237cd518b4e1149d2cf578eec987fd5e"
     },
     {
       "path": "src/loader.js",
@@ -63,7 +63,7 @@
     },
     {
       "path": "src/saleimport-core.js",
-      "sha256": "9f7d40875356a2dd916bbc7323d9507e9a46d6f1c03771141e3d5a88df8b39b6"
+      "sha256": "823ae6b188ed7701a2ac1085ec6f6e6902b21a799d328b6474c6ba4145914278"
     },
     {
       "path": "src/saleimport-erp.js",
@@ -71,7 +71,7 @@
     },
     {
       "path": "src/saleimport.js",
-      "sha256": "ba9ef4c92e121258fb615f3a963e79d36a5e045b5f4360ce89327f68a71c9729"
+      "sha256": "7c0950ed5937c98789dda7fccd1c581ef419baec9129a674009e22d1211ce472"
     },
     {
       "path": "icons/icon128.png",

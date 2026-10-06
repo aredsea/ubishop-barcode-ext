@@ -22,7 +22,7 @@ function body(src, head) {
 }
 
 test('applyOverlaps(): matchEntry 에서 e.checked 가 정해진 직후 호출된다', () => {
-  const b = body(UI, 'async function matchEntry(e) {');
+  const b = body(UI, 'async function matchEntry(e, probe) {');
   assert.ok(/e\.checked = m\.status === 'ok';\s*applyOverlaps\(\);/.test(b), 'matchEntry 는 e.checked 설정 뒤 applyOverlaps() 를 부른다');
   assert.equal((b.match(/applyOverlaps\(\)/g) || []).length, 1);
 });

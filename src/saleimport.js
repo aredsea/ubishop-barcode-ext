@@ -65,22 +65,26 @@
   /* ------------------------------------------------------------ 모델 */
   const fmt = (n) => Number(n).toLocaleString('en-US');
   function newEntry(g) {
-    const buyer = g.rows[0].buyer;
+    //  원장 묶음은 원장 수령자를 쓴다 — 쿠팡처럼 파일 구매자가 가려진(***) 마켓에서도 폴백 검색이 수령자로 돌게(§10.8).
+    const buyer = g.source === '원장' && g.buyer ? g.buyer : g.rows[0].buyer;
     //  §10.8 — source: 원장 | 이름 추정 | 파일 연락처. ledger: 원장에서 찾은 주문 Map(있으면 원장 줄 매칭). block: 처음부터 차단 사유. pickable: 직접 고르기 허용.
     const blocked = !!g.block;
     return { key: g.key, rows: g.rows, buyer, client: null, how: '', st: blocked ? 'block' : 'pending', reason: g.block || '', match: null, checked: false, cands: null, q: /^\*+$/.test(buyer) ? '' : buyer, note: '', qGen: 0, result: null,
-      source: g.source || '', ledger: g.ledger || new Map(), retOrders: g.retOrders || new Set(), hard: blocked && !g.pickable };
+      source: g.source || '', ledger: g.ledger || new Map(), retOrders: g.retOrders || new Set(), retFull: g.retFull || new Set(), hard: blocked && !g.pickable };
   }
   function parseEntries(parsed) {
     const p = C.slParseFile(parsed.rows);
     if (!p.ok) throw new Error(p.error === '알 수 없는 파일 양식' ? '알 수 없는 파일 양식 — 지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리' : p.error);
     S.adapter = p.adapter;
     S.parsed = p.rows;
-    S.returns = p.rows.filter((r) => r.isReturn);
+    S.returns = C.slClassifyRows(p.rows).manual;
   }
   //  idx = 원장 색인(없으면 null). 원장 연동 마켓은 원장 고객명으로, 아니면 기존 규칙으로 묶는다.
   function buildEntries(idx) {
-    S.entries = (S.adapter.ledgerMarket ? C.slGroupLedger(S.parsed, S.adapter, idx, { lookupFailed: S.ledgerFailed }) : C.slGroupByClient(S.parsed, S.adapter)).map(newEntry);
+    //  §10.8 — 한 주문이 전부 반품(판매 합 + 반품 합 = 0)이면 그 반품 행에 이름표만 붙인다(판매 행은 그대로 — 중복 정산 방어 유지). 에이블리는 시각 연결로 원장 번호가 생긴 뒤라 여기서 분류한다.
+    const k = C.slClassifyRows(S.parsed);
+    S.returns = k.manual;
+    S.entries = (S.adapter.ledgerMarket ? C.slGroupLedger(k.rows, S.adapter, idx, { lookupFailed: S.ledgerFailed }) : C.slGroupByClient(k.rows, S.adapter)).map(newEntry);
   }
   //  §10.8 — 원장 조회는 파일당 한 번, 읽기 대기열 안에서(실행기 요청 사이에 끼지 않게). 열쇠는 이 함수 지역 변수로만 다룬다.
   //  결과는 { idx, failed, notice } 로만 돌려준다 — S 는 건드리지 않는다(늦게 끝난 이전 파일의 실패가 지금 파일에 번지지 않게, 반영은 loadFile 이 세대 확인 뒤에).
@@ -112,18 +116,25 @@
   function setBlock(e, reason) { e.st = 'block'; e.reason = reason; e.match = null; e.checked = false; }
   //  고객이 확정된 뒤: 미수 확인(GET) → 주문·판매내역(GET) → 줄 매칭. 쓰기 없음.
   const viaLedger = (e) => !!(e.ledger && e.ledger.size);
-  async function matchEntry(e) {
-    const cl = e.client;
-    if (e.hard) { setBlock(e, e.reason); return; }
+  //  probe = 후보 고객 {seq,name} — 읽기 점검 결과({status,reason,…})만 돌려주고 e·겹침 검사는 건드리지 않는다(§10.8 폴백).
+  async function matchEntry(e, probe) {
+    const cl = probe || e.client;
+    const stop = (reason) => { if (probe) return { status: 'block', reason }; setBlock(e, reason); };
+    if (e.hard) return stop(e.reason);
     const lm = !!S.adapter.ledgerMatch;   // 원장 줄 매칭은 쿠팡·퀸잇만 — 그 밖의 마켓은 원장을 고객명에만 쓴다(§10.8)
-    if (lm && !viaLedger(e)) { setBlock(e, '원장 없이는 주문 줄을 찾을 수 없음 — 직접 처리'); return; }
+    if (lm && !viaLedger(e)) return stop('원장 없이는 주문 줄을 찾을 수 없음 — 직접 처리');
     const form = await E.openClient(String(cl.seq), cl.name);
-    if (String((form.values || {}).client) !== String(cl.seq)) { setBlock(e, '고객 지정 확인 실패'); return; }
+    if (String((form.values || {}).client) !== String(cl.seq)) return stop('고객 지정 확인 실패');
     const rc = receivable(form);
-    if (!rc.ok) { setBlock(e, rc.reason); return; }
+    if (!rc.ok) return stop(rc.reason);
     const tr = await E.trade(String(cl.seq), cl.name);
     const mode = C.slMatchModeFor(S.adapter, viaLedger(e));
-    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, amountCheck: S.adapter.ledgerAmountCheck }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
+    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, retFull: e.retFull, amountCheck: S.adapter.ledgerAmountCheck }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
+    if (probe) {
+      //  §10.8 폴백 — 주문내역을 읽었는데 필요한 정산액 줄이 하나도 없으면 'none'(이 후보는 이 주문의 고객이 아니다). 정상 경로(e.match)는 그대로.
+      if (C.slProbeNone(e.rows, e.ledger, tr.orders, mode)) return Object.assign({}, m, { status: 'none', reason: '주문내역에 이 결제 금액의 줄이 없음' });
+      return m;
+    }
     e.match = m; e.st = m.status; e.reason = m.reason;
     e.checked = m.status === 'ok';
     applyOverlaps();
@@ -137,13 +148,32 @@
       //  원장 고객명은 '수령자+뒤4/접미' 정확일치 규칙(§10.8) — 어댑터가 prefix4 여도 그 묶음은 exact.
       const ad = viaLedger(e) ? { clientRule: 'exact', suffix: S.adapter.suffix, ciSuffix: true } : S.adapter;
       const p4 = ad.clientRule === 'prefix4';
-      const sr = await E.searchClient(p4 ? e.buyer : e.key);
+      //  ubishop 검색은 공백을 무시하지 않는다 — 원장 묶음은 원본 이름과 공백 제거형 둘 다 찾아 합친다(§10.8). 그 밖의 경로는 원본 키.
+      const sr = viaLedger(e) ? await C.slSearchMerged((w) => E.searchClient(w), e.key) : await E.searchClient(p4 ? e.buyer : e.key);
       const dec = C.slAutoDecision({ hits: sr.rows, truncated: sr.truncated }, e, ad);
       if (dec.auto) {
         e.client = dec.auto; e.how = '자동'; await matchEntry(e);
         //  §10.3 — 이름+4자리 후보는 주문내역 정산이 일치할 때만 자동. 아니면 자동 확정을 취소하고 사장님이 고르게 한다.
         if (p4 && e.st !== 'ok') { const why = e.reason; e.client = null; e.how = ''; setBlock(e, '후보 "' + dec.auto.name + '" 의 주문내역이 이 결제와 맞지 않음(' + why + ') — 아래에서 직접 고르세요'); }
         return;
+      }
+      //  §10.8 폴백 — 원장 출처 항목만, 정확 이름이 없을 때만: 수령자 이름으로 다시 검색해 '수령자+4자리(/접미)' 후보를 주문내역으로 대조한다. 주문과 맞는 후보가 정확히 1명일 때만 자동.
+      if (e.source === '원장' && e.buyer && !sr.truncated && !C.slClientCandidates(sr.rows, e, ad).length) {
+        const fb = await C.slSearchMerged((w) => E.searchClient(w), e.buyer);
+        if (fb.truncated) { setBlock(e, '검색 결과가 100건 이상 — 직접 고르세요'); return; }
+        const r = await C.slFallbackResolve(fb.rows, e.buyer, async (cand) => {
+          if (S.running || S.starting) throw new Error('판매가 시작되어 후보 조회를 중단했습니다');
+          return (await matchEntry(e, cand)) || { status: 'block', reason: '점검 불가' };
+        });
+        if (r.auto) {
+          e.client = { seq: r.auto.seq, name: r.auto.name }; e.how = '주문 확인';
+          let why = '';
+          try { await matchEntry(e); why = e.reason; } catch (err) { why = '조회 실패: ' + (err && err.message || err); e.st = 'block'; }
+          if (e.st !== 'ok') { e.client = null; e.how = ''; e.cands = r.cands.slice(0, 50); e.q = e.buyer; setBlock(e, '후보 "' + r.auto.name + '" 를 다시 읽었더니 주문이 맞지 않음(' + why + ') — 직접 고르세요'); }
+          return;   // 선택한 후보로 한 번 더 읽어 반영(겹침 검사 포함)
+        }
+        if (r.cands.length) { e.cands = r.cands.slice(0, 50); e.q = e.buyer; }
+        setBlock(e, r.reason || dec.reason); return;
       }
       setBlock(e, dec.reason);
     } catch (err) { setBlock(e, '조회 실패: ' + (err && err.message || err)); }
@@ -442,7 +472,7 @@
     const chkOn = e.checked && entryReady(e);
     const head = '<tr class="sl-o' + cls + '"><td><input type="checkbox" class="sl-chk" data-f="chk" data-o="' + ei + '"' + (chkOn ? ' checked' : '') + (entryReady(e) && !S.running && !S.starting ? '' : ' disabled') + '></td>'
       + '<td colspan="2"><span class="sl-cust">' + esc(e.key) + '</span> '
-      + (e.client ? '<span class="sl-muted">→ ' + esc(e.client.name) + ' #' + esc(e.client.seq) + '</span> ' + chip(e.how === '자동' ? 'reuse' : 'gray', e.how === '자동' ? '자동 매칭' : '직접 선택') : '')
+      + (e.client ? '<span class="sl-muted">→ ' + esc(e.client.name) + ' #' + esc(e.client.seq) + '</span> ' + (() => { const h = C.slHowChip(e.how); return chip(h.cls, h.text); })() : '')
       + (e.source ? ' ' + chip('gray', '근거 ' + e.source) : '')
       + '</td><td>' + verdictChips(e)
       + (e.st === 'block' && !e.result ? '<div class="sl-issue">' + ico('warn') + esc(e.reason) + '</div>' + (e.hard ? '' : findUi(e, ei)) : '')
@@ -505,7 +535,7 @@
     p.querySelector('.sl-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.sl-top').innerHTML =
       '<div class="sl-bar"><label class="sl-btn">' + ico('file') + '정산 파일 선택<input type="file" id="ub-sl-file" accept=".xls,.xlsx,.csv" hidden' + lock + '></label>'
-      + (nEnt ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter ? S.adapter.label : '') + '</b></span><span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 반품 <b>' + c.nRet + '</b></span>' : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
+      + (S.adapter ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter.label) + '</b></span>' + (nEnt ? '<span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 수동 <b>' + c.nRet + '</b></span>' : '') : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
       + '<span class="sl-spacer"></span>'
       + '<button class="sl-btn pri" data-act="run"' + (c.nChk && !S.running && !S.starting && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '판매 중…' : '판매 시작') + '</button>'
       + '<button class="sl-btn quiet" data-act="export-log">로그 JSON</button></div>'
@@ -522,14 +552,14 @@
     if (S.error) banners.push({ cls: '', text: S.error });
     if (S.notice) banners.push({ cls: 'warn', text: S.notice });
     if (nUnprev && !S.results.length) banners.push({ cls: 'warn', text: '이전에 처리한 적 있는 주문번호가 든 고객 ' + nUnprev + '명이 있습니다 — 주황색 표시를 확인하고 판매하세요.' });
-    const ret = S.returns.length ? '<div class="sl-res ret"><h3>수동 처리 필요 — 반품 <span class="sl-muted">' + S.returns.length + '건은 자동 처리에서 제외됩니다</span></h3><table class="sl-t" style="margin-top:6px"><thead><tr><th>' + mk() + '주문번호</th><th>수취인</th><th>상품</th><th class="num">수량</th><th class="num">' + (S.adapter && S.adapter.id === 'gs' ? '최종 판처금액' : '지급액') + '</th></tr></thead><tbody>'
-      + S.returns.map((r) => '<tr class="sl-muted"><td>' + esc(r.orderNo) + '</td><td>' + esc(r.buyer) + '</td><td>' + esc(r.name) + '</td><td class="num">' + (r.qty == null ? '' : r.qty) + '</td><td class="num">' + fmt(r.amount) + '원</td></tr>').join('') + '</tbody></table></div>' : '';
+    const ret = S.returns.length ? '<div class="sl-res ret"><h3>수동 처리 필요 <span class="sl-muted">' + S.returns.length + '건은 자동 처리에서 제외됩니다</span></h3><table class="sl-t" style="margin-top:6px"><thead><tr><th>구분</th><th>' + mk() + '주문번호</th><th>수취인</th><th>상품</th><th class="num">수량</th><th class="num">' + (S.adapter && S.adapter.id === 'gs' ? '최종 판처금액' : '지급액') + '</th></tr></thead><tbody>'
+      + S.returns.map((r) => '<tr class="sl-muted"><td>' + esc(r.kind) + (r.note ? '<div class="sl-opt">' + esc(r.note) + '</div>' : '') + '</td><td>' + esc(r.orderNo) + '</td><td>' + esc(r.buyer) + '</td><td>' + esc(r.name) + '</td><td class="num">' + (r.qty == null ? '' : r.qty) + '</td><td class="num">' + fmt(r.amount) + '원</td></tr>').join('') + '</tbody></table></div>' : '';
     p.querySelector('.sl-b').innerHTML =
       banners.map((b) => '<div class="sl-banner ' + b.cls + '">' + ico('warn') + esc(b.text) + '</div>').join('')
-      + (nEnt ? '<div class="sl-sum"><span>처리 대상 고객 <b>' + c.nChk + '</b>명</span><span>줄 <b>' + c.nLines + '</b></span><span>현금 합계 <b>' + fmt(c.cash) + '</b>원</span><span class="sl-muted">차단 ' + c.nBlock + ' · 제외 ' + (c.nSold + c.nRet) + '(이미 판매 ' + c.nSold + ' · 반품 ' + c.nRet + ')</span></div>' : '')
+      + (nEnt ? '<div class="sl-sum"><span>처리 대상 고객 <b>' + c.nChk + '</b>명</span><span>줄 <b>' + c.nLines + '</b></span><span>현금 합계 <b>' + fmt(c.cash) + '</b>원</span><span class="sl-muted">차단 ' + c.nBlock + ' · 제외 ' + (c.nSold + c.nRet) + '(이미 판매 ' + c.nSold + ' · 수동 ' + c.nRet + ')</span></div>' : '')
       + (nEnt ? '<table class="sl-t"><colgroup><col style="width:36px"><col class="c-no"><col class="c-gs"><col><col class="c-amt"></colgroup>'
         + '<thead><tr><th><input type="checkbox" class="sl-chk" data-f="chkall" title="체크 가능한 고객 전체 체크/해제"' + (c.nOk && c.nChk === c.nOk ? ' checked' : '') + (c.nOk && !S.running && !S.starting ? '' : ' disabled') + '></th><th>' + mk() + '주문번호</th><th>' + mk() + '상품</th><th>유비샵 바코드 · 상품</th><th class="num">실판매가</th></tr></thead><tbody>'
-        + S.entries.map(entryRows).join('') + '</tbody></table>' : (S.phase === 'reading' || S.error ? '' : '<div class="sl-empty">파일을 선택하면 고객별 검토 표가 여기에 뜹니다.</div>'))
+        + S.entries.map(entryRows).join('') + '</tbody></table>' : (S.phase === 'reading' || S.error ? '' : S.adapter ? (S.phase === 'idle' ? '<div class="sl-empty">판매할 행이 없습니다 — 아래 수동 처리 목록만 있습니다</div>' : '') : '<div class="sl-empty">파일을 선택하면 고객별 검토 표가 여기에 뜹니다.</div>'))
       + ret
       + (S.results.length ? '<div class="sl-res"><h3>결과 <span class="sl-muted">— 완료 ' + done + ' · 건너뜀/중단 ' + other + '</span></h3><table class="sl-t" style="margin-top:6px"><thead><tr><th>고객</th><th>상태</th><th>사유</th><th>판매전표</th><th>결제전표</th><th class="num">되돌림</th></tr></thead><tbody>'
         + S.results.map((r) => '<tr><td>' + esc(r.key) + '</td><td>' + resultChip(Object.assign({}, r, { reason: '' })) + '</td><td>' + esc(r.reason || '') + '</td><td>' + esc(r.tradeJun || '') + '</td><td>' + esc(r.payJun || '') + '</td><td class="num">' + esc(r.rolledBack || 0) + '</td></tr>').join('')

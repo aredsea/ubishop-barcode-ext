@@ -486,11 +486,11 @@ test('넛 b: 원장 전용 어댑터(쿠팡·퀸잇)에서 원장에 없는 주�
   }
 });
 
-test('넛 c: 원장 고객명과 ERP 검색 결과는 접미 대소문자를 무시하고 비교(SSG /s·/S), 접두는 정확일치', () => {
+test('넛 c: 원장 고객명과 ERP 검색 결과는 접미 대소문자를 무시하고 비교(SSG /s·/S), 접두도 공백·ASCII 대소문자만 무시(한글·숫자는 정확일치)', () => {
   const grp = { key: '고객C7777/s', buyer: '고객C' };
   const ci = { clientRule: 'exact', suffix: 's', ciSuffix: true };
   const hits = [{ seq: 1, name: '고객C7777/S' }, { seq: 2, name: '고객C7778/s' }, { seq: 3, name: '고객c7777/s' }];
-  assert.deepEqual(C.slClientCandidates(hits, grp, ci).map((h) => h.seq), [1]);
+  assert.deepEqual(C.slClientCandidates(hits, grp, ci).map((h) => h.seq), [1, 3]);   // 4.3.5: 접두 'c'/'C' 는 ASCII 대소문자 무시, 7778 은 다른 이름
   assert.deepEqual(C.slClientCandidates([{ seq: 1, name: '고객C7777/S' }], grp, { clientRule: 'exact', suffix: 's' }).map((h) => h.seq), []);
   assert.ok(/ciSuffix: true/.test(read('src/saleimport.js')));
 });

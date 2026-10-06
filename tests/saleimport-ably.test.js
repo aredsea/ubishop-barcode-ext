@@ -178,7 +178,7 @@ test('쿠팡·퀸잇은 여전히 금액 대조(|F−L| ≤ 행 수) — count �
 });
 
 test('패널 배선: matchEntry 가 어댑터의 ledgerAmountCheck 를 slMatchLedger 로 넘긴다', () => {
-  assert.ok(/slMatchLedger\(e\.rows, e\.ledger, tr\.orders, tr\.sales, \{ retOrders: e\.retOrders, amountCheck: S\.adapter\.ledgerAmountCheck \}\)/.test(read('src/saleimport.js')));
+  assert.ok(/slMatchLedger\(e\.rows, e\.ledger, tr\.orders, tr\.sales, \{ retOrders: e.retOrders, retFull: e.retFull, amountCheck: S\.adapter\.ledgerAmountCheck \}\)/.test(read('src/saleimport.js')));
 });
 
 /* ---------------------------------------------------------------- erp ledgerLookupByTime */
