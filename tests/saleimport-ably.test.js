@@ -174,11 +174,11 @@ test('쿠팡·퀸잇은 여전히 금액 대조(|F−L| ≤ 행 수) — count �
   assert.match(bad.reason, /파일 금액 .* ≠ 원장 .* 주문 일부만 정산됐을 수 있음/);
   const noOpt = C.slMatchLedger([frow()], lmap(LR()), [O()], []);
   assert.equal(noOpt.status, 'block');
-  assert.equal(C.SL_ADAPTERS.filter((a) => a.ledgerAmountCheck).map((a) => a.id).join(), 'ably-settle');
+  assert.equal(C.SL_ADAPTERS.filter((a) => a.ledgerAmountCheck).map((a) => a.id).join(), 'amondz-settle,ably-settle');
 });
 
 test('패널 배선: matchEntry 가 어댑터의 ledgerAmountCheck 를 slMatchLedger 로 넘긴다', () => {
-  assert.ok(/slMatchLedger\(e\.rows, e\.ledger, tr\.orders, tr\.sales, \{ retOrders: e.retOrders, retFull: e.retFull, amountCheck: S\.adapter\.ledgerAmountCheck \}\)/.test(read('src/saleimport.js')));
+  assert.ok(/slMatchLedger\(e\.rows, e\.ledger, tr\.orders, tr\.sales, \{ retOrders: e.retOrders, retFull: e.retFull, amountCheck: S\.adapter\.ledgerAmountCheck, payRange: !!S\.adapter\.ledgerPayRange \}\)/.test(read('src/saleimport.js')));
 });
 
 /* ---------------------------------------------------------------- erp ledgerLookupByTime */

@@ -58,7 +58,7 @@ test('퀸잇: 상품 구매 행만 처리, ledgerNo = 주문번호(개별주문�
   assert.equal(C.slParseFile(n).rows[1].isReturn, true);
 });
 
-test('아몬즈: 배송비 행은 제외(수동), 합성 상품 행은 수취인+연락처 뒤4 로 이름을 만든다(원장 없이도)', () => {
+test('아몬즈: 배송비 행은 제외(수동), 합성 상품 행은 원장이 있어야 고객이 정해진다(파일 이름 폴백 없음)', () => {
   const p0 = C.slParseFile(AM);
   assert.equal(p0.ok, true);
   assert.equal(p0.adapter.id, 'amondz-settle');
@@ -67,7 +67,7 @@ test('아몬즈: 배송비 행은 제외(수동), 합성 상품 행은 수취인
   //  합성 상품 행(픽스처 생성기 출력에는 넣지 않는다)
   const h = AM[0], row = clone(AM[1]);
   row[h.indexOf('상품주문번호')] = '2026091200000001'; row[h.indexOf('구분')] = '상품 구매'; row[h.indexOf('상품명')] = '테스트 반지';
-  row[h.indexOf('정산금액')] = '45,000';
+  row[h.indexOf('정산금액')] = '45,000'; row[h.indexOf('쿠폰 분담액(amondz)')] = '0';
   const rows = AM.concat([row]);
   const p = C.slParseFile(rows);
   assert.equal(p.ok, true);
@@ -76,10 +76,9 @@ test('아몬즈: 배송비 행은 제외(수동), 합성 상품 행은 수취인
   assert.equal(prod[0].amount, 45000);
   assert.equal(prod[0].orderNo, '2026091200000001');
   assert.equal(prod[0].ledgerNo, AM[1][h.indexOf('주문번호')]);
-  const g = C.slGroupByClient(p.rows, p.adapter);
+  const g = C.slGroupLedger(p.rows, p.adapter, null);
   assert.equal(g.length, 1);
-  assert.equal(g[0].key, '고객A1234/아');
-  assert.equal(g[0].source, '파일 연락처');
+  assert.match(g[0].block, /원장에 없는 주문/);
   assert.equal(C.slClientName('고객A', '010-0000-1234', '아'), '고객A1234/아');
   assert.equal(C.slClientName('고객A', '010-0000-1234'), '고객A1234/G');
 });
@@ -400,13 +399,14 @@ test('규칙4: 주문별 파일 합 F 와 원장 합 L 의 차이가 파일 행 
   assert.equal(C.slMatchLedger([frow({ orderNo: 'n-1', amount: 124222, key: 124222 }), frow({ orderNo: 'n-2', amount: 124222, key: 124222 })], lmap(LR({ amount: 248447 })), orders, []).status, 'block');
 });
 
-test('규칙5: 원장 줄 매칭(ledgerMatch)은 쿠팡·퀸잇만 — 카페24·SSG·아몬즈는 원장을 고객명에만 쓴다', () => {
+test('규칙5: 원장 줄 매칭(ledgerMatch)은 쿠팡·퀸잇·아몬즈·에이블리만 — 카페24·SSG 는 원장을 고객명에만 쓴다', () => {
   assert.equal(ad('coupang-revenue').ledgerMatch, true);
   assert.equal(ad('queenit-settle').ledgerMatch, true);
-  ['gs', 'cafe24-inicis-card', 'ssg-settle', 'smartstore-daily', 'amondz-settle'].forEach((id) => assert.ok(!ad(id).ledgerMatch, id));
+  assert.equal(ad('amondz-settle').ledgerMatch, true);
+  ['gs', 'cafe24-inicis-card', 'ssg-settle', 'smartstore-daily'].forEach((id) => assert.ok(!ad(id).ledgerMatch, id));
   assert.equal(ad('cafe24-inicis-card').matchMode, 'perOrder');
   assert.equal(ad('ssg-settle').matchMode, 'perUnit');
-  assert.equal(ad('amondz-settle').matchMode, 'perUnit');
+  assert.equal(ad('amondz-settle').matchMode, 'ledger');
   const ui = read('src/saleimport.js');
   const i = ui.indexOf('async function matchEntry'), b = ui.slice(i, ui.indexOf('\n  }\n', i));
   assert.ok(/S\.adapter\.ledgerMatch/.test(b), 'matchEntry 가 ledgerMatch 로 갈림');
@@ -455,10 +455,10 @@ test('규칙6: 원장 고객이 차단(수령자 불일치)돼도 같은 구매�
   assert.equal(fb.block, '같은 구매자의 결제 일부만 원장에서 확인됨 — 직접 처리');
 });
 
-test('slMatchModeFor: 원장 줄 매칭 어댑터(쿠팡·퀸잇)만 원장 묶음에서 ledger, 그 밖은 자기 모드', () => {
-  ['coupang-revenue', 'queenit-settle'].forEach((id) => assert.equal(C.slMatchModeFor(ad(id), true), 'ledger', id));
-  [['cafe24-inicis-card', 'perOrder'], ['ssg-settle', 'perUnit'], ['amondz-settle', 'perUnit'], ['gs', 'perUnit']].forEach(([id, m]) => assert.equal(C.slMatchModeFor(ad(id), true), m, id));
-  ['gs', 'smartstore-daily', 'cafe24-inicis-card', 'ssg-settle', 'amondz-settle'].forEach((id) => assert.equal(C.slMatchModeFor(ad(id), false), ad(id).matchMode, id));
+test('slMatchModeFor: 원장 줄 매칭 어댑터(쿠팡·퀸잇·아몬즈)만 원장 묶음에서 ledger, 그 밖은 자기 모드', () => {
+  ['coupang-revenue', 'queenit-settle', 'amondz-settle'].forEach((id) => assert.equal(C.slMatchModeFor(ad(id), true), 'ledger', id));
+  [['cafe24-inicis-card', 'perOrder'], ['ssg-settle', 'perUnit'], ['gs', 'perUnit']].forEach(([id, m]) => assert.equal(C.slMatchModeFor(ad(id), true), m, id));
+  ['gs', 'smartstore-daily', 'cafe24-inicis-card', 'ssg-settle'].forEach((id) => assert.equal(C.slMatchModeFor(ad(id), false), ad(id).matchMode, id));
 });
 
 test('넛 a: ledgerLookup 의 타임아웃은 응답 본문을 다 읽은 뒤에 해제한다(본문 읽기 중 멈춤도 timeout)', { timeout: 5000 }, async () => {

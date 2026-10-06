@@ -375,6 +375,9 @@
   const AMBIG_TIME = '결제 시각이 가까운 주문이 여러 건 — 직접 처리';
   const MIXED_PAY = '서로 다른 결제가 한 원장 주문에 연결됨 — 직접 처리';
   const AMT_RANGE = '원장 금액이 결제 금액과 맞지 않음 — 직접 처리';
+  //  아몬즈 하한: 원장 금액 L ≥ 65% × Σ판매금액. 실측(2026-10-06, 29건) L/판매금액 = 0.701~0.718(28건) — 쿠폰 없는 9,900원 주문도 F 8,464 · L 6,938(0.70).
+  //  파일 정산금 F 는 하한으로 쓸 수 없다(L/F 가 0.82 까지 내려감). 0.175(판매금액 39,600 · L 6,938 — 수량 4 에 원장 1줄로 추정)는 이 하한으로 차단된다.
+  const SL_AMONDZ_MIN_RATIO_PCT = 65;
   function slApplyTimeLedger(rows, ledgerRows, windowMs) {
     const res = slLedgerIndexByTime(rows, ledgerRows, windowMs);
     const out = rows.map((r, i) => Object.assign({}, r, res[i].no ? { ledgerNo: res[i].no } : { ledgerNo: 'time-' + r.paidAt, ledgerBlock: res[i].ambiguous ? AMBIG_TIME : '' }));
@@ -481,7 +484,7 @@
     });
     return { rows: list.slice(), manual };
   }
-  //  어떤 매칭 규칙으로 줄을 찾나 — 원장 줄 매칭(ledgerMatch: 쿠팡·퀸잇)이고 원장에서 찾은 묶음이면 'ledger', 아니면 어댑터 고유 모드.
+  //  어떤 매칭 규칙으로 줄을 찾나 — 원장 줄 매칭(ledgerMatch: 쿠팡·퀸잇·아몬즈·에이블리)이고 원장에서 찾은 묶음이면 'ledger', 아니면 어댑터 고유 모드.
   function slMatchModeFor(adapter, viaLedger) { return (viaLedger && adapter.ledgerMatch) ? 'ledger' : adapter.matchMode; }
   //  §10.8 원장 매칭 — 기대 줄 = 원장의 사은품 아닌 행들(열쇠 = 그 행 amount = 유비샵 비고 정산 N).
   //  실판매가 = 파일의 그 주문 최종 금액 합을 원장 amount 비율로 배분(floor, 나머지 첫 줄). 사은품은 0원. opts.retOrders = 같은 주문에 반품 행이 있는 주문번호.
@@ -512,6 +515,12 @@
       if (opts && opts.amountCheck === 'count') {   // §10.9 에이블리 — 금액 기준이 달라 행 수로 부분 정산을 막는다
         if (frs.length !== items.length) return block(no + ': 파일 상품 수 ≠ 원장 상품 수 — 주문 일부만 정산됐을 수 있음');
       } else if (Math.abs(F - L) > frs.length) return block(no + ': 파일 금액 ' + F.toLocaleString('en-US') + ' ≠ 원장 ' + L.toLocaleString('en-US') + ' — 주문 일부만 정산됐을 수 있음');
+      //  §10.8 아몬즈 — 파일 정산금(F)과 원장 금액(L)의 기준이 다르다(F 는 L 보다 클 수도 작을 수도 있다):
+      //  SL_AMONDZ_MIN_RATIO_PCT% × Σ판매금액 ≤ L ≤ Σ(총 결제 금액 + 쿠폰 분담액(amondz)) 밖이면 남의 주문·일부 정산일 수 있다.
+      if (opts && opts.payRange) {
+        const hi = frs.reduce((s, r) => s + r.payTotal, 0), S = frs.reduce((s, r) => s + r.grossSale, 0);
+        if (!Number.isFinite(hi) || !Number.isFinite(S) || !(S > 0) || L * 100 < SL_AMONDZ_MIN_RATIO_PCT * S || L > hi) return block(no + ': ' + AMT_RANGE);
+      }
       const shares = slAllocateByWeight(F, amts);
       if (!shares) return block(no + ': 배분 불가');
       amts.forEach((a, i) => { if (!need.has(a)) need.set(a, []); need.get(a).push({ no, orderNo: frs[0].orderNo, share: shares[i] }); });
@@ -687,8 +696,8 @@
     if (!out.length) return { ok: false, error: '데이터 행 없음' };
     return { ok: true, rows: out };
   }
-  //  §10.8 아몬즈 — 구분에 '배송비' 가 든 행은 제외(수동 목록). 수취인명·수취인 연락처로 파일 안에서 이름을 만들 수 있다(원장 없이도).
-  const AM_COLS = ['주문번호', '상품주문번호', '구분', '상품명', '수취인명', '수취인 연락처', '정산금액'];
+  //  §10.8 아몬즈 — 구분에 '배송비' 가 든 행은 제외(수동 목록). 고객 이름은 원장에서만 만든다(원장에 없으면 차단 — 파일 이름 폴백 없음).
+  const AM_COLS = ['주문번호', '상품주문번호', '구분', '상품명', '수취인명', '수취인 연락처', '정산금액', '판매금액', '총 결제 금액', '쿠폰 분담액(amondz)'];
   function parseAmondz(rows) {
     const c = colsOf(rows, AM_COLS); if (c.error) return { ok: false, error: c.error };
     const out = [];
@@ -701,7 +710,11 @@
       if (pay == null || !Number.isInteger(pay)) return { ok: false, error: orderNo + ': 정산금액을 읽을 수 없음' };
       const ship = /배송비/.test(c.cell(r, '구분'));
       if (!ship && !c.cell(r, '수취인명')) return { ok: false, error: orderNo + ': 수취인명 없음' };
-      out.push({ r: i, orderNo, ledgerNo: no, buyer: c.cell(r, '수취인명'), phone: c.cell(r, '수취인 연락처'), qty: 1, W: pay, key: pay, amount: pay,
+      //  결제 금액 범위(원장 금액 대조)에 쓰는 값 — 상품 행은 셋 다 숫자여야 한다(못 읽으면 파일 거부). 배송비·반품 행은 쓰지 않으므로 #NUM! 이어도 봐준다.
+      const gross = slMoney(c.cell(r, '총 결제 금액')), coupon = slMoney(c.cell(r, '쿠폰 분담액(amondz)')), sale = slMoney(c.cell(r, '판매금액'));
+      const payOk = gross != null && Number.isInteger(gross) && coupon != null && Number.isInteger(coupon) && sale != null && Number.isInteger(sale);
+      if (!ship && pay >= 0 && !payOk) return { ok: false, error: orderNo + ': 판매금액·총 결제 금액·쿠폰 분담액(amondz)을 읽을 수 없음' };
+      out.push({ r: i, orderNo, ledgerNo: no, buyer: c.cell(r, '수취인명'), phone: c.cell(r, '수취인 연락처'), qty: 1, W: pay, key: pay, amount: pay, payTotal: payOk ? gross + coupon : NaN, grossSale: payOk ? sale : NaN,
         isReturn: ship || pay < 0, name: ship ? c.cell(r, '구분') : c.cell(r, '상품명'), option: '' });
     }
     if (!out.length) return { ok: false, error: '데이터 행 없음' };
@@ -745,12 +758,13 @@
       detect: (h) => hasAll(h, ['원주문ID', '주문순번', '정산금액(VAT포함)', '순판매액']), parse: parseSsg },
     { id: 'smartstore-daily', label: '스마트스토어', suffix: '스', clientRule: 'prefix4', matchMode: 'perUnit',
       detect: (h) => hasAll(h, ['상품주문번호', '정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)']), parse: parseSmartstore },
-    //  §10.8 — 원장 연동 마켓. clientRule 'ledger' = 원장에서만 고객을 정한다(없으면 차단). ledgerMatch = 원장 줄 매칭(쿠팡·퀸잇만 — 나머지는 원장을 고객명에만 쓴다).
+    //  §10.8 — 원장 연동 마켓. clientRule 'ledger' = 원장에서만 고객을 정한다(없으면 차단). ledgerMatch = 원장 줄 매칭(쿠팡·퀸잇·아몬즈·에이블리 — 나머지는 원장을 고객명에만 쓴다).
     { id: 'coupang-revenue', label: '쿠팡', suffix: '쿠', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '쿠팡',
       detect: (h) => hasAll(h, ['옵션 ID', '판매수량', '환불수량', '정산금액', '구매확정(출고)유형']), parse: parseCoupang },
     { id: 'queenit-settle', label: '퀸잇', suffix: '퀸', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '퀸잇',
       detect: (h) => hasAll(h, ['개별주문번호', '거래유형', '정산금액(A-B-C+D)']), parse: parseQueenit },
-    { id: 'amondz-settle', label: '아몬즈', suffix: '아', clientRule: 'exact', matchMode: 'perUnit', ledgerMarket: '아몬즈',
+    //  §10.8 — 아몬즈도 원장 줄 매칭이다(파일 정산금 ≠ 원장 금액 = 유비샵 비고 정산 N). 행 수 대조 + 결제 금액 범위 대조(ledgerPayRange)로 부분·남의 주문을 막는다.
+    { id: 'amondz-settle', label: '아몬즈', suffix: '아', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '아몬즈', ledgerAmountCheck: 'count', ledgerPayRange: true,
       detect: (h) => hasAll(h, ['상품주문번호', '정산금액', '수취인명', '수취인 연락처']), parse: parseAmondz },
     //  §10.9 — 파일에 원장 번호가 없어 결제 시각으로 원장을 찾는다(ledgerBy 'time'). 파일 정산금과 원장 금액의 기준이 달라 금액 대조 대신 행 수 대조(ledgerAmountCheck 'count').
     { id: 'ably-settle', label: '에이블리', suffix: '에', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '에이블리', ledgerBy: 'time', ledgerAmountCheck: 'count',
@@ -1168,7 +1182,7 @@
     return out;
   }
 
-  const api = { COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slFullReturnSet, slLedgerIndex, slLedgerIndexByTime, slApplyTimeLedger, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slClientCandidates, slAutoDecision, slSearchWord, slSearchMerged, slFallbackCandidates, slFallbackDecide, slProbeNone, slHowChip, slFallbackResolve, slClassifyRows, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
+  const api = { SL_AMONDZ_MIN_RATIO_PCT, COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slFullReturnSet, slLedgerIndex, slLedgerIndexByTime, slApplyTimeLedger, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slClientCandidates, slAutoDecision, slSearchWord, slSearchMerged, slFallbackCandidates, slFallbackDecide, slProbeNone, slHowChip, slFallbackResolve, slClassifyRows, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
     SL_FORM10_NAMES, slComma, slReadSaleForm, slSaleManager, slModifyPayload, slCashPayload, slJunCheck, slJunPayload, slNewResult, slRunClient, slApplyResults, slRunAll };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }

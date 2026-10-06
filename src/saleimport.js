@@ -121,7 +121,7 @@
     const cl = probe || e.client;
     const stop = (reason) => { if (probe) return { status: 'block', reason }; setBlock(e, reason); };
     if (e.hard) return stop(e.reason);
-    const lm = !!S.adapter.ledgerMatch;   // 원장 줄 매칭은 쿠팡·퀸잇만 — 그 밖의 마켓은 원장을 고객명에만 쓴다(§10.8)
+    const lm = !!S.adapter.ledgerMatch;   // 원장 줄 매칭은 쿠팡·퀸잇·아몬즈·에이블리만 — 그 밖의 마켓은 원장을 고객명에만 쓴다(§10.8)
     if (lm && !viaLedger(e)) return stop('원장 없이는 주문 줄을 찾을 수 없음 — 직접 처리');
     const form = await E.openClient(String(cl.seq), cl.name);
     if (String((form.values || {}).client) !== String(cl.seq)) return stop('고객 지정 확인 실패');
@@ -129,7 +129,7 @@
     if (!rc.ok) return stop(rc.reason);
     const tr = await E.trade(String(cl.seq), cl.name);
     const mode = C.slMatchModeFor(S.adapter, viaLedger(e));
-    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, retFull: e.retFull, amountCheck: S.adapter.ledgerAmountCheck }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
+    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, retFull: e.retFull, amountCheck: S.adapter.ledgerAmountCheck, payRange: !!S.adapter.ledgerPayRange }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
     if (probe) {
       //  §10.8 폴백 — 주문내역을 읽었는데 필요한 정산액 줄이 하나도 없으면 'none'(이 후보는 이 주문의 고객이 아니다). 정상 경로(e.match)는 그대로.
       if (C.slProbeNone(e.rows, e.ledger, tr.orders, mode)) return Object.assign({}, m, { status: 'none', reason: '주문내역에 이 결제 금액의 줄이 없음' });
