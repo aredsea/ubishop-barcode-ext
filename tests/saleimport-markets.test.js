@@ -294,6 +294,36 @@ test('스마트스토어: 구분≠상품주문 행은 수동 처리 목록(isRe
   assert.equal(C.slGroupByClient(p.rows, p.adapter).length, 1);
 });
 
+/* ---- 스마트스토어 건별 정산내역(SettleCaseByCase.xlsx, 2026-10-13) — 같은 어댑터, 열 이름에 (A)~(D) 가 없다 ---- */
+const SMART_CASE = JSON.parse(FX('rows-smartstore-case.json'));
+
+test('스마트스토어 건별: 같은 어댑터로 판별, key=A+B+C+D (=정산예정금액), 2행', () => {
+  assert.equal(C.slDetectAdapter(SMART_CASE[0]).id, 'smartstore-daily');
+  const p = C.slParseFile(SMART_CASE);
+  assert.equal(p.ok, true);
+  assert.deepEqual(p.rows.map((r) => r.key), [102282, 548111]);
+  assert.deepEqual(p.rows.map((r) => r.amount), [102282, 548111]);
+  assert.deepEqual(p.rows.map((r) => r.orderNo), ['2026081053677741', '2026082915904131']);
+  assert.deepEqual(p.rows.map((r) => r.buyer), ['고객A', '고객B']);
+  assert.ok(p.rows.every((r) => !r.isReturn && r.qty === 1));
+  assert.deepEqual(C.slGroupByClient(p.rows, p.adapter).map((g) => g.key), ['고객A/스', '고객B/스']);
+});
+
+test('스마트스토어 건별: A+B+C+D+혜택 ≠ 정산예정금액 → 파일 거부, 혜택금액 ≠ 0 → 수동 처리 목록', () => {
+  const H = SMART_CASE[0], col = (n) => H.indexOf(n);
+  const off = clone(SMART_CASE); off[1][col('정산예정금액')] = '102283';
+  assert.equal(C.slParseFile(off).ok, false);
+  const bad = clone(SMART_CASE); bad[1][col('정산예정금액')] = 'x';
+  assert.equal(C.slParseFile(bad).ok, false);
+  const ben = clone(SMART_CASE); ben[1][col('혜택금액')] = '1000'; ben[1][col('정산예정금액')] = '103282';
+  const p = C.slParseFile(ben);
+  assert.equal(p.ok, true);
+  assert.deepEqual(p.rows.map((r) => r.isReturn), [true, false]);
+  assert.equal(C.slGroupByClient(p.rows, p.adapter).length, 1);
+  const ret = clone(SMART_CASE); ret[1][col('정산기준금액')] = '-109310'; ret[1][col('정산예정금액')] = String(-109310 - 3848 - 3180);
+  assert.equal(C.slParseFile(ret).rows[0].isReturn, true);
+});
+
 test('판별: 헤더가 어느 어댑터에도 안 맞거나 둘 이상 맞으면 거부', () => {
   assert.equal(C.slDetectAdapter(['상품주문번호', '구분']), null);
   assert.deepEqual(C.slParseFile([['상품주문번호', '구분'], ['1', '2']]), { ok: false, error: '알 수 없는 파일 양식' });

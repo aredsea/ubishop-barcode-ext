@@ -616,11 +616,20 @@
     return { ok: true, rows: out };
   }
   //  §10.6 스마트스토어 — key = amount = A+B+C+D(수수료는 음수). D 열은 없을 수 있고, 빈칸은 0, 숫자가 아니면 파일 거부.
-  const SMART_COLS = ['상품주문번호', '구분', '상품명', '구매자명', '정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)'];
+  const SMART_COLS = ['상품주문번호', '구분', '상품명', '구매자명'];
+  const SMART_FORMS = [
+    { detect: ['상품주문번호', '정산기준금액', 'Npay 수수료', '매출 연동 수수료 합계', '정산예정금액'],
+      amount: ['정산기준금액', 'Npay 수수료', '매출 연동 수수료 합계', '무이자할부 수수료'], benefit: '혜택금액', expected: '정산예정금액' },
+    { detect: ['상품주문번호', '정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)'],
+      amount: ['정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)', '무이자할부 수수료(D)'] }
+  ];
   function parseSmartstore(rows) {
     const h = (rows[0] || []).map(norm);
-    const ix = {}; SMART_COLS.concat(['무이자할부 수수료(D)']).forEach((c) => { ix[c] = h.indexOf(norm(c)); });
-    const miss = SMART_COLS.filter((c) => ix[c] < 0);
+    const form = SMART_FORMS.find((f) => f.detect.every((c) => h.indexOf(norm(c)) >= 0));
+    if (!form) return { ok: false, error: '필수 열 없음' };
+    const required = SMART_COLS.concat(form.amount.slice(0, 3), form.expected ? [form.expected] : []);
+    const ix = {}; required.concat([form.amount[3], form.benefit].filter(Boolean)).forEach((c) => { ix[c] = h.indexOf(norm(c)); });
+    const miss = required.filter((c) => ix[c] < 0);
     if (miss.length) return { ok: false, error: '필수 열 없음: ' + miss.join(', ') };
     const cell = (r, c) => (ix[c] < 0 ? '' : String(r[ix[c]] == null ? '' : r[ix[c]]).trim());
     const out = [];
@@ -629,18 +638,25 @@
       if (!r.some((v) => String(v == null ? '' : v).trim() !== '')) continue;
       const orderNo = cell(r, '상품주문번호');
       if (!orderNo) return { ok: false, error: i + '행: 상품주문번호 없음' };
-      const parts = {};
-      for (const c of ['정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)', '무이자할부 수수료(D)']) {
+      const parts = [];
+      for (const c of form.amount) {
         const raw = cell(r, c);
         const v = raw === '' ? 0 : slMoney(raw);
         if (v == null || !Number.isInteger(v)) return { ok: false, error: orderNo + ': ' + c + ' 를 읽을 수 없음' };
-        parts[c] = v;
+        parts.push(v);
       }
-      const sum = parts['정산기준금액(A)'] + parts['Npay 수수료(B)'] + parts['매출연동 수수료 합계(C)'] + parts['무이자할부 수수료(D)'];
+      const sum = parts[0] + parts[1] + parts[2] + parts[3];
+      const benefit = form.benefit ? (cell(r, form.benefit) === '' ? 0 : slMoney(cell(r, form.benefit))) : 0;
+      if (benefit == null || !Number.isInteger(benefit)) return { ok: false, error: orderNo + ': 혜택금액을 읽을 수 없음' };
+      if (form.expected) {
+        const expected = cell(r, form.expected) === '' ? 0 : slMoney(cell(r, form.expected));
+        if (expected == null || !Number.isInteger(expected)) return { ok: false, error: orderNo + ': 정산예정금액을 읽을 수 없음' };
+        if (sum + benefit !== expected) return { ok: false, error: orderNo + ': 정산예정금액 검산 불일치' };
+      }
       const isItem = cell(r, '구분') === '상품주문';
       if (isItem && !cell(r, '구매자명')) return { ok: false, error: orderNo + ': 구매자명 없음' };
       out.push({ r: i, orderNo, buyer: cell(r, '구매자명'), phone: '', qty: 1, W: sum, key: sum, amount: sum,
-        isReturn: !isItem || parts['정산기준금액(A)'] < 0, name: cell(r, '상품명'), option: '', kindHint: isItem ? '' : cell(r, '구분') });
+        isReturn: benefit !== 0 || !isItem || parts[0] < 0, name: cell(r, '상품명'), option: '', kindHint: benefit !== 0 ? '혜택금액 있음' : (isItem ? '' : cell(r, '구분')) });
     }
     if (!out.length) return { ok: false, error: '데이터 행 없음' };
     return { ok: true, rows: out };
@@ -757,7 +773,7 @@
     { id: 'ssg-settle', label: 'SSG', suffix: 's', clientRule: 'prefix4', matchMode: 'perUnit', ledgerMarket: 'SSG',
       detect: (h) => hasAll(h, ['원주문ID', '주문순번', '정산금액(VAT포함)', '순판매액']), parse: parseSsg },
     { id: 'smartstore-daily', label: '스마트스토어', suffix: '스', clientRule: 'prefix4', matchMode: 'perUnit',
-      detect: (h) => hasAll(h, ['상품주문번호', '정산기준금액(A)', 'Npay 수수료(B)', '매출연동 수수료 합계(C)']), parse: parseSmartstore },
+      detect: (h) => SMART_FORMS.some((f) => hasAll(h, f.detect)), parse: parseSmartstore },
     //  §10.8 — 원장 연동 마켓. clientRule 'ledger' = 원장에서만 고객을 정한다(없으면 차단). ledgerMatch = 원장 줄 매칭(쿠팡·퀸잇·아몬즈·에이블리 — 나머지는 원장을 고객명에만 쓴다).
     { id: 'coupang-revenue', label: '쿠팡', suffix: '쿠', clientRule: 'ledger', matchMode: 'ledger', ledgerMatch: true, ledgerMarket: '쿠팡',
       detect: (h) => hasAll(h, ['옵션 ID', '판매수량', '환불수량', '정산금액', '구매확정(출고)유형']), parse: parseCoupang },

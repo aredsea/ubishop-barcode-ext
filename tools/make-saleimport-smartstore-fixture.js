@@ -1,4 +1,5 @@
-//  사용: node tools/make-saleimport-smartstore-fixture.js "<paySettleDailyDetail.xlsx>"  → tests/fixtures/saleimport/rows-smartstore.json
+//  사용: node tools/make-saleimport-smartstore-fixture.js "<paySettleDailyDetail.xlsx>" [출력 파일 이름]  → tests/fixtures/saleimport/rows-smartstore.json
+//  건별 정산내역(SettleCaseByCase.xlsx)은 출력 이름을 rows-smartstore-case.json 으로 준다.
 //  브라우저와 같은 옵션(cellText·raw:false·header:1·defval)으로 첫 시트를 읽고, 구매자명 실명은 가명(고객A…)으로,
 //  계약번호는 X 로 치환한다. 금액·주문번호·상품명은 그대로.
 const X = require('../vendor/xlsx.full.min.js');
@@ -21,7 +22,7 @@ for (let i = 1; i < rows.length; i++) {
   }
   maskCols.forEach((c) => { if (String(rows[i][c]) !== '') rows[i][c] = 'X'; });
 }
-const out = path.join(__dirname, '..', 'tests', 'fixtures', 'saleimport', 'rows-smartstore.json');
+const out = path.join(__dirname, '..', 'tests', 'fixtures', 'saleimport', process.argv[3] || 'rows-smartstore.json');
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, JSON.stringify(rows, null, 1));
 console.log('rows', rows.length, '→', out);

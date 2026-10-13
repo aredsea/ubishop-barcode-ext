@@ -1,9 +1,9 @@
 {
-  "version": "4.3.6",
+  "version": "4.3.7",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "27ff7e487f1a8ac850fc80c2c1d1bf9d25f14d72dcae553566e949c8b1794405"
+      "sha256": "abcd44e5b17171ee77f4cd937fb4e5e0cccc160f34e690407d57ec61d691ecad"
     },
     {
       "path": "src/loader.js",
@@ -63,7 +63,7 @@
     },
     {
       "path": "src/saleimport-core.js",
-      "sha256": "dbc16d166f6f099430b6683c8de7a6647c847a1e798c09524ca310cdcd867ee3"
+      "sha256": "cf8ce52e1a9011d27c76151af1aa76bcdbdbe7e3cb028d696a4ebf2f32676b15"
     },
     {
       "path": "src/saleimport-erp.js",
