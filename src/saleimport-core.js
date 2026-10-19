@@ -101,6 +101,8 @@
   }
   //  §10.8 — 전부 반품된 주문번호 집합(단일 계산). 같은 orderNo 의 판매 금액 합 + 반품 금액 합이 0 이고 판매·반품 행이 모두 있으면(배송비·조정·time-·ledgerBlock 제외) 전부 반품.
   //  수동 목록 이름표(slClassifyRows)와 묶음 차단(slGroupByClient·slGroupLedger)이 이 한 곳을 쓴다.
+  //  §10.10 — 매칭 결과의 block.kind. 'line' = 주문 줄을 못 맞춘 차단(직접 고르기로 풀 수 있음), 그 밖(기본 'hard')은 데이터·정책 차단이라 직접 고르기 불가.
+  const SL_LINE = 'line';
   const FULL_RETURN_BLOCK = '전부 반품된 주문 — 판매 안 함(유비샵 주문은 직접 정리)';
   function slFullReturnSet(rows) {
     const by = new Map();
@@ -215,6 +217,7 @@
   function slHowChip(how) {
     if (how === '자동') return { cls: 'reuse', text: '자동 매칭' };
     if (how === '주문 확인') return { cls: 'skipped', text: '자동 · 주문 확인(이름 다름)' };
+    if (how === '직접 지정') return { cls: 'manual', text: '직접 지정' };
     return { cls: 'gray', text: '직접 선택' };
   }
   //  evalCand(cand) → {status, reason} (읽기 전용 점검 — 호출자가 구현). 후보는 순차로 점검한다.
@@ -262,7 +265,7 @@
   function matchPerOrder(rows, orders, sold, block) {
     const seen = new Set();
     for (const r of rows) {
-      if (seen.has(r.key)) return block('같은 정산 ' + r.key.toLocaleString('en-US') + ' 결제가 2건 — 어느 줄인지 모름');
+      if (seen.has(r.key)) return block('같은 정산 ' + r.key.toLocaleString('en-US') + ' 결제가 2건 — 어느 줄인지 모름', SL_LINE);
       seen.add(r.key);
     }
     const lines = [], usedDates = new Set();
@@ -272,13 +275,13 @@
       const mains = orders.filter((o) => !o.gift && o.settle === r.key);
       const open = mains.filter((o) => !o.barcode || !sold.has(o.barcode));
       if (open.length === 0 && mains.length > 0) continue;               // 이미 판매됨
-      if (open.length > 0 && mains.length > open.length) return block('정산 ' + r.key.toLocaleString('en-US') + ' 결제 일부만 판매됨 — 직접 처리');
+      if (open.length > 0 && mains.length > open.length) return block('정산 ' + r.key.toLocaleString('en-US') + ' 결제 일부만 판매됨 — 직접 처리', SL_LINE);
       soldOnly = false;
-      if (open.length === 0) return block('정산 ' + r.key.toLocaleString('en-US') + ' 주문 줄 없음');
+      if (open.length === 0) return block('정산 ' + r.key.toLocaleString('en-US') + ' 주문 줄 없음', SL_LINE);
       if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
       //  같은 정산(결제 금액)이 서로 다른 주문의 줄에 걸쳐 있으면 한 결제로 묶을 수 없다.
       const dates = [...new Set(open.map((o) => o.date))];
-      if (dates.length > 1) return block('정산 ' + r.key.toLocaleString('en-US') + ' 줄이 여러 주문일(' + dates.join(', ') + ')에 걸침 — 직접 처리');
+      if (dates.length > 1) return block('정산 ' + r.key.toLocaleString('en-US') + ' 줄이 여러 주문일(' + dates.join(', ') + ')에 걸침 — 직접 처리', SL_LINE);
       if (open.some((o) => o.cancel)) return block('주문 비고에 취소 표시가 있는 줄 — 직접 처리');
       if (open.some((o) => !o.code)) return block('상품번호를 못 읽은 주문 줄 — 직접 처리');
       //  파일 상품명 '…외N건' → 상품 N+1종(§10.7). N≥1 이면 줄 수가 정확히 N+1 이고 상품번호가 모두 달라야 한다(같은 날 묶음을 두 번 산 경우 차단).
@@ -286,7 +289,7 @@
       const mm = /외(\d+)건$/.exec(String(r.name == null ? '' : r.name).trim());
       const want = (mm ? Number(mm[1]) : 0) + 1;
       const have = new Set(open.map((o) => o.code)).size;
-      if (want > 1 ? (open.length !== want || have !== want) : have !== 1) return block('상품 수 불일치(파일 ' + want + '종 · 주문 줄 ' + (want > 1 ? open.length + '줄/' : '') + have + '종) — 직접 처리');
+      if (want > 1 ? (open.length !== want || have !== want) : have !== 1) return block('상품 수 불일치(파일 ' + want + '종 · 주문 줄 ' + (want > 1 ? open.length + '줄/' : '') + have + '종) — 직접 처리', SL_LINE);
       const amts = slAllocateByWeight(r.amount, open.map((o) => o.price));
       if (!amts) return block(r.orderNo + ': 주문가 합계가 0 — 배분 불가');
       open.forEach((o, i) => {
@@ -302,7 +305,7 @@
   //  고객 한 명: 같은 단가(W/qty) 끼리 필요 개수를 모아, 판매 안 된 본품 줄이 **정확히 그 개수**일 때만 자동.
   function slMatchClient(rows, orders, sales, mode) {
     const sold = new Set((sales || []).map((s) => s.barcode).filter(Boolean));
-    const block = (reason) => ({ status: 'block', reason, lines: [], cash: 0 });
+    const block = (reason, kind) => ({ status: 'block', reason, lines: [], cash: 0, kind: kind || 'hard' });
     if (mode === 'perOrder') return matchPerOrder(rows, orders, sold, block);
     const need = new Map();   // unit → [{row, amounts[]}]
     for (const r of rows) {
@@ -321,7 +324,7 @@
       if (open.length === 0 && mains.length >= n) continue;             // 전부 이미 판매됨
       soldOnly = false;
       if (open.some((o) => o.cancel)) return block('주문 비고에 취소 표시가 있는 줄 — 직접 처리');
-      if (open.length !== n) return block('정산 ' + unit.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)');
+      if (open.length !== n) return block('정산 ' + unit.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)', SL_LINE);
       if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
       let k = 0;
       for (const { row, amounts } of list) for (const a of amounts) {
@@ -486,11 +489,42 @@
   }
   //  어떤 매칭 규칙으로 줄을 찾나 — 원장 줄 매칭(ledgerMatch: 쿠팡·퀸잇·아몬즈·에이블리)이고 원장에서 찾은 묶음이면 'ledger', 아니면 어댑터 고유 모드.
   function slMatchModeFor(adapter, viaLedger) { return (viaLedger && adapter.ledgerMatch) ? 'ledger' : adapter.matchMode; }
+  //  §10.8 4.3.7 — 주문 줄이 없어서(비고가 없거나 달라서) 막힌 고객이 이미 직원 손으로 판매됐을 수 있다. 판매내역의 실판매가가 파일 금액과 1원까지 같고
+  //  판매일이 주문일 이후인 줄을 파일 행마다 1:1 로 짝지어 본다. 전부 짝지어지면 'sold'(inferred — 제외·직접 확인), 일부만이면 차단 사유에 힌트만 덧붙인다. 절대 ok 로 바꾸지 않는다.
+  //  판매 줄 후보는 (a) 이 고객의 주문 줄(주문일 ≥ 원장 주문일) 바코드이고 (b) 이 항목이 필요로 하는 정산액이 아닌 비고가 달린 다른 주문 줄의 바코드가 아니어야 한다.
+  const slYmd = (d) => { const m = String(d || '').trim().match(/^(?:20)?(\d\d)-(\d\d)-(\d\d)/); return m ? m[1] + '-' + m[2] + '-' + m[3] : ''; };
+  const slSaleKey = (x) => [x.barcode, x.date, x.amount, x.code].join('|');   // 판매 줄 식별 — 고객마다 거래내역을 새로 읽으므로 객체 동일성은 못 쓴다
+  function slSoldByPrice(b, frsAll, lrAll, orders, sales, need, opts) {
+    const used = (opts && opts.usedSales instanceof Set) ? opts.usedSales : new Set();
+    const items = lrAll.filter((x) => !isGiftRow(x));
+    const dates = items.map((x) => slYmd(x.order_date));
+    if (!items.length || dates.some((d) => !d) || !frsAll.length) return b;   // 원장 주문일을 모르면 추정하지 않는다
+    const from = dates.slice().sort()[0];
+    const own = new Set(orders.filter((o) => o.barcode && slYmd(o.date) >= from).map((o) => o.barcode));
+    const foreign = new Set(orders.filter((o) => o.barcode && o.settle != null && !need.has(o.settle)).map((o) => o.barcode));
+    const pool = (sales || []).filter((x) => x && Number.isInteger(x.amount) && x.amount > 0 && slYmd(x.date) >= from && own.has(x.barcode) && !foreign.has(x.barcode) && !used.has(slSaleKey(x)));
+    const picked = [];
+    for (const r of frsAll) {
+      const i = pool.findIndex((x) => x.amount === r.amount && !picked.includes(x));
+      if (i >= 0) picked.push(pool[i]);
+    }
+    if (!picked.length) return b;
+    if (picked.length < frsAll.length) return { status: 'block', reason: b.reason + ' · 일부는 이미 판매된 것으로 보임', lines: [], cash: 0, kind: SL_LINE };
+    picked.forEach((x) => used.add(slSaleKey(x)));
+    const ds = [...new Set(picked.map((x) => slYmd(x.date)))].sort().join(', ');
+    return { status: 'sold', inferred: true, usedKeys: picked.map(slSaleKey), reason: '이미 판매된 것으로 보임 — 실판매가 일치(' + ds + ') · 직접 확인', lines: [], cash: 0 };
+  }
+  //  합 total 을 n 줄에 고르게(정수) — 나머지는 앞 줄부터 1원씩. 합은 항상 total.
+  function slSplitEven(total, n) {
+    if (!Number.isInteger(total) || !Number.isInteger(n) || n < 1) return null;
+    const q = Math.floor(total / n), r = total - q * n;
+    return Array.from({ length: n }, (_, i) => q + (i < r ? 1 : 0));
+  }
   //  §10.8 원장 매칭 — 기대 줄 = 원장의 사은품 아닌 행들(열쇠 = 그 행 amount = 유비샵 비고 정산 N).
   //  실판매가 = 파일의 그 주문 최종 금액 합을 원장 amount 비율로 배분(floor, 나머지 첫 줄). 사은품은 0원. opts.retOrders = 같은 주문에 반품 행이 있는 주문번호.
   function slMatchLedger(rows, ledgerByOrder, orders, sales, opts) {
     const sold = new Set((sales || []).map((s) => s.barcode).filter(Boolean));
-    const block = (reason) => ({ status: 'block', reason, lines: [], cash: 0 });
+    const block = (reason, kind) => ({ status: 'block', reason, lines: [], cash: 0, kind: kind || 'hard' });
     const retOrders = (opts && opts.retOrders) || new Set(), retFull = (opts && opts.retFull) || new Set();
     const getL = (no) => (ledgerByOrder instanceof Map ? ledgerByOrder.get(no) : (ledgerByOrder || {})[no]);
     const byNo = new Map();
@@ -513,36 +547,53 @@
       //  파일 합 F 와 원장 합 L 이 행 수(원)보다 더 벌어지면 이 파일은 그 주문의 일부만 정산한 것일 수 있다.
       const F = frs.reduce((s, r) => s + r.amount, 0), L = amts.reduce((s, a) => s + a, 0);
       if (opts && opts.amountCheck === 'count') {   // §10.9 에이블리 — 금액 기준이 달라 행 수로 부분 정산을 막는다
-        if (frs.length !== items.length) return block(no + ': 파일 상품 수 ≠ 원장 상품 수 — 주문 일부만 정산됐을 수 있음');
-      } else if (Math.abs(F - L) > frs.length) return block(no + ': 파일 금액 ' + F.toLocaleString('en-US') + ' ≠ 원장 ' + L.toLocaleString('en-US') + ' — 주문 일부만 정산됐을 수 있음');
+        if (frs.length !== items.length) return block(no + ': 파일 상품 수 ≠ 원장 상품 수 — 주문 일부만 정산됐을 수 있음', SL_LINE);
+      } else if (Math.abs(F - L) > frs.length) return block(no + ': 파일 금액 ' + F.toLocaleString('en-US') + ' ≠ 원장 ' + L.toLocaleString('en-US') + ' — 주문 일부만 정산됐을 수 있음', SL_LINE);
       //  §10.8 아몬즈 — 파일 정산금(F)과 원장 금액(L)의 기준이 다르다(F 는 L 보다 클 수도 작을 수도 있다):
       //  SL_AMONDZ_MIN_RATIO_PCT% × Σ판매금액 ≤ L ≤ Σ(총 결제 금액 + 쿠폰 분담액(amondz)) 밖이면 남의 주문·일부 정산일 수 있다.
+      //  §10.8 4.3.7 수량 주문 — 원장은 단가 한 줄뿐인데 유비샵에는 수량만큼 주문 줄이 있다. 하한 미달일 때만, 원장 주문일 같은 날의 정산 L 주문 줄(팔린 것·안 팔린 것 합) 수 k ≥ 2 이고
+      //  k×L 이 범위 안이면 그 k 줄을 기대 줄로 본다(파일 행 1개 · 원장 본품 줄 1개일 때만).
+      let units = 1, qtyDay = '';
       if (opts && opts.payRange) {
         const hi = frs.reduce((s, r) => s + r.payTotal, 0), S = frs.reduce((s, r) => s + r.grossSale, 0);
-        if (!Number.isFinite(hi) || !Number.isFinite(S) || !(S > 0) || L * 100 < SL_AMONDZ_MIN_RATIO_PCT * S || L > hi) return block(no + ': ' + AMT_RANGE);
+        if (!Number.isFinite(hi) || !Number.isFinite(S) || !(S > 0)) return block(no + ': ' + AMT_RANGE, SL_LINE);
+        if (L * 100 < SL_AMONDZ_MIN_RATIO_PCT * S && items.length === 1 && frs.length === 1) {
+          const day = slYmd(items[0].order_date);
+          const k = day ? orders.filter((o) => !o.gift && o.settle === amts[0] && slYmd(o.date) === day).length : 0;
+          if (k >= 2 && k * L * 100 >= SL_AMONDZ_MIN_RATIO_PCT * S && k * L <= hi) { units = k; qtyDay = day; }
+        }
+        const LL = L * units;
+        if (LL * 100 < SL_AMONDZ_MIN_RATIO_PCT * S || LL > hi) return block(no + ': ' + AMT_RANGE, SL_LINE);
       }
-      const shares = slAllocateByWeight(F, amts);
+      const shares = units > 1 ? slSplitEven(F, units) : slAllocateByWeight(F, amts);
       if (!shares) return block(no + ': 배분 불가');
-      amts.forEach((a, i) => { if (!need.has(a)) need.set(a, []); need.get(a).push({ no, orderNo: frs[0].orderNo, share: shares[i] }); });
+      const amtsU = units > 1 ? Array(units).fill(amts[0]) : amts;
+      amtsU.forEach((a, i) => { if (!need.has(a)) need.set(a, []); need.get(a).push({ no, orderNo: frs[0].orderNo, share: shares[i], qty: units > 1, day: qtyDay }); });
     }
     //  서로 다른 두 주문이 같은 정산액이면 어느 줄이 어느 주문인지 알 수 없다(한 주문 안의 같은 금액은 허용).
     for (const [, list] of need) {
       const nos = new Set(list.map((x) => x.no));
-      if (nos.size > 1) return block('같은 정산액 주문이 ' + nos.size + '건 — 어느 줄인지 모름');
+      if (nos.size > 1) return block('같은 정산액 주문이 ' + nos.size + '건 — 어느 줄인지 모름', SL_LINE);
     }
+    const frsAll = [...byNo.values()].flat(), lrAll = [...byNo.keys()].flatMap((no) => getL(no) || []);
     const lines = [], usedDates = new Set(), noDates = new Map();
-    let soldOnly = true;
+    let soldOnly = true, fail = '', failKind = '', barcoded = false;
+    //  취소 표시는 필요한 정산액 전부를 먼저 훑어 막는다. 줄 때문에 막힌 사유(fail)는 기억만 해 두고, 바코드 달린 안 팔린 주문 줄이 하나도 없을 때만 판매내역 대조로 넘긴다.
     for (const [a, list] of need) {
       const n = list.length;
-      const mains = orders.filter((o) => !o.gift && o.settle === a);
+      const qtyDay = (list.find((x) => x.qty) || {}).day || '';             // 수량 주문은 k 를 센 원장 주문일의 줄만 본다(다른 날 같은 정산 줄을 팔지 않는다)
+      const mains = orders.filter((o) => !o.gift && o.settle === a && (!qtyDay || slYmd(o.date) === qtyDay));
       const open = mains.filter((o) => !o.barcode || !sold.has(o.barcode));
       if (open.length === 0 && mains.length >= n) continue;             // 전부 이미 판매됨
       soldOnly = false;
       if (open.some((o) => o.cancel)) return block('주문 비고에 취소 표시가 있는 줄 — 직접 처리');
-      if (open.length !== n) return block('정산 ' + a.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)');
-      if (open.some((o) => !o.barcode)) return block('바코드 없는 주문 줄 — 입고 확인');
+      if (open.some((o) => o.barcode)) barcoded = true;
+      if (fail) continue;
+      if (list.some((x) => x.qty) && open.length !== n) { fail = '수량 ' + n + '개 주문 — 일부만 판매됨/줄 수 불일치 — 직접 처리'; failKind = SL_LINE; barcoded = true; continue; }   // 수량 주문은 판매 추정으로 돌리지 않는다
+      if (open.length !== n) { fail = '정산 ' + a.toLocaleString('en-US') + ' 주문 줄 ' + open.length + '개 (필요 ' + n + '개)'; failKind = SL_LINE; continue; }
+      if (open.some((o) => !o.barcode)) { fail = '바코드 없는 주문 줄 — 입고 확인'; continue; }
       const dates = [...new Set(open.map((o) => o.date))];
-      if (dates.length > 1) return block('정산 ' + a.toLocaleString('en-US') + ' 줄이 여러 주문일(' + dates.join(', ') + ')에 걸침 — 직접 처리');
+      if (dates.length > 1) { fail = '정산 ' + a.toLocaleString('en-US') + ' 줄이 여러 주문일(' + dates.join(', ') + ')에 걸침 — 직접 처리'; failKind = SL_LINE; continue; }
       list.forEach((x, k) => {
         const o = open[k];
         lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: false, orderNo: x.orderNo, ledgerNo: x.no, amount: x.share });
@@ -551,11 +602,74 @@
         noDates.get(x.no).add(o.date);
       });
     }
-    for (const [no, ds] of noDates) if (ds.size > 1) return block(no + ': 한 주문의 줄이 여러 주문일에 걸침 — 직접 처리');
+    if (fail) return barcoded ? block(fail, failKind) : slSoldByPrice(block(fail, failKind), frsAll, lrAll, orders, sales, need, opts);
+    for (const [no, ds] of noDates) if (ds.size > 1) return block(no + ': 한 주문의 줄이 여러 주문일에 걸침 — 직접 처리', SL_LINE);
     if (soldOnly) return { status: 'sold', reason: '이미 판매됨', lines: [], cash: 0 };
     orders.filter((o) => o.gift && o.barcode && !sold.has(o.barcode) && usedDates.has(o.date))
       .forEach((o) => lines.push({ barcode: o.barcode, code: o.code, name: o.name, gift: true, orderNo: '', amount: 0 }));
     return { status: 'ok', reason: '', lines, cash: lines.reduce((s, l) => s + l.amount, 0) };
+  }
+
+  /* ------------------------------------------------------------ §10.10 막힌 건 직접 해결 (2026-10-06) */
+  //  고객이 확정됐는데 주문 줄을 못 맞춰 막힌(또는 '판매 추정'으로 제외된) 항목을 사장님이 이 고객의 안 팔린 주문 줄에서 직접 골라 푼다.
+  //  풀 수 있는 것 = 줄 매칭 문제뿐(block.kind === 'line' · 판매 추정). 미수금·고객 확인 실패·전부 반품·취소·조회 실패 같은 차단과 확정된 '이미 판매됨'은 풀 수 없다.
+  function slManualResolvable(e) {
+    if (!e || !e.client || e.hard || e.result) return false;
+    const m = e.match;
+    if (!m) return false;
+    if (e.st === 'sold') return m.status === 'sold' && !!m.inferred;
+    if (e.st === 'block') return m.status === 'block' && m.kind === SL_LINE;
+    return false;
+  }
+  //  묶음의 파일 정산금액 합 F. 한 행이라도 양의 정수가 아니면 null(직접 지정 불가).
+  function slManualTotal(rows) {
+    if (!Array.isArray(rows) || !rows.length) return null;
+    let t = 0;
+    for (const r of rows) { if (!r || !Number.isInteger(r.amount) || r.amount <= 0) return null; t += r.amount; }
+    return t;
+  }
+  //  고를 수 있는 줄 = 이 고객의 사은품 아닌 주문 줄 중 판매내역에 없는 것. 바코드 없는 줄·취소 표시 줄·중복 바코드는 보이되 고를 수 없다(why).
+  function slManualCandidates(orders, sales) {
+    const sold = new Set((sales || []).map((s) => s && s.barcode).filter(Boolean));
+    const live = (orders || []).filter((o) => o && !o.gift && !(o.barcode && sold.has(o.barcode)));
+    const count = new Map();
+    live.forEach((o) => { if (o.barcode) count.set(o.barcode, (count.get(o.barcode) || 0) + 1); });
+    const out = [];
+    for (const o of live) {
+      const dup = !!o.barcode && count.get(o.barcode) > 1;                  // 첫 줄 포함 전부 — 어느 주문 줄인지 모르면 고를 수 없다
+      const why = !o.barcode ? '입고 전' : o.cancel ? '취소 표시' : dup ? '바코드 중복' : '';
+      out.push({ barcode: o.barcode || '', code: o.code || '', name: o.name || '', date: o.date || '', price: Number.isFinite(o.price) ? o.price : 0,
+        note: [o.settle != null ? '정산 ' + o.settle.toLocaleString('en-US') : '', o.cancel ? '취소 표시' : ''].filter(Boolean).join(' · '), disabled: !!why, why });
+    }
+    return out;
+  }
+  //  F 를 고른 줄의 판매가 비율로 정수 배분(Σ = F). 판매가가 전부 0 이면 고르게.
+  function slManualAllocate(F, prices) {
+    if (!Number.isInteger(F) || F < 0 || !Array.isArray(prices) || !prices.length) return null;
+    return slAllocateByWeight(F, prices) || slSplitEven(F, prices.length);
+  }
+  //  chosen = [{barcode, price}] (price = 실판매가). 이 함수가 ok 로 돌려준 모양이 곧 실행기가 받는 plan.lines 다(slMatchLedger 의 ok 결과와 같은 모양).
+  //  opts.orderNo·opts.ledgerNo 는 줄에 붙일 파일 주문 표식(화면이 첫 파일 행의 것을 준다).
+  function slManualMatch(orders, sales, chosen, F, opts) {
+    const block = (reason) => ({ status: 'block', reason, lines: [], cash: 0, kind: 'hard' });
+    if (!Number.isInteger(F) || F <= 0) return block('파일 정산금액 합계를 알 수 없음');
+    if (!Array.isArray(chosen) || !chosen.length) return block('고른 줄이 없음');
+    const cands = new Map(slManualCandidates(orders, sales).filter((c) => !c.disabled).map((c) => [c.barcode, c]));
+    const seen = new Set();
+    let sum = 0;
+    for (const c of chosen) {
+      const bc = c && typeof c.barcode === 'string' ? c.barcode : '';
+      if (!bc) return block('바코드 없는 줄');
+      if (seen.has(bc)) return block(bc + ': 같은 바코드를 두 번 골랐음');
+      seen.add(bc);
+      if (!cands.has(bc)) return block(bc + ': 이 고객의 판매 안 된 주문 줄이 아님');
+      if (!Number.isInteger(c.price) || c.price < 0) return block(bc + ': 실판매가는 0 이상의 정수여야 함');
+      sum += c.price;
+    }
+    if (sum !== F) return block('실판매가 합계 ' + sum.toLocaleString('en-US') + '원 ≠ 파일 정산금액 ' + F.toLocaleString('en-US') + '원');
+    const o = opts || {};
+    const lines = chosen.map((c) => { const k = cands.get(c.barcode); const l = { barcode: k.barcode, code: k.code, name: k.name, gift: false, orderNo: o.orderNo || '', amount: c.price }; if (o.ledgerNo) l.ledgerNo = o.ledgerNo; return l; });
+    return { status: 'ok', reason: '', lines, cash: F, manual: true };
   }
 
   /* ------------------------------------------------------------ §10 마켓 어댑터 */
@@ -819,14 +933,30 @@
     return out;
   }
   //  headWord('주문일'|'판매일') 가 든 title_line 행 이후의 행 텍스트. 표는 그 헤더를 품은 가장 가까운 <table class="t_list">.
-  function listRows(html, headWord) {
+  function listRowsHtml(html, headWord) {
     const s = String(html || '');
     const hi = s.search(new RegExp('<tr[^>]*class="title_line"[^>]*>(?:(?!</tr>)[\\s\\S])*' + headWord));
-    if (hi < 0) return [];
+    if (hi < 0) return null;
     const ts = s.lastIndexOf('<table', hi);
     const rows = topRows(s.slice(ts));
     const hIdx = rows.findIndex((r) => /class="title_line"/.test(r) && r.indexOf(headWord) >= 0);
-    return rows.slice(hIdx + 1).map(textOf).filter((t) => DATE_RE.test(t) && /^\d+\s/.test(t));
+    return { head: rows[hIdx], rows: rows.slice(hIdx + 1).filter((r) => { const t = textOf(r); return DATE_RE.test(t) && /^\d+\s/.test(t); }) };
+  }
+  function listRows(html, headWord) {
+    const l = listRowsHtml(html, headWord);
+    return l ? l.rows.map(textOf) : [];
+  }
+  //  한 <tr> 의 최상위 셀 텍스트(이미지 칸의 중첩 표는 한 셀로 본다).
+  function topCells(rowHtml) {
+    const out = []; const re = /<(\/?)(table|td|th)\b[^>]*>/gi;
+    let depth = 0, start = -1, m;
+    while ((m = re.exec(rowHtml))) {
+      const close = m[1] === '/', tag = m[2].toLowerCase();
+      if (tag === 'table') { depth += close ? -1 : 1; continue; }
+      if (depth !== 0) continue;
+      if (!close) start = re.lastIndex; else if (start >= 0) { out.push(textOf(rowHtml.slice(start, m.index))); start = -1; }
+    }
+    return out;
   }
   const nums = (t) => (t.match(/-?\d[\d,]*(?:\.\d+)?/g) || []).map((x) => Number(x.replace(/,/g, '')));
   function slOrderRows(html) {
@@ -845,15 +975,24 @@
     });
   }
   function slSaleRows(html) {
-    return listRows(html, '판매일').map((t) => {
+    const l = listRowsHtml(html, '판매일');
+    if (!l) return [];
+    //  열은 헤더 이름으로 찾는다 — 판매직원 칸이 비어도 실판매가가 밀리지 않게. 헤더에 실판매가 열이 없으면 예전처럼 꼬리 숫자로 읽는다.
+    const hc = topCells(l.head);
+    const col = { price: hc.findIndex((c) => c === '판매가'), qty: hc.findIndex((c) => c === '수량'), dc: hc.findIndex((c) => c.indexOf('DC금액') === 0), amount: hc.findIndex((c) => c === '실판매가') };
+    return l.rows.map((h) => {
+      const t = textOf(h);
       const bc = t.match(BARCODE_RE); const code = t.match(CODE_RE);
+      const base = { date: (t.match(DATE_RE) || [])[1] || '', barcode: bc ? bc[1] : '', code: code ? code[0] : '' };
+      if (col.amount >= 0) {
+        const cells = topCells(h);
+        const at = (i) => { if (i < 0 || cells.length !== hc.length) return undefined; const x = firstNum(cells[i]); return x == null ? undefined : x; };
+        return Object.assign(base, { price: at(col.price), qty: at(col.qty), dc: at(col.dc), amount: at(col.amount) });
+      }
       //  꼬리: … 판매가 수량 DC(DC율 %) 실판매가 판매직원  → 퍼센트 괄호를 빼고 숫자 4개
       const tail = t.replace(/\s*\S+$/, '').replace(/\([\d.]+\s*%\)/g, ' ');
       const n = nums(tail);
-      return {
-        date: (t.match(DATE_RE) || [])[1] || '', barcode: bc ? bc[1] : '', code: code ? code[0] : '',
-        price: n[n.length - 4], qty: n[n.length - 3], dc: n[n.length - 2], amount: n[n.length - 1]
-      };
+      return Object.assign(base, { price: n[n.length - 4], qty: n[n.length - 3], dc: n[n.length - 2], amount: n[n.length - 1] });
     });
   }
   //  고객 검색 결과(/etc/client.do) → {rows, truncated}. 목록은 No 내림차순이라 첫 행 No = 전체 건수 —
@@ -1198,7 +1337,7 @@
     return out;
   }
 
-  const api = { SL_AMONDZ_MIN_RATIO_PCT, COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slFullReturnSet, slLedgerIndex, slLedgerIndexByTime, slApplyTimeLedger, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slClientCandidates, slAutoDecision, slSearchWord, slSearchMerged, slFallbackCandidates, slFallbackDecide, slProbeNone, slHowChip, slFallbackResolve, slClassifyRows, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
+  const api = { SL_AMONDZ_MIN_RATIO_PCT, COLS, slHeaderMap, slMoney, slRound, slParseSheet, slComputeFinals, slIsReturn, slClientName, slAllocate, slGroupByClient, slFullReturnSet, slLedgerIndex, slLedgerIndexByTime, slApplyTimeLedger, slLedgerClient, slGroupLedger, slMatchModeFor, slMatchLedger, slManualResolvable, slManualTotal, slManualCandidates, slManualAllocate, slManualMatch, slClientCandidates, slAutoDecision, slSearchWord, slSearchMerged, slFallbackCandidates, slFallbackDecide, slProbeNone, slHowChip, slFallbackResolve, slClassifyRows, slOverlaps, slAllocateByWeight, slMatchClient, SL_ADAPTERS, slDetectAdapter, slParseFile, slSearchResult, slTradeUrl, slOrderRows, slSaleRows,
     SL_FORM10_NAMES, slComma, slReadSaleForm, slSaleManager, slModifyPayload, slCashPayload, slJunCheck, slJunPayload, slNewResult, slRunClient, slApplyResults, slRunAll };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSl = Object.assign(globalThis.ubSl || {}, api); }

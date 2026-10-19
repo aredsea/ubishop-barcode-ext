@@ -70,7 +70,7 @@
     //  §10.8 — source: 원장 | 이름 추정 | 파일 연락처. ledger: 원장에서 찾은 주문 Map(있으면 원장 줄 매칭). block: 처음부터 차단 사유. pickable: 직접 고르기 허용.
     const blocked = !!g.block;
     return { key: g.key, rows: g.rows, buyer, client: null, how: '', st: blocked ? 'block' : 'pending', reason: g.block || '', match: null, checked: false, cands: null, q: /^\*+$/.test(buyer) ? '' : buyer, note: '', qGen: 0, result: null,
-      source: g.source || '', ledger: g.ledger || new Map(), retOrders: g.retOrders || new Set(), retFull: g.retFull || new Set(), hard: blocked && !g.pickable };
+      source: g.source || '', ledger: g.ledger || new Map(), retOrders: g.retOrders || new Set(), retFull: g.retFull || new Set(), hard: blocked && !g.pickable, manual: null, pick: null };
   }
   function parseEntries(parsed) {
     const p = C.slParseFile(parsed.rows);
@@ -113,7 +113,7 @@
     if (!/^-?\d+$/.test(s)) return { ok: false, reason: '미수금 확인 불가(beforePrice ' + (raw == null ? '없음' : raw) + ')' };
     return Number(s) === 0 ? { ok: true } : { ok: false, reason: '기존 미수금 있음 (' + fmt(Number(s)) + '원)' };
   }
-  function setBlock(e, reason) { e.st = 'block'; e.reason = reason; e.match = null; e.checked = false; }
+  function setBlock(e, reason) { e.st = 'block'; e.reason = reason; e.match = null; e.checked = false; e.manual = null; }
   //  고객이 확정된 뒤: 미수 확인(GET) → 주문·판매내역(GET) → 줄 매칭. 쓰기 없음.
   const viaLedger = (e) => !!(e.ledger && e.ledger.size);
   //  probe = 후보 고객 {seq,name} — 읽기 점검 결과({status,reason,…})만 돌려주고 e·겹침 검사는 건드리지 않는다(§10.8 폴백).
@@ -129,13 +129,16 @@
     if (!rc.ok) return stop(rc.reason);
     const tr = await E.trade(String(cl.seq), cl.name);
     const mode = C.slMatchModeFor(S.adapter, viaLedger(e));
-    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, retFull: e.retFull, amountCheck: S.adapter.ledgerAmountCheck, payRange: !!S.adapter.ledgerPayRange }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
+    //  판매 추정(가격 대조)이 쓴 판매 줄은 한 번 읽기 실행 안에서 한 항목만 쓴다 — 점검(probe)은 아무것도 소비하지 않고, 같은 항목을 다시 읽으면 먼저 돌려준다.
+    if (!probe) { if (!S.usedSales) S.usedSales = new Set(); ((e.match && e.match.usedKeys) || []).forEach((k) => S.usedSales.delete(k)); }
+    const m = mode === 'ledger' ? C.slMatchLedger(e.rows, e.ledger, tr.orders, tr.sales, { retOrders: e.retOrders, retFull: e.retFull, amountCheck: S.adapter.ledgerAmountCheck, payRange: !!S.adapter.ledgerPayRange, usedSales: probe ? undefined : S.usedSales }) : C.slMatchClient(e.rows, tr.orders, tr.sales, mode);
     if (probe) {
       //  §10.8 폴백 — 주문내역을 읽었는데 필요한 정산액 줄이 하나도 없으면 'none'(이 후보는 이 주문의 고객이 아니다). 정상 경로(e.match)는 그대로.
       if (C.slProbeNone(e.rows, e.ledger, tr.orders, mode)) return Object.assign({}, m, { status: 'none', reason: '주문내역에 이 결제 금액의 줄이 없음' });
       return m;
     }
     e.match = m; e.st = m.status; e.reason = m.reason;
+    e.manual = null; e.pick = null;                         // 자동 재매칭은 이전의 직접 지정을 대체한다(§10.10)
     e.checked = m.status === 'ok';
     applyOverlaps();
   }
@@ -190,6 +193,7 @@
   async function enrich() {
     if (S.running || S.starting) return;
     const gen = S.fileGen;
+    S.usedSales = new Set();
     const targets = S.entries.filter((e) => e.st === 'pending');
     S.progress = { done: 0, total: targets.length, key: '', label: '' };
     S.phase = 'enriching'; render();
@@ -225,16 +229,107 @@
   async function pickClient(ei, val) {
     const e = S.entries[ei]; if (!e || !val) return;
     const [seq, name] = val.split('|');
-    e.client = { seq: String(seq), name }; e.how = '선택'; e.st = 'pending'; e.reason = ''; e.match = null; e.checked = false;
+    e.client = { seq: String(seq), name }; e.how = '선택'; e.st = 'pending'; e.reason = ''; e.match = null; e.checked = false; e.manual = null; e.pick = null;
     render();
     try { await enqueue(() => matchEntry(e)); } catch (err) { setBlock(e, '조회 실패: ' + (err && err.message || err)); }
     render();
   }
+  /* ------------------------------------------------------------ §10.10 막힌 건 직접 해결 */
+  //  읽기만(openClient GET·미수금 확인·거래내역 GET). 호출자가 enqueue 안에서 부르거나, run() 처럼 이미 읽기 대기열을 비운 자리에서만 부른다.
+  async function manualRead(e) {
+    const cl = e.client;
+    const form = await E.openClient(String(cl.seq), cl.name);
+    if (String((form.values || {}).client) !== String(cl.seq)) return { err: '고객 지정 확인 실패' };
+    const rc = receivable(form);
+    if (!rc.ok) return { err: rc.reason };
+    const tr = await E.trade(String(cl.seq), cl.name);
+    return { orders: tr.orders, sales: tr.sales, cands: C.slManualCandidates(tr.orders, tr.sales) };
+  }
+  const manualOpts = (e) => ({ orderNo: e.rows[0].orderNo, ledgerNo: e.rows[0].ledgerNo || '' });
+  //  이 묶음 밖의 ok 묶음이 이미 잡은 바코드 → 그 묶음 키.
+  function usedByOthers(e) {
+    const u = new Map();
+    S.entries.forEach((y) => { if (y !== e && y.st === 'ok' && y.match) y.match.lines.forEach((l) => { if (l.barcode) u.set(l.barcode, y.key); }); });
+    return u;
+  }
+  //  저장된 직접 지정을 지금의 유비샵 상태로 다시 검증 — 확정된 줄이 아직 이 고객의 안 팔린 주문 줄이고 미수금이 0 이며 합계가 같은지.
+  async function manualRevalidate(e) {
+    if (!e.manual || C.slManualTotal(e.rows) !== e.manual.F) return { status: 'block', reason: '직접 지정 정보가 맞지 않음' };
+    const r = await manualRead(e);
+    if (r.err) return { status: 'block', reason: r.err };
+    return C.slManualMatch(r.orders, r.sales, e.manual.chosen, e.manual.F, manualOpts(e));
+  }
+  async function openPicker(ei) {
+    const e = S.entries[ei]; if (!e || !C.slManualResolvable(e)) return;
+    const F = C.slManualTotal(e.rows);
+    e.pick = { loading: true, err: F == null ? '파일 정산금액 합계를 알 수 없음' : '', F, orders: [], sales: [], cands: [], sel: [], price: {}, msg: '', busy: false };
+    render();
+    if (F != null) {
+      try {
+        await enqueue(async () => {
+          const r = await manualRead(e);
+          if (!e.pick) return;
+          if (r.err) e.pick.err = r.err; else { e.pick.orders = r.orders; e.pick.sales = r.sales; e.pick.cands = r.cands; }
+        });
+      } catch (err) { if (e.pick) e.pick.err = '조회 실패: ' + (err && err.message || err); }
+    }
+    if (e.pick) e.pick.loading = false;
+    render();
+  }
+  //  고른 줄에 정산금액 F 를 판매가 비율로 나눈다(Σ=F). 체크가 바뀔 때마다 처음부터 다시 나눈다 — 고친 값은 그 뒤에 입력한다.
+  function pickAlloc(e) {
+    const p = e.pick;
+    const w = p.sel.map((b) => (p.cands.find((c) => c.barcode === b) || {}).price || 0);
+    const a = C.slManualAllocate(p.F, w) || [];
+    p.price = {}; p.sel.forEach((b, i) => { p.price[b] = a[i]; });
+  }
+  function pickToggle(ei, bc, on) {
+    const e = S.entries[ei], p = e && e.pick; if (!p) return;
+    const set = new Set(p.sel); if (on) set.add(bc); else set.delete(bc);
+    p.sel = p.cands.filter((c) => set.has(c.barcode)).map((c) => c.barcode);
+    p.msg = ''; pickAlloc(e); render();
+  }
+  function pickState(e) {
+    const p = e.pick;
+    const chosen = p.sel.map((b) => ({ barcode: b, price: p.price[b] }));
+    const m = C.slManualMatch(p.orders, p.sales, chosen, p.F, manualOpts(e));
+    const sum = chosen.reduce((s, c) => s + (Number.isInteger(c.price) ? c.price : 0), 0);
+    return { chosen, m, sum };
+  }
+  async function confirmPicker(ei) {
+    const e = S.entries[ei], p = e && e.pick; if (!p || p.busy) return;
+    const chosen = pickState(e).chosen;
+    p.busy = true; p.msg = '다시 읽어 확인하는 중…'; render();
+    let res = null;
+    try {
+      await enqueue(async () => {
+        const r = await manualRead(e);                      // 확정 순간의 유비샵 상태로 다시 검증한다
+        if (r.err) { res = { status: 'block', reason: r.err }; return; }
+        res = C.slManualMatch(r.orders, r.sales, chosen, p.F, manualOpts(e));
+        if (res.status === 'ok') {
+          const used = usedByOthers(e), hit = chosen.find((c) => used.has(c.barcode));
+          if (hit) res = { status: 'block', reason: hit.barcode + ': 다른 고객 묶음이 사용 중' };
+        }
+      });
+    } catch (err) { res = { status: 'block', reason: '조회 실패: ' + (err && err.message || err) }; }
+    p.busy = false;
+    if (!res || res.status !== 'ok') { p.msg = res ? res.reason : '실행 중이라 확정하지 못했습니다'; render(); return; }
+    ((e.match && e.match.usedKeys) || []).forEach((k) => { if (S.usedSales) S.usedSales.delete(k); });   // 판매 추정이 잡았던 판매 줄을 풀어 준다
+    e.match = res; e.manual = { chosen: chosen.map((c) => ({ barcode: c.barcode, price: c.price })), F: p.F, at: new Date().toISOString() };
+    e.st = 'ok'; e.reason = ''; e.how = '직접 지정'; e.checked = true; e.pick = null;
+    const who = e.key;
+    logLine(who, 'manual_pick', { client: e.client, F: e.manual.F, picks: e.manual.chosen });
+    applyOverlaps();
+    render();
+  }
   //  일부 행만 이미 판매된 경우 — ok 인데 줄이 하나도 안 붙은 GS 행.
-  const rowLines = (e, r) => (e.match && (e.st === 'ok' || e.st === 'done')) ? e.match.lines.filter((l) => l.orderNo === r.orderNo) : [];
+  //  §10.10 직접 지정 줄은 파일 주문 표식이 없다 — 첫 행에 몰아 보여 주고 나머지 행은 '위 줄에 합산'.
+  const rowLines = (e, r) => (e.match && (e.st === 'ok' || e.st === 'done')) ? (e.match.manual ? (r === e.rows[0] ? e.match.lines.filter((l) => !l.gift) : []) : e.match.lines.filter((l) => l.orderNo === r.orderNo)) : [];
   //  원장 매칭은 줄이 '주문' 단위라 같은 주문의 첫 파일 행에만 붙는다 — 나머지 행은 '이미 판매됨'이 아니라 '위 줄에 합산'.
-  const rowMerged = (e, r) => viaLedger(e) && (e.st === 'ok' || e.st === 'done') && !rowLines(e, r).length && !!e.match && e.match.lines.some((l) => l.ledgerNo && l.ledgerNo === r.ledgerNo);
+  const rowMerged = (e, r) => (e.st === 'ok' || e.st === 'done') && !rowLines(e, r).length && !!e.match && (!!e.match.manual || (viaLedger(e) && e.match.lines.some((l) => l.ledgerNo && l.ledgerNo === r.ledgerNo)));
   const rowSold = (e, r) => e.st === 'sold' || (e.st === 'ok' && !rowLines(e, r).length && !rowMerged(e, r));
+  //  가격 대조로만 '이미 판매됨' 이라 추정한 항목 — 확정된 판매가 아니다(§10.8 4.3.7). 체크할 수 없고 제외 목록에 들어가되 따로 보여 준다.
+  const inferredSold = (e) => e.st === 'sold' && !!(e.match && e.match.inferred);
   const entryReady = (e) => e.st === 'ok' && !!e.match && !!e.client;
 
   /* ------------------------------------------------------------ 실행 */
@@ -272,11 +367,19 @@
       const cash = targets.reduce((s, e) => s + e.match.cash, 0);
       const nLines = targets.reduce((n, e) => n + e.match.lines.length, 0);
       const nPrev = targets.filter((e) => e.rows.some((r) => S.ledger[ledgerKey(r)])).length;
+      const nMan = targets.filter((e) => e.manual).length;
       if (!confirm(targets.length + '명(' + nLines + '줄)을 판매 처리합니다.\n현금 합계 ' + fmt(cash) + '원 (고객별 현금 = 실판매가 합계, 미수금 0)'
         + (nPrev ? '\n※ 이전에 처리한 적 있는 주문번호가 든 고객 ' + nPrev + '명이 포함돼 있습니다.' : '')
+        + (nMan ? '\n※ 직접 지정한 고객 ' + nMan + '명 — 실행 직전에 주문 줄·미수금을 다시 읽어 확인합니다.' : '')
         + '\n실행 중에는 유비샵 판매 화면을 조작하지 마세요. 진행할까요?')) return;
       plans = targets.map(toPlan);                           // confirm 한 집합을 그대로 실행한다
       while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다
+      //  §10.10 직접 지정 항목은 실행 직전에 다시 읽어 검증한다 — 읽기 대기열은 위에서 비웠고 S.starting 이 새 조회를 막고 있다. 자동 매칭(matchEntry)은 다시 돌리지 않는다.
+      for (const e of targets) {
+        if (!e.manual) continue;
+        let v; try { v = await manualRevalidate(e); } catch (err) { v = { status: 'block', reason: '조회 실패: ' + (err && err.message || err) }; }
+        if (v.status !== 'ok') setBlock(e, '직접 지정 재검증 실패 — ' + v.reason);
+      }
       applyOverlaps();                                       // 기다리는 동안 끝난 조회가 새 겹침을 만들었을 수 있다
       if (!targets.every(entryReady)) { alert('그동안 조회 결과가 바뀌어 실행을 취소했습니다. 목록을 다시 확인하세요.'); return; }
       S.running = true;
@@ -305,7 +408,7 @@
         if (r.status === 'done') {
           const gifts = e.match.lines.filter((l) => l.gift).map((l) => l.barcode);
           e.rows.forEach((row, i) => {
-            const bcs = e.match.lines.filter((l) => l.orderNo === row.orderNo || (l.ledgerNo && l.ledgerNo === row.ledgerNo)).map((l) => l.barcode);
+            const bcs = e.match.lines.filter((l) => e.match.manual ? !l.gift : (l.orderNo === row.orderNo || (l.ledgerNo && l.ledgerNo === row.ledgerNo))).map((l) => l.barcode);
             if (bcs.length) S.ledger[ledgerKey(row)] = { at, tradeJun: r.tradeJun, barcodes: i === 0 ? bcs.concat(gifts) : bcs };
           });
         }
@@ -404,6 +507,20 @@
 #${PANEL_ID} .sl-chip.done{background:var(--sl-ok-bg);color:#0b6b3f}
 #${PANEL_ID} .sl-chip.skipped,#${PANEL_ID} .sl-chip.prev{background:var(--sl-warn-bg);color:#7a4b00}
 #${PANEL_ID} .sl-chip.busy{background:var(--ub-on-soft);color:#0b7ea6}
+#${PANEL_ID} .sl-chip.manual{background:var(--ub-bg);color:#0b7ea6;box-shadow:inset 0 0 0 1px var(--ub-on)}
+#${PANEL_ID} tr.sl-pk td{background:var(--ub-bg);padding-top:8px;padding-bottom:12px}
+#${PANEL_ID} .sl-pick{border:1px solid var(--ub-line);border-radius:8px;padding:10px 12px;background:var(--ub-bg)}
+#${PANEL_ID} .sl-pk-h{margin-bottom:6px}
+#${PANEL_ID} table.sl-pt{width:100%;border-collapse:collapse;font-size:12.5px}
+#${PANEL_ID} table.sl-pt th{text-align:left;color:var(--ub-sub);font-weight:600;font-size:12px;padding:4px 8px;border-bottom:1px solid var(--ub-line);white-space:nowrap}
+#${PANEL_ID} table.sl-pt td{padding:5px 8px;border-bottom:1px solid var(--ub-line);vertical-align:middle}
+#${PANEL_ID} table.sl-pt .num{text-align:right;font-variant-numeric:tabular-nums}
+#${PANEL_ID} table.sl-pt tr.off td{color:var(--ub-sub)}
+#${PANEL_ID} table.sl-pt .sl-in{width:110px}
+#${PANEL_ID} .sl-pk-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px}
+#${PANEL_ID} .sl-pk-foot b{font-variant-numeric:tabular-nums}
+#${PANEL_ID} .sl-pk-foot .ok{color:var(--sl-ok);font-weight:600}
+#${PANEL_ID} .sl-pk-foot .bad{color:var(--sl-err);font-weight:600}
 #${PANEL_ID} .sl-chk{width:16px;height:16px;margin:0;accent-color:var(--ub-on);cursor:pointer}
 #ub-sl-veil{position:fixed;inset:0;z-index:2147483646;background:rgba(15,20,25,.45)}
 #${PANEL_ID} .sl-issue{display:inline-flex;align-items:center;gap:4px;color:var(--sl-err);font-weight:600;font-size:12px;margin-top:4px}
@@ -449,6 +566,7 @@
   function verdictChips(e) {
     if (e.result) return resultChip(e.result);
     if (e.st === 'pending') return S.phase === 'enriching' || e.client ? chip('busy', '조회 중', 'spin') : '<span class="sl-muted">조회 전</span>';
+    if (inferredSold(e)) return chip('skipped', '판매 추정 — 직접 확인', 'warn') + '<div class="sl-opt">' + esc(e.reason) + '</div>';
     if (e.st === 'sold') return chip('gray', '이미 판매됨');
     if (e.st === 'block') return chip('fail', '차단');
     const partial = e.rows.filter((r) => rowSold(e, r)).length;
@@ -466,6 +584,44 @@
       + (e.cands ? '<select class="sl-in" aria-label="검색 결과" data-f="pick" data-o="' + ei + '"' + dis + '><option value="">— 고객 선택 —</option>' + opts + '</select>' : '')
       + (e.note ? '<span class="sl-muted">' + esc(e.note) + '</span>' : '') + '</div>';
   }
+  function manualBtn(e, ei) {
+    if (!C.slManualResolvable(e) || e.pick) return '';
+    const dis = (S.running || S.starting || C.slManualTotal(e.rows) == null) ? ' disabled' : '';
+    return '<div class="sl-find"><button class="sl-btn sm" data-act="pick-open" data-o="' + ei + '"' + dis + '>줄 직접 고르기</button><span class="sl-muted">이 고객의 아직 안 팔린 주문 줄에서 직접 고릅니다</span></div>';
+  }
+  function pickFoot(e, ei) {
+    const p = e.pick, st = pickState(e), ok = st.m.status === 'ok' && !p.busy;
+    const diff = st.sum - p.F;
+    return '<div class="sl-pk-foot" data-pkfoot="' + ei + '">합계 <b class="' + (p.sel.length && !diff ? 'ok' : p.sel.length ? 'bad' : '') + '">' + fmt(st.sum) + '</b>원 / 정산금액 <b>' + fmt(p.F) + '</b>원'
+      + (p.sel.length && diff ? ' <span class="bad">(' + (diff > 0 ? '+' : '') + fmt(diff) + ')</span>' : '')
+      + (p.msg ? ' <span class="bad">' + esc(p.msg) + '</span>' : (p.sel.length && st.m.status !== 'ok' ? ' <span class="sl-muted">' + esc(st.m.reason) + '</span>' : ''))
+      + '<span class="sl-spacer"></span>'
+      + '<button class="sl-btn pri sm" data-act="pick-ok" data-o="' + ei + '"' + (ok && !S.running && !S.starting ? '' : ' disabled') + '>직접 지정 확정</button>'
+      + '<button class="sl-btn quiet sm" data-act="pick-close" data-o="' + ei + '">닫기</button></div>';
+  }
+  function pickerHtml(e, ei) {
+    const p = e.pick; if (!p) return '';
+    const wrap = (inner) => '<tr class="sl-pk"><td></td><td colspan="4"><div class="sl-pick">' + inner + '</div></td></tr>';
+    if (p.loading) return wrap(chip('busy', '주문 줄 읽는 중', 'spin'));
+    if (p.err) return wrap('<div class="sl-issue">' + ico('warn') + esc(p.err) + '</div><div class="sl-pk-foot"><span class="sl-spacer"></span><button class="sl-btn quiet sm" data-act="pick-close" data-o="' + ei + '">닫기</button></div>');
+    const used = usedByOthers(e), dis = (S.running || S.starting) ? ' disabled' : '';
+    const rows = p.cands.map((c) => {
+      const other = c.barcode ? used.get(c.barcode) : '';
+      const why = c.why || (other ? '다른 고객 묶음이 사용 중' : '');
+      const on = !why && p.sel.includes(c.barcode);
+      return '<tr' + (why ? ' class="off"' : '') + '><td><input type="checkbox" class="sl-chk" aria-label="' + esc(c.barcode) + ' 선택" data-f="pk" data-o="' + ei + '" data-b="' + esc(c.barcode) + '"' + (on ? ' checked' : '') + (why ? ' disabled' : dis) + '></td>'
+        + '<td>' + esc(c.date) + '</td><td>' + esc(c.barcode || '—') + '</td><td>' + esc(c.name) + '</td><td class="num">' + fmt(c.price) + '원</td>'
+        + '<td>' + esc(c.note) + (why ? (c.note ? ' · ' : '') + esc(why) : '') + '</td>'
+        + '<td class="num">' + (on ? '<input type="number" min="0" step="1" class="sl-in num" aria-label="' + esc(c.barcode) + ' 실판매가" data-f="pp" data-o="' + ei + '" data-b="' + esc(c.barcode) + '" value="' + (Number.isFinite(p.price[c.barcode]) ? p.price[c.barcode] : '') + '"' + dis + '>' : '') + '</td></tr>';
+    }).join('');
+    return wrap('<div class="sl-pk-h"><b>이 고객의 아직 안 팔린 주문 줄</b> <span class="sl-muted">체크하면 파일 정산금액 ' + fmt(p.F) + '원을 판매가 비율로 나눕니다 — 실판매가는 고쳐 쓸 수 있고, 합계가 정산금액과 같아야 확정됩니다</span></div>'
+      + (p.cands.length ? '<table class="sl-pt"><thead><tr><th></th><th>주문일</th><th>바코드</th><th>상품</th><th class="num">판매가</th><th>비고</th><th class="num">실판매가</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<div class="sl-muted">고를 수 있는 주문 줄이 없습니다</div>')
+      + pickFoot(e, ei));
+  }
+  function pickPatch(ei) {
+    const e = S.entries[ei], p = document.getElementById(PANEL_ID), el = p && p.querySelector('[data-pkfoot="' + ei + '"]');
+    if (e && e.pick && el) { const t = document.createElement('div'); t.innerHTML = pickFoot(e, ei); el.replaceWith(t.firstChild); }
+  }
   function entryRows(e, ei) {
     const cash = e.match && (e.st === 'ok' || e.st === 'done') ? e.match.cash : 0;
     const cls = e.result ? (e.result.status === 'done' ? ' res-done' : ' res-bad') : e.st === 'block' ? ' bad' : e.st === 'sold' ? ' sold' : '';
@@ -475,13 +631,13 @@
       + (e.client ? '<span class="sl-muted">→ ' + esc(e.client.name) + ' #' + esc(e.client.seq) + '</span> ' + (() => { const h = C.slHowChip(e.how); return chip(h.cls, h.text); })() : '')
       + (e.source ? ' ' + chip('gray', '근거 ' + e.source) : '')
       + '</td><td>' + verdictChips(e)
-      + (e.st === 'block' && !e.result ? '<div class="sl-issue">' + ico('warn') + esc(e.reason) + '</div>' + (e.hard ? '' : findUi(e, ei)) : '')
+      + (e.st === 'block' && !e.result ? '<div class="sl-issue">' + ico('warn') + esc(e.reason) + '</div>' + (e.hard ? '' : manualBtn(e, ei) + findUi(e, ei)) : (inferredSold(e) && !e.result ? manualBtn(e, ei) : ''))
       + '</td>'
       + '<td class="num">' + (cash ? '현금 ' + fmt(cash) + '원' : '') + '</td></tr>';
     const body = e.rows.map((r) => {
       const sold = rowSold(e, r), lines = rowLines(e, r);
       const prev = S.ledger[ledgerKey(r)] && !e.result ? ' ' + chip('prev', '이전에 처리함 ' + fmtAt(S.ledger[ledgerKey(r)].at), 'warn') : '';
-      const uv = sold ? chip('gray', '이미 판매됨') : rowMerged(e, r) ? '<span class="sl-muted">같은 주문 — 위 줄에 합산</span>'
+      const uv = sold ? (inferredSold(e) ? chip('skipped', '판매 추정') : chip('gray', '이미 판매됨')) : rowMerged(e, r) ? '<span class="sl-muted">같은 주문 — 위 줄에 합산</span>'
         : lines.length ? '<div class="sl-uv">' + lines.map((l) => '<div><span class="amt">' + fmt(l.amount) + '원</span><span class="bc">' + esc(l.barcode) + '</span>' + esc(l.name) + '</div>').join('') + '</div>'
         : '<span class="sl-muted">—</span>';
       return '<tr class="sl-l' + (sold ? ' sold' : '') + '"><td></td><td>' + esc(r.orderNo) + prev + '</td>'
@@ -490,7 +646,7 @@
     }).join('');
     const gifts = (e.match && (e.st === 'ok' || e.st === 'done') ? e.match.lines.filter((l) => l.gift) : []).map((l) =>
       '<tr class="sl-l"><td></td><td class="sl-muted">사은품</td><td class="sl-muted">같은 주문일 사은품 줄</td><td><div class="sl-uv"><div class="gift"><span class="bc">' + esc(l.barcode) + '</span>' + esc(l.name) + '</div></div></td><td class="num sl-muted">0원</td></tr>').join('');
-    return head + body + gifts;
+    return head + pickerHtml(e, ei) + body + gifts;
   }
   //  진행 스트립. 조회·실행 중에만 그려지고, 실행 중엔 log 훅이 progPatch 로 문구만 갱신한다.
   function progStrip() {
@@ -524,9 +680,9 @@
   }
   function counts() {
     const E_ = S.entries;
-    const nOk = E_.filter((e) => e.st === 'ok').length, nSold = E_.filter((e) => e.st === 'sold').length, nBlock = E_.filter((e) => e.st === 'block').length;
+    const nOk = E_.filter((e) => e.st === 'ok').length, nSold = E_.filter((e) => e.st === 'sold' && !inferredSold(e)).length, nInf = E_.filter(inferredSold).length, nBlock = E_.filter((e) => e.st === 'block').length;
     const chk = E_.filter((e) => e.checked && entryReady(e));
-    return { nOk, nSold, nBlock, nRet: S.returns.length, nChk: chk.length, nLines: chk.reduce((n, e) => n + e.match.lines.length, 0), cash: chk.reduce((s, e) => s + e.match.cash, 0), nPending: E_.filter((e) => e.st === 'pending').length };
+    return { nOk, nSold, nInf, nBlock, nRet: S.returns.length, nChk: chk.length, nLines: chk.reduce((n, e) => n + e.match.lines.length, 0), cash: chk.reduce((s, e) => s + e.match.cash, 0), nPending: E_.filter((e) => e.st === 'pending').length };
   }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
@@ -535,7 +691,7 @@
     p.querySelector('.sl-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.sl-top').innerHTML =
       '<div class="sl-bar"><label class="sl-btn">' + ico('file') + '정산 파일 선택<input type="file" id="ub-sl-file" accept=".xls,.xlsx,.csv" hidden' + lock + '></label>'
-      + (S.adapter ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter.label) + '</b></span>' + (nEnt ? '<span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 수동 <b>' + c.nRet + '</b></span>' : '') : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
+      + (S.adapter ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter.label) + '</b></span>' + (nEnt ? '<span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 판매 추정 <b>' + c.nInf + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 수동 <b>' + c.nRet + '</b></span>' : '') : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
       + '<span class="sl-spacer"></span>'
       + '<button class="sl-btn pri" data-act="run"' + (c.nChk && !S.running && !S.starting && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '판매 중…' : '판매 시작') + '</button>'
       + '<button class="sl-btn quiet" data-act="export-log">로그 JSON</button></div>'
@@ -556,7 +712,7 @@
       + S.returns.map((r) => '<tr class="sl-muted"><td>' + esc(r.kind) + (r.note ? '<div class="sl-opt">' + esc(r.note) + '</div>' : '') + '</td><td>' + esc(r.orderNo) + '</td><td>' + esc(r.buyer) + '</td><td>' + esc(r.name) + '</td><td class="num">' + (r.qty == null ? '' : r.qty) + '</td><td class="num">' + fmt(r.amount) + '원</td></tr>').join('') + '</tbody></table></div>' : '';
     p.querySelector('.sl-b').innerHTML =
       banners.map((b) => '<div class="sl-banner ' + b.cls + '">' + ico('warn') + esc(b.text) + '</div>').join('')
-      + (nEnt ? '<div class="sl-sum"><span>처리 대상 고객 <b>' + c.nChk + '</b>명</span><span>줄 <b>' + c.nLines + '</b></span><span>현금 합계 <b>' + fmt(c.cash) + '</b>원</span><span class="sl-muted">차단 ' + c.nBlock + ' · 제외 ' + (c.nSold + c.nRet) + '(이미 판매 ' + c.nSold + ' · 수동 ' + c.nRet + ')</span></div>' : '')
+      + (nEnt ? '<div class="sl-sum"><span>처리 대상 고객 <b>' + c.nChk + '</b>명</span><span>줄 <b>' + c.nLines + '</b></span><span>현금 합계 <b>' + fmt(c.cash) + '</b>원</span><span class="sl-muted">차단 ' + c.nBlock + ' · 제외 ' + (c.nSold + c.nInf + c.nRet) + '(이미 판매 ' + c.nSold + ' · 판매 추정 ' + c.nInf + ' · 수동 ' + c.nRet + ')</span></div>' : '')
       + (nEnt ? '<table class="sl-t"><colgroup><col style="width:36px"><col class="c-no"><col class="c-gs"><col><col class="c-amt"></colgroup>'
         + '<thead><tr><th><input type="checkbox" class="sl-chk" data-f="chkall" title="체크 가능한 고객 전체 체크/해제"' + (c.nOk && c.nChk === c.nOk ? ' checked' : '') + (c.nOk && !S.running && !S.starting ? '' : ' disabled') + '></th><th>' + mk() + '주문번호</th><th>' + mk() + '상품</th><th>유비샵 바코드 · 상품</th><th class="num">실판매가</th></tr></thead><tbody>'
         + S.entries.map(entryRows).join('') + '</tbody></table>' : (S.phase === 'reading' || S.error ? '' : S.adapter ? (S.phase === 'idle' ? '<div class="sl-empty">판매할 행이 없습니다 — 아래 수동 처리 목록만 있습니다</div>' : '') : '<div class="sl-empty">파일을 선택하면 고객별 검토 표가 여기에 뜹니다.</div>'))
@@ -574,6 +730,7 @@
     document.body.appendChild(p);
     p.addEventListener('click', onClick);
     p.addEventListener('change', onChange);
+    p.addEventListener('input', onInput);
     p.addEventListener('keydown', onKeydown);
     render();
     if (S.running) setVeil(true);
@@ -594,8 +751,11 @@
     if ((S.running || S.starting) && act !== 'close' && act !== 'export-log') return;   // 실행 중(시작 대기 포함) 조작 차단 — 다운로드·닫기만 허용
     if (act === 'close') closePanel();
     else if (act === 'run') run();
-    else if (act === 'export-log') download('ub-saleimport-log-' + Date.now() + '.json', { results: S.results, log: S.log });
+    else if (act === 'export-log') download('ub-saleimport-log-' + Date.now() + '.json', { results: S.results, log: S.log, manualPicks: S.entries.filter((e) => e.manual).map((e) => ({ key: e.key, client: e.client, F: e.manual.F, at: e.manual.at, picks: e.manual.chosen })), inferredSold: S.entries.filter(inferredSold).map((e) => ({ key: e.key, client: e.client, reason: e.reason, saleKeys: e.match.usedKeys || [] })) });
     else if (act === 'search') await searchCands(+btn.dataset.o, btn.parentElement.querySelector('input[data-f="q"]'));
+    else if (act === 'pick-open') await openPicker(+btn.dataset.o);
+    else if (act === 'pick-ok') await confirmPicker(+btn.dataset.o);
+    else if (act === 'pick-close') { const en = S.entries[+btn.dataset.o]; if (en) { en.pick = null; render(); } }
   }
   function onKeydown(e) {
     const el = e.target;
@@ -604,6 +764,14 @@
     if (S.running || S.starting) return;
     searchCands(+el.dataset.o, el);
   }
+  //  실판매가 입력 — 모델에 넣고 합계 줄만 다시 그린다(전체를 다시 그리면 입력 중인 칸의 포커스가 사라진다).
+  function onPriceInput(el) {
+    if (S.running || S.starting) return;
+    const e = S.entries[+el.dataset.o]; if (!e || !e.pick) return;
+    e.pick.price[el.dataset.b] = el.value === '' ? NaN : Number(el.value); e.pick.msg = '';
+    pickPatch(+el.dataset.o);
+  }
+  function onInput(ev) { if (ev.target && ev.target.dataset && ev.target.dataset.f === 'pp') onPriceInput(ev.target); }
   async function onChange(e) {
     if (S.running || S.starting) return;
     const el = e.target;
@@ -613,6 +781,8 @@
     if (f === 'chkall') { S.entries.forEach((en) => { en.checked = el.checked && entryReady(en); }); render(); return; }
     if (f === 'q') { S.entries[+el.dataset.o].q = el.value; return; }   // 검색어는 모델에만 — 다시 그리면 글자가 사라진다
     if (f === 'pick') await pickClient(+el.dataset.o, el.value);
+    if (f === 'pk') pickToggle(+el.dataset.o, el.dataset.b, el.checked);
+    if (f === 'pp') onPriceInput(el);
   }
   async function loadFile(file) {
     //  파일을 연달아 고르면 먼저 고른 파일의 결과가 나중 표를 덮어쓴다 — 세대 토큰으로 최신 선택만 반영.

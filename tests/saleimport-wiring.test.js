@@ -44,8 +44,8 @@ test('applyOverlaps(): run() 은 대상 계산 전에 한 번, 조회 대기 뒤
   assert.ok(/applyOverlaps\(\);[^\n]*\n\s*if \(!targets\.every\(entryReady\)\)/.test(b), '둘째 호출 바로 뒤에 every(entryReady) 판정');
 });
 
-test('applyOverlaps(): 정의 1 + 호출 3 — 다른 곳에서 부르지 않는다', () => {
-  assert.equal((UI.match(/applyOverlaps\(\)/g) || []).length, 4);
+test('applyOverlaps(): 정의 1 + 호출 4(matchEntry·run 2·직접 지정 확정) — 다른 곳에서 부르지 않는다', () => {
+  assert.equal((UI.match(/applyOverlaps\(\)/g) || []).length, 5);
   assert.ok(/function applyOverlaps\(\) \{\s*C\.slOverlaps\(S\.entries\)/.test(UI));
 });
 
