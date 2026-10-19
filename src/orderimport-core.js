@@ -37,7 +37,8 @@
   /* --------------------------------------------------------------- §2.1 헤더 */
   const COLS = Object.freeze({
     seller: '판매처', orderNo: '주문번호', name: '상품명', option: '옵션명', price: '판매가',
-    settle: '정산금액', buyer: '수령자이름', phone: '수령자휴대폰', recipientPhone: '수령자전화', qty: '수량', status: '상태'
+    settle: '정산금액', buyer: '수령자이름', phone: '수령자휴대폰', recipientPhone: '수령자전화', qty: '수량', status: '상태',
+    sellerName: '판매처상품명'                              // 선택 열(2026-10-19 확장주문검색에 추가) — oiPickName
   });
   const REQUIRED = ['seller', 'orderNo', 'name', 'price', 'buyer'];
 
@@ -101,6 +102,27 @@
     return parts.join(' ');
   }
 
+  //  상품명(이지어드민 매핑명) vs 판매처 상품명(마켓 등록 제목) — 사장님 2026-10-19: 품위 문구를 빼고 제품명이 다르면 판매처 상품명을 따른다.
+  //  판정은 '낱말 포함': 상품명의 낱말이 판매처 상품명(공백 무시)에 전부 들어 있으면 같음. 광고 꼬리표([D102 …]·*단독 특가*)·(1개)·
+  //  쉼표는 비교에서 뺀다 — 스마트스토어의 검색용 긴 제목('… 금 반지 십자가 레이어드 …')도 같음으로 남는다.
+  //  사은품 행은 판매처 상품명에 본품 이름이 실려 오므로(실측) 항상 상품명. 따를 때는 광고 꼬리표만 걷어 낸 이름을 쓴다.
+  const SELLER_TAG_RE = /\[[^\]]*d102[^\]]*\]|\*[^*]*\*/gi;
+  function oiCleanSellerName(s) { return String(s == null ? '' : s).replace(SELLER_TAG_RE, ' ').replace(/\s+/g, ' ').trim(); }
+  function oiNameWords(s) {
+    return oiCleanSellerName(s).toLowerCase()
+      .replace(/silver\s*925|실버\s*925|\d{2}\s*k(?![a-z])/gi, ' ')
+      .replace(/\(\s*1\s*(개|쌍)\s*\)/g, ' ').replace(/[,\[\]()]/g, ' ')
+      .split(/\s+/).filter(Boolean);
+  }
+  function oiPickName(name, sellerName, opts) {
+    const base = String(name == null ? '' : name).trim();
+    const seller = oiCleanSellerName(sellerName);
+    if (!seller || (opts && opts.gift)) return { name: base, source: 'name' };
+    const hay = oiNameWords(seller).join('');
+    const same = oiNameWords(base).every((w) => hay.indexOf(w) >= 0);
+    return same ? { name: base, source: 'name' } : { name: seller, source: 'seller' };
+  }
+
   //  SheetJS header:1 행 배열 → 줄 목록. 합계 행·빈 행은 버린다. 첫 행이 헤더.
   //  meta.numericPhoneRows: 휴대폰 셀이 **숫자형**이었던 행 인덱스(0=헤더) — 앞 0 이 사라진 값이 유효 번호처럼 통과하는 것을 막는다(Terra 14R P1).
   function oiParseRows(rows, meta) {
@@ -122,6 +144,7 @@
       //  숫자형 셀은 앞 0 이 사라져 다른 번호(1065783269 → 106-578-3269)로 복원될 수 있다 → 믿지 않는다: 휴대폰 빈칸(ok=false) + 원문은 raw 로
       //  남겨 실행기가 고객 비고에 싣는다(형식 불가와 같은 경로, Opus 5 P2-1 2026-09-22). 뒤 4자리는 그대로라 고객명은 유지. 연락처 칸에서 고치면 신뢰.
       const numericCell = numericPhone.has(i + 1), normPhone = oiNormPhone(mobile || recipientPhone);
+      const picked = oiPickName(cell('name'), cell('sellerName'), { gift });
       lines.push({
         row: i + 2,                                          // 엑셀 행 번호(헤더=1)
         seller, orderNo,
@@ -130,7 +153,10 @@
         phone: numericCell ? Object.assign({}, normPhone, { phone: '', ok: false }) : normPhone,
         phoneSource,
         phoneNumericCell: numericCell,
-        productName: cell('name'),
+        productName: picked.name,
+        nameSource: picked.source,                           // 'seller' 면 판매처 상품명을 따른 줄 — 검토 표에 원래 이름을 같이 보인다
+        ezName: cell('name'),
+        sellerName: cell('sellerName'),
         optionText: cell('option'),
         gift,
         price: gift ? (priceRaw ? oiMoney0(priceRaw) : 0) : oiMoney(priceRaw),
@@ -893,7 +919,7 @@
 
   const api = {
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
-    oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiParseRows,
+    oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiPickName, oiParseRows,
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineReview, oiLineIssues, oiLineWarnings, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,

@@ -396,9 +396,11 @@
     const issues = (l.issues.length ? '<div class="oi-issue">' + ico('warn') + l.issues.map(esc).join(' · ') + '</div>' : '')
       + (l.warnings.length ? '<div class="oi-issue warn">' + ico('warn') + l.warnings.map(esc).join(' · ') + '</div>' : '');
     const note = (!e && l.searchNote) ? '<div class="oi-note">' + esc(l.searchNote) + '</div>' : '';
+    //  판매처 상품명을 따른 줄(2026-10-19) — 이지어드민 상품명이 다른 제품이었다는 것을 사람이 보게 한다.
+    const nameNote = l.nameSource === 'seller' ? '<div class="oi-note">판매처 상품명을 따름 · 이지어드민 상품명: ' + esc(l.ezName) + '</div>' : '';
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
     const rawDis = l.excluded ? ' disabled' : dis;
-    return '<tr class="oi-l' + (l.issues.length ? ' oi-bad' : l.warnings.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + issues + '</td>'
+    return '<tr class="oi-l' + (l.issues.length ? ' oi-bad' : l.warnings.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + nameNote + issues + '</td>'
       + '<td>' + prod + note + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
       + '<td>' + inp('qty', l.spec.qty, 'sm num') + '</td><td>' + inp('price', Number.isInteger(l.spec.price) ? C.oiComma(l.spec.price) : l.spec.price, 'sm num') + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
   }
