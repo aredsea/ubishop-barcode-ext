@@ -39,6 +39,11 @@ test('스킨모드(ubSkin) 꺼짐이면 버튼을 그리지 않는다', () => {
   assert.ok(/if \(!S\.enabled\) \{ const b = document\.getElementById\(BTN_ID\); if \(b\) b\.remove\(\); return; \}/.test(UI));
 });
 
+test('스킨모드 꺼짐이면 실행 중이 아닌 패널은 그리지 않고, 조회 루프도 멈춘다', () => {
+  assert.ok(/function render\(\) \{\s*let p = document\.getElementById\(PANEL_ID\);[\s\S]{0,200}?if \(!S\.enabled && !S\.running\) \{ if \(p\) p\.remove\(\); return; \}/.test(UI));
+  assert.ok(/for \(const it of S\.items\) \{\s*if \(!S\.enabled\) return;/.test(UI));
+});
+
 test('erp: 수정 저장은 iframe 실제 폼(fetch 직렬화 금지) · 저장 버튼은 form 소속 대조', () => {
   assert.ok(!/inputItemModify\.do/.test(ERP), 'inputItemModify.do 로 직접 POST 하지 않는다');
   assert.ok(/querySelectorAll\('input\[name="imageField22"\]'\)\]\.find\(\(b\) => b\.form === f\)/.test(ERP));

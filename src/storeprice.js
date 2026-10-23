@@ -58,6 +58,7 @@
     if (!price) { alert('변경할 금액을 숫자로 입력하세요. (예: 1,250,000)'); return; }
     S.price = price; S.phase = 'looking'; render();
     for (const it of S.items) {
+      if (!S.enabled) return;
       try { it.cls = await E.lookup(it.barcode); it.err = ''; }
       catch (e) { it.cls = null; it.err = String(e && e.message || e); }
       render();
@@ -110,6 +111,8 @@
   }
   function render() {
     let p = document.getElementById(PANEL_ID);
+    //  스킨모드가 꺼졌으면 늦게 끝난 조회가 패널을 되살리지 않게 한다(Terra 3R P2). 실행 중엔 결과를 끝까지 보여 준다.
+    if (!S.enabled && !S.running) { if (p) p.remove(); return; }
     if (!p) {
       p = document.createElement('div'); p.id = PANEL_ID; p.setAttribute('role', 'dialog'); p.setAttribute('aria-label', '매장 제품 가격 변경');
       document.body.appendChild(p);
