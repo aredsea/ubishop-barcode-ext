@@ -13,7 +13,9 @@
   const ORDER_TYPES = Object.freeze({ '일반': 'A', '고객': 'B', '수리': 'X', '회전': 'Z' });
   const ITEM_TYPES = Object.freeze({ '상품': '1', '메인석': '2' });
   const TARGET_ORDER_TYPES = Object.freeze(['A', 'Z']);   // 일반·회전만(사장님 지시 2026-10-23)
-  const DONE_STATUS = '출고완료';
+  //  출고전표 상태 열 = 상품의 현재 상태(2026-10-23 실측: 출고완료·출고확인·판매완료·출고오확인(NU)).
+  //  매장에 있는 상품만 — 출고완료(매장 미확인)·출고확인(매장 재고). 판매·오확인·반품 등은 건너뛴다.
+  const IN_STORE_STATUSES = Object.freeze(['출고완료', '출고확인']);
 
   function spParsePrice(s) {
     const t = String(s == null ? '' : s).replace(/\s+/g, '');
@@ -78,7 +80,7 @@
     const kindName = (r.kind.match(/^\s*(\S+)/) || [])[1] || '';
     if (!r.orderType || !r.itemType) return { go: false, reason: '구분 판독 불가 (' + r.kind + ')', row: r };
     if (TARGET_ORDER_TYPES.indexOf(r.orderType) < 0) return { go: false, reason: '구분 ' + kindName + ' — 대상 아님', row: r };
-    if (r.status !== DONE_STATUS) return { go: false, reason: '상태 ' + (r.status || '없음') + ' — 출고완료 아님', row: r };
+    if (IN_STORE_STATUSES.indexOf(r.status) < 0) return { go: false, reason: '상태 ' + (r.status || '없음') + ' — 매장 재고 아님', row: r };
     const shop = spShopCode(r.shopText, shopOpts);
     if (!shop) return { go: false, reason: '매장 판독 불가 (' + r.shopText.slice(0, 20) + ')', row: r };
     return {
@@ -132,7 +134,10 @@
         else {
           const c = await E.verifyPrice(v.modifyUrl, price);
           if (!c || !c.ok) fail = { step: 'verify', msg: (c && c.msg) || '저장값 불일치' };
-          else E.log({ phase: 'price_saved', barcode: target.barcode, from: target.salePrice, to: price });
+          else {
+            E.log({ phase: 'price_saved', barcode: target.barcode, from: target.salePrice, to: price });
+            if (c.warn) out.warn = c.warn;   // 가격은 저장됐지만 다른 칸이 바뀐 경우 — 결과에 드러낸다
+          }
         }
       }
     } catch (e) { fail = { step: 'price', msg: String(e && e.message || e) }; }
@@ -166,7 +171,7 @@
   }
 
   const api = {
-    ORDER_TYPES, ITEM_TYPES, TARGET_ORDER_TYPES, DONE_STATUS,
+    ORDER_TYPES, ITEM_TYPES, TARGET_ORDER_TYPES, IN_STORE_STATUSES,
     spParsePrice, spComma, spDelivRows, spShopCode, spClassify, spForm1Segment, spRedelivPairs, spRunOne, spRunAll
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }

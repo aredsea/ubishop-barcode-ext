@@ -50,7 +50,9 @@ test('spClassify — 일반·회전 + 출고완료 + 매장 판독일 때만 진
     delivRow(2, '4,AAAAA4,1,1', 'J4', '수리 (상품)', '누리엔점', '출고완료'),
     delivRow(1, '5,AAAAA5,1,1', 'J5', '일반 (상품)', '누리엔점', '판매완료'),
     delivRow(1, '6,AAAAA6,1,1', 'J6', '일반 (상품)', '없는점14K', '출고완료'),
-    delivRow(1, '7,AAAAA7,1,1', 'J7', '알수없음', '누리엔점', '출고완료')
+    delivRow(1, '7,AAAAA7,1,1', 'J7', '알수없음', '누리엔점', '출고완료'),
+    delivRow(1, '8,AAAAA8,1,1', 'J8', '일반(상품)', '누리엔점', '출고확인'),
+    delivRow(1, '9,AAAAA9,1,1', 'J9', '일반 (상품)', '누리엔점', '출고오확인(NU)')
   ]);
   const rows = S.spDelivRows(html);
   const a = S.spClassify('aaaaa1', rows, SHOPS);
@@ -67,6 +69,10 @@ test('spClassify — 일반·회전 + 출고완료 + 매장 판독일 때만 진
   assert.match(S.spClassify('AAAAA5', rows, SHOPS).reason, /판매완료/);
   assert.match(S.spClassify('AAAAA6', rows, SHOPS).reason, /매장 판독 불가/);
   assert.match(S.spClassify('AAAAA7', rows, SHOPS).reason, /구분 판독 불가/);
+  const confirmed = S.spClassify('AAAAA8', rows, SHOPS);   // 매장 확인 재고 · 괄호 앞 공백 없는 표기
+  assert.equal(confirmed.go, true);
+  assert.equal(confirmed.target.orderType, 'A');
+  assert.match(S.spClassify('AAAAA9', rows, SHOPS).reason, /출고오확인/);
 });
 
 test('spClassify — 검색폼 echo 만 있고 행이 없으면 출고 내역 없음', () => {
@@ -150,6 +156,13 @@ for (const [name, over] of [
     assert.ok(calls.includes('redeliver:NU'), calls.join(','));
   });
 }
+
+test('spRunOne — 저장 확인의 경고(다른 칸 변경)는 결과에 실린다', async () => {
+  const { E } = stub({ verifyPrice: async () => ({ ok: true, warn: '다른 칸도 바뀜: k 5→6' }) });
+  const r = await S.spRunOne(TARGET('AAAAA1'), 50000, E);
+  assert.equal(r.status, 'ok');
+  assert.match(r.warn, /k 5→6/);
+});
 
 test('spRunOne — 재출고 실패면 stranded', async () => {
   const { E } = stub({ redeliver: async () => ({ ok: false, msg: 'msg' }) });

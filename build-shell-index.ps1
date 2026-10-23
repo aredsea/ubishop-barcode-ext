@@ -31,7 +31,10 @@ $patterns = @(
   'vendor/xlsx.full.min.js',
   'src/saleimport-core.js',
   'src/saleimport-erp.js',
-  'src/saleimport.js'
+  'src/saleimport.js',
+  'src/storeprice-core.js',
+  'src/storeprice-erp.js',
+  'src/storeprice.js'
 )
 $textExt = @('.js', '.json', '.html', '.htm', '.css', '.xml', '.md', '.txt', '.svg')
 

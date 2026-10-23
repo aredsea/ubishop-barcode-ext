@@ -1,9 +1,9 @@
 {
-  "version": "4.3.9",
+  "version": "4.4.0",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "1849e433a4bd54858cec738a925ef27385dcd87efe8d2f6dec66952e2a38c6e5"
+      "sha256": "616e7cecd14859584d751f6a5e4aa43bd44825167173dc344594848b19354762"
     },
     {
       "path": "src/loader.js",
@@ -72,6 +72,18 @@
     {
       "path": "src/saleimport.js",
       "sha256": "a372eacf59a23f5592f6099ca2e1441292815647236d1fd331d34f290916b0d2"
+    },
+    {
+      "path": "src/storeprice-core.js",
+      "sha256": "7343f80acf33db5c739006f674a83d2933e546551a48fea5dca03211c8fb9cc6"
+    },
+    {
+      "path": "src/storeprice-erp.js",
+      "sha256": "d2a0dff1a61fa252b87c37a4df9aba069f6d02ea9db1c34272962388a9148141"
+    },
+    {
+      "path": "src/storeprice.js",
+      "sha256": "02ada7276b1b83365685742ee7ee819fde35966c7602ae92702aecbca724eb5b"
     },
     {
       "path": "icons/icon128.png",

@@ -80,7 +80,9 @@ const SHELL_PATTERNS = [
   //  4.2.0 판매처 주문 가져오기(SHELL 채널 — content_scripts 로 직접 싣는다)
   'src/erp.js','src/orderimport-core.js','src/orderimport-erp.js','src/orderimport.js','src/orderimport-xls.js','vendor/xlsx.full.min.js',
   //  4.3.0 GS샵 판매 처리 가져오기
-  'src/saleimport-core.js','src/saleimport-erp.js','src/saleimport.js'
+  'src/saleimport-core.js','src/saleimport-erp.js','src/saleimport.js',
+  //  4.4.0 매장 제품 가격 변경
+  'src/storeprice-core.js','src/storeprice-erp.js','src/storeprice.js'
 ];
 //  ★icons 는 **목록을 박아 두면 안 된다** — 생성 스크립트가 `icons/*` 전체를 동적으로 담기
 //   때문이다. 박아 두면 아이콘을 새로 넣고 재생성을 잊었을 때, 인덱스도 기대 목록도 옛 3개라
