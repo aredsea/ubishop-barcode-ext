@@ -183,6 +183,13 @@ test('spRunOne — 저장 확인의 경고(다른 칸 변경)는 결과에 실�
   assert.match(r.warn, /k 5→6/);
 });
 
+test('spRunOne — 재출고 확인의 경고(같은 출고장에 남의 상품)는 결과에 실린다', async () => {
+  const { E } = stub({ verifyRedeliv: async () => ({ ok: true, warn: '같은 출고장 J9에 다른 상품 1개(ZZZZZ1)도 함께 출고됨' }) });
+  const r = await S.spRunOne(TARGET('AAAAA1'), 50000, E);
+  assert.equal(r.status, 'ok');
+  assert.match(r.warn, /ZZZZZ1/);
+});
+
 test('spRunOne — 재출고 실패면 stranded', async () => {
   const { E } = stub({ redeliver: async () => ({ ok: false, msg: 'msg' }) });
   assert.equal((await S.spRunOne(TARGET('AAAAA1'), 50000, E)).status, 'stranded');

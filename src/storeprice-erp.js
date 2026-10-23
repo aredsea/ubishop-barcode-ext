@@ -314,7 +314,16 @@
     if (!shop || shop.code !== target.shop.code) return { ok: false, msg: '다른 매장으로 출고됨: ' + r.shopText.slice(0, 20) };
     if (r.orderType !== target.orderType || r.itemType !== target.itemType) return { ok: false, msg: '구분이 달라짐: ' + r.kind };
     if (S.IN_STORE_STATUSES.indexOf(r.status) < 0) return { ok: false, msg: '재출고 상태가 매장 재고가 아님: ' + r.status };
-    return { ok: true, junNum: r.junNum };
+    //  대기 목록은 계정 공유라 확인~[출고하기] 사이에 남이 올린 상품이 같은 출고장에 섞일 수 있다(막을 서버 잠금이 없다).
+    //  막지는 못하므로 새 출고장의 품목 수를 세어 드러낸다(Terra 4.4.1 P1 — 사후 감지로 부분 채택).
+    let warn = '';
+    try {
+      const q = Object.assign({ syear: '2000', smonth: '01', sday: '01' }, today(), { pageSize: '100', searchSortType: 'seq', searchDateType: 'delivDate', searchJunNum: r.junNum });
+      const j = await post(DELIV_LIST, q, DELIV_LIST_RE);
+      const others = S.spDelivRows(j.html).filter((x) => x.junNum === r.junNum && x.barcode !== target.barcode);
+      if (others.length) warn = '같은 출고장 ' + r.junNum + '에 다른 상품 ' + others.length + '개(' + others.map((x) => x.barcode).join(',') + ')도 함께 출고됨 — 확인 필요';
+    } catch (e) { warn = '새 출고장 품목 확인 실패: ' + (e && e.message || e); }
+    return { ok: true, junNum: r.junNum, warn: warn };
   }
 
   globalThis.ubSpErp = { log, lookup, deleteDeliv, findVoucherItem, savePrice, verifyPrice, redeliver, verifyRedeliv };

@@ -190,7 +190,8 @@
       E.log({ phase: 'stranded', barcode: target.barcode, shop: target.shop, msg: rd && rd.msg });
       return Object.assign(out, { status: 'stranded', step: 'redeliver', msg: ((fail ? fail.msg + ' / ' : '') + ((rd && rd.msg) || '재출고 실패')) });
     }
-    E.log({ phase: 'redelivered', barcode: target.barcode, shop: target.shop });
+    E.log({ phase: 'redelivered', barcode: target.barcode, shop: target.shop, warn: rd.warn || '' });
+    if (rd.warn) out.warn = (out.warn ? out.warn + ' / ' : '') + rd.warn;
     if (fail) return Object.assign(out, { status: 'price_failed', step: fail.step, msg: fail.msg + ' — 예전 가격으로 원래 매장 복귀' });
     return Object.assign(out, { status: 'ok' });
   }
