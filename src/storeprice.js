@@ -74,11 +74,12 @@
       + '제품마다 출고 삭제 → 가격 저장 → 원래 매장 재출고(인쇄 없음) 순서로 진행합니다.\n'
       + '재출고 출고장은 새 번호·오늘 날짜로 잡힙니다.\n\n계속할까요?';
     if (!confirm(msg)) return;
+    if (!S.enabled) { alert('[유비샵 스킨모드]가 꺼져 있어 실행하지 않습니다.'); return; }
     S.running = true; render();
     try {
-      const res = await C.spRunAll(pending, S.price, E, { limit: n, onItem: (r) => { S.results.push(r); render(); } });
+      const res = await C.spRunAll(pending, S.price, E, { limit: n, shouldStop: () => !S.enabled, onItem: (r) => { S.results.push(r); render(); } });
       const bad = res.find((r) => r.status !== 'ok');
-      S.phase = bad ? 'stopped' : (doneSet().size >= targets().length ? 'done' : 'trial_done');
+      S.phase = (bad || (!S.enabled && res.length < n)) ? 'stopped' : (doneSet().size >= targets().length ? 'done' : 'trial_done');
     } catch (e) {
       S.phase = 'stopped';
       S.results.push({ barcode: '-', status: 'stranded', step: 'run', msg: '실행 오류: ' + (e && e.message || e) + ' — 처리 로그(UB_SP_LOG)를 확인하세요' });
@@ -206,6 +207,8 @@
     if (area !== 'local' || !ch.ubSkin) return;
     S.enabled = !!ch.ubSkin.newValue;
     mountButton();
+    //  꺼지면 열린 패널도 닫는다. 실행 중이면 spRunAll 이 shouldStop 으로 다음 제품 전에 멈춘다(Terra 2R P1).
+    if (!S.enabled && !S.running) { const p = document.getElementById(PANEL_ID); if (p) p.remove(); }
   });
   init();
 })();

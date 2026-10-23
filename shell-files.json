@@ -75,15 +75,15 @@
     },
     {
       "path": "src/storeprice-core.js",
-      "sha256": "53e505f3599267ddf84fd3e46c384326e24f6839f83f6936a9120f3a230da71c"
+      "sha256": "3b007053888d63ed2fda61d8082a72b523883ae0ea435760ad5274226dca1a33"
     },
     {
       "path": "src/storeprice-erp.js",
-      "sha256": "d5ac6c498688a0c85feebe87787b7b9db0a7350dbf98f7fead0b6969c80bebfe"
+      "sha256": "86fc3096302c9f5f19258dab6ff3a49ee27f048f1a7d4a96d76c2f823223143c"
     },
     {
       "path": "src/storeprice.js",
-      "sha256": "02ada7276b1b83365685742ee7ee819fde35966c7602ae92702aecbca724eb5b"
+      "sha256": "b32b9b0ea9e5d2f007c4569c6b9445a11dd19318d2dc3e69b1c1b890f2c6eccc"
     },
     {
       "path": "icons/icon128.png",

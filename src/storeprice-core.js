@@ -163,12 +163,14 @@
     return Object.assign(out, { status: 'ok' });
   }
 
-  //  limit 건까지만(시범=1). ok 가 아니면 즉시 멈춘다.
+  //  limit 건까지만(시범=1). ok 가 아니면 즉시 멈춘다. shouldStop() 이 참이면 다음 제품을 시작하지 않는다
+  //  (진행 중인 제품은 재출고까지 끝낸다 — 중간에 끊으면 본사에 남는다).
   async function spRunAll(targets, price, E, opts) {
     const o = opts || {};
     const limit = o.limit == null ? targets.length : Math.min(o.limit, targets.length);
     const results = [];
     for (let i = 0; i < limit; i++) {
+      if (o.shouldStop && o.shouldStop()) break;
       const r = await spRunOne(targets[i], price, E);
       results.push(r);
       try { o.onItem && o.onItem(r, i); } catch (_) {}

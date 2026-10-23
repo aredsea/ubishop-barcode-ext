@@ -94,6 +94,10 @@
     try { before = await delivList(target.barcode); } catch (e) { return { ok: false, msg: '삭제 전 조회 실패: ' + (e && e.message || e) }; }
     const cur = before.rows.find((x) => x.barcode === target.barcode);
     if (!cur || cur.idx !== target.idx) return { ok: false, msg: '출고 내역이 조회 뒤 바뀌었습니다' };
+    //  같은 행이라도 그새 상태·구분이 바뀌었을 수 있다(판매·오확인) — 삭제 직전에 다시 판정한다(Terra 2R P1).
+    if (S.IN_STORE_STATUSES.indexOf(cur.status) < 0 || cur.orderType !== target.orderType || cur.itemType !== target.itemType) {
+      return { ok: false, msg: '조회 뒤 상태가 바뀌었습니다 (' + cur.status + ' · ' + cur.kind + ')' };
+    }
     if (!before.sKey) return { ok: false, msg: 'sKey 없음' };
     //  본문 구성은 실사용 중인 skin.js dcmDelete 와 같다(검색조건 + sKey + idx). 리다이렉트 경로는 단정하지 않는다(호스트만).
     const pairs = Object.entries(delivSearch(target.barcode)).concat([['sKey', before.sKey], ['idx', target.idx]]);
@@ -270,6 +274,7 @@
     const shop = S.spShopCode(r.shopText, opts);
     if (!shop || shop.code !== target.shop.code) return { ok: false, msg: '다른 매장으로 출고됨: ' + r.shopText.slice(0, 20) };
     if (r.orderType !== target.orderType || r.itemType !== target.itemType) return { ok: false, msg: '구분이 달라짐: ' + r.kind };
+    if (S.IN_STORE_STATUSES.indexOf(r.status) < 0) return { ok: false, msg: '재출고 상태가 매장 재고가 아님: ' + r.status };
     return { ok: true, junNum: r.junNum };
   }
 

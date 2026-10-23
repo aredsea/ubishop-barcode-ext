@@ -209,6 +209,15 @@ test('spRunAll — limit=1 이면 1건만(시범)', async () => {
   assert.ok(!calls.includes('delete:AAAAA2'));
 });
 
+test('spRunAll — shouldStop 이 참이 되면 다음 제품을 시작하지 않는다', async () => {
+  let stop = false;
+  const { E, calls } = stub({ verifyRedeliv: async () => { stop = true; return { ok: true }; } });
+  const res = await S.spRunAll([TARGET('AAAAA1'), TARGET('AAAAA2')], 50000, E, { shouldStop: () => stop });
+  assert.equal(res.length, 1);
+  assert.equal(res[0].status, 'ok');            // 진행 중이던 제품은 재출고까지 끝낸다
+  assert.ok(!calls.includes('delete:AAAAA2'));
+});
+
 test('spRunAll — 실패하면 그 자리에서 멈춘다', async () => {
   let n = 0;
   const { E, calls } = stub({ savePrice: async () => (++n === 1 ? { ok: false, msg: 'x' } : { ok: true }) });
