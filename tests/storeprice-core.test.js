@@ -98,7 +98,9 @@ const WRITE_HTML =
   + '<input type="hidden" name="sKey" value="K1"><input type="hidden" name="pageSize" value="20"><input type="hidden" name="searchSortType" value="seq"><input type="hidden" name="listFlag" value="0">'
   + '<select name="searchShop"><option value="">--</option><option value="NU">누리엔점</option></select>'
   + '<input type="text" name="barcode" value=""><input type="checkbox" name="printFlag" value="1" checked><input type="hidden" name="printFlag" value="1">'
-  + '<form name="form10" action="/jun/delivitem/delivItemJunWrite.do"><input type="hidden" name="sKey" value="K10"><input type="hidden" name="printFlag" value="1"></form>'
+  + '<form name="form10" action="/jun/delivitem/delivItemJunWrite.do"><input type="hidden" name="sKey" value="K10"><input type="hidden" name="pageSize" value="20"><input type="hidden" name="searchShop" value=""><input type="hidden" name="printFlag" value="1">'
+  + '<input type="text" name="junNum" value="" readonly><select name="delivyear" gname="deliv"><option value="2026">2026</option></select><select name="delivmonth" gname="deliv"><option value="01">01</option></select><select name="delivday" gname="deliv"><option value="01">01</option></select>'
+  + '<input type="text" name="regId" value="쇼핑몰01" readonly></form>'
   + '<form name="form2"><input type="hidden" name="sKey" value="K2"><input type="hidden" name="searchShop" value=""></form>';
 
 test('spRedelivPairs — form1 hidden + 매장·구분·바코드, printFlag=0 하나만', () => {
@@ -112,7 +114,22 @@ test('spRedelivPairs — form1 hidden + 매장·구분·바코드, printFlag=0 �
   assert.deepEqual(m.get('searchOrderType'), ['Z']);
   assert.deepEqual(m.get('searchItemType'), ['1']);
   assert.deepEqual(m.get('barcode'), ['AAAAA1']);
-  assert.deepEqual(m.get('listFlag'), ['0']);
+  assert.deepEqual(m.get('listFlag'), ['1']);   // 페이지 값(0=리스트 감추기)과 무관하게 1 — 대기 목록을 대조해야 한다
+});
+
+test('spCompletePairs — form10 hidden + 새 출고장·오늘 출고일·담당자, printFlag=0 하나만', () => {
+  const { pairs, missing } = S.spCompletePairs(WRITE_HTML, new Date(2026, 9, 3));
+  assert.deepEqual(missing, []);
+  const m = new Map(); pairs.forEach(([k, v]) => m.set(k, (m.get(k) || []).concat(v)));
+  assert.deepEqual(m.get('sKey'), ['K10']);      // form1(K1)·form2(K2) 의 sKey 가 섞이지 않는다
+  assert.deepEqual(m.get('printFlag'), ['0']);
+  assert.deepEqual(m.get('junNum'), ['']);
+  assert.deepEqual([m.get('delivyear'), m.get('delivmonth'), m.get('delivday')], [['2026'], ['10'], ['03']]);
+  assert.deepEqual(m.get('regId'), ['쇼핑몰01']);
+});
+
+test('spCompletePairs — form10 이 없으면 missing', () => {
+  assert.ok(S.spCompletePairs('<form name="form1"></form>').missing.includes('sKey'));
 });
 
 test('spRedelivPairs — sKey 없으면 missing', () => {

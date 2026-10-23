@@ -101,15 +101,47 @@
     return h.slice(i0, i1 < 0 ? h.length : i0 + 5 + i1);
   }
 
-  //  재출고 본문 — 페이지 checkBarcode 의 form1.submit 과 같은 필드. 인쇄 팝업을 막으려 printFlag=0.
+  //  재출고 1단계(대기 목록에 올리기) — 페이지 checkBarcode 의 form1.submit 과 같은 필드. 인쇄 팝업을 막으려 printFlag=0.
+  //  🔴 바코드 엔터는 대기 목록에 올릴 뿐이고 출고장은 [출고하기](form10)가 만든다(2026-10-23 첫 실기에서 확인).
+  //  listFlag 는 1(리스트 보이기)로 고정 — 0 이면 응답에 대기 목록이 아예 안 그려져 목록 대조를 할 수 없다(실측).
   function spRedelivPairs(writeHtml, target) {
     const seg = spForm1Segment(writeHtml);
-    const SET = ['searchShop', 'searchOrderType', 'searchItemType', 'barcode', 'printFlag'];
+    const SET = ['searchShop', 'searchOrderType', 'searchItemType', 'barcode', 'printFlag', 'listFlag'];
     const hidden = O.oiExtractHidden(seg).filter(([n]) => SET.indexOf(n) < 0);
     const missing = hidden.some(([n, v]) => n === 'sKey' && v) ? [] : ['sKey'];
     const pairs = hidden.concat([
+      ['listFlag', '1'],
       ['searchShop', target.shop.code], ['searchOrderType', target.orderType], ['searchItemType', target.itemType],
       ['barcode', target.barcode], ['printFlag', '0']
+    ]);
+    return { pairs, missing };
+  }
+
+  //  form10(매장출고장) 구간 — form1·form2 와 이름이 겹치므로 잘라 읽는다.
+  function spForm10Segment(html) {
+    const h = String(html || '');
+    const i0 = h.search(/<form\b[^>]*\bname\s*=\s*["']?form10["'\s>]/i);
+    if (i0 < 0) return '';
+    const i1 = h.indexOf('</form>', i0);
+    return h.slice(i0, i1 < 0 ? h.length : i1);
+  }
+  //  재출고 2단계([출고하기]) 본문 — form10 hidden 전부 + 출고장번호(빈칸=새 출고장)·출고일(오늘)·담당자, printFlag=0.
+  //  출고일 select 는 페이지 스크립트(setLimitDate)가 오늘로 채우므로 HTML 값을 믿지 않고 직접 넣는다.
+  function spCompletePairs(writeHtml, today) {
+    const seg = spForm10Segment(writeHtml);
+    const SET = ['printFlag', 'junNum', 'delivyear', 'delivmonth', 'delivday', 'regId'];
+    const hidden = O.oiExtractHidden(seg).filter(([n]) => SET.indexOf(n) < 0);
+    const d = today instanceof Date ? today : new Date();
+    const p2 = (x) => String(x).padStart(2, '0');
+    const regId = O.oiFieldValue(seg, 'regId');
+    const missing = [];
+    if (!hidden.some(([n, v]) => n === 'sKey' && v)) missing.push('sKey');
+    if (!regId) missing.push('regId');
+    if (O.oiFieldValue(seg, 'delivyear') === null) missing.push('delivyear');
+    const pairs = hidden.concat([
+      ['printFlag', '0'], ['junNum', O.oiFieldValue(seg, 'junNum') || ''],
+      ['delivyear', String(d.getFullYear())], ['delivmonth', p2(d.getMonth() + 1)], ['delivday', p2(d.getDate())],
+      ['regId', regId || '']
     ]);
     return { pairs, missing };
   }
@@ -181,7 +213,7 @@
 
   const api = {
     ORDER_TYPES, ITEM_TYPES, TARGET_ORDER_TYPES, IN_STORE_STATUSES,
-    spParsePrice, spComma, spDelivRows, spShopCode, spClassify, spForm1Segment, spRedelivPairs, spRunOne, spRunAll
+    spParsePrice, spComma, spDelivRows, spShopCode, spClassify, spForm1Segment, spRedelivPairs, spForm10Segment, spCompletePairs, spRunOne, spRunAll
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSp = api; }

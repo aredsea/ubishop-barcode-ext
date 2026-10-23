@@ -56,6 +56,23 @@ test('erp: 재출고는 spRedelivPairs(printFlag=0) 로만 보낸다', () => {
   assert.ok(/S\.spRedelivPairs\(g\.html, target\)/.test(b));
   assert.ok(/post\('\/deliv\/item\/delivItemWrite\.do\?tcode=deliv_item', pairs, null\)/.test(b));
   assert.ok(!/printFlag/.test(b), 'redeliver 안에서 printFlag 를 따로 만지지 않는다(core 가 0 으로 고정)');
+  //  2단계: 대기 목록이 비어야 올리고, 올린 뒤 정확히 [그 바코드] 일 때만 [출고하기](form10)
+  const iEmpty = b.indexOf('if (g.list.length) return');
+  const iAdd = b.indexOf("post('/deliv/item/delivItemWrite.do");
+  const iExact = b.indexOf("after.list.length !== 1 || after.list[0] !== target.barcode");
+  const iDone = b.indexOf("post('/jun/delivitem/delivItemJunWrite.do?tcode=deliv_item', c.pairs, null)");
+  assert.ok(iEmpty > 0 && iAdd > iEmpty && iExact > iAdd && iDone > iExact, '순서: 빈 목록 확인 → 올리기 → 정확히 1건 확인 → 출고하기');
+  assert.ok(/S\.spCompletePairs\(after\.html, new Date\(\)\)/.test(b));
+});
+
+test('erp: 대기 목록은 listFlag=1 로 받고, 삭제 전에 비어 있는지 본다', () => {
+  assert.ok(ERP.includes("const WRITE_FORM_LIST = WRITE_FORM + '&listFlag=1';"));
+  const at = ERP.indexOf('async function deleteDeliv(target) {');
+  const b = ERP.slice(at, ERP.indexOf('\n  }\n', at));
+  const iPend = b.indexOf('pend = await pendingNow()');
+  const iPost = b.indexOf("post('/jun/delivitem/delivItemDelete.do");
+  assert.ok(iPend > 0 && iPost > iPend, '대기 목록 확인이 삭제 요청보다 먼저');
+  assert.ok(/if \(pend\.list === null\) return \{ ok: false/.test(b) && /if \(pend\.list\.length\) return \{ ok: false/.test(b));
 });
 
 test('erp: 삭제 전 재조회로 같은 행인지 확인하고, 삭제 뒤 사라졌는지 본다', () => {

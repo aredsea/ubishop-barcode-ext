@@ -99,6 +99,11 @@
       return { ok: false, msg: '조회 뒤 상태가 바뀌었습니다 (' + cur.status + ' · ' + cur.kind + ')' };
     }
     if (!before.sKey) return { ok: false, msg: 'sKey 없음' };
+    //  지운 뒤 재출고는 매장출고 대기 목록을 거친다 — 남의 대기 상품이 있으면 시작하지 않는다(지우기 전에 막아야 본사에 안 남는다).
+    let pend;
+    try { pend = await pendingNow(); } catch (e) { return { ok: false, msg: '매장출고 대기 목록 조회 실패: ' + (e && e.message || e) }; }
+    if (pend.list === null) return { ok: false, msg: '매장출고 대기 목록을 읽지 못해 시작하지 않았습니다' };
+    if (pend.list.length) return { ok: false, msg: '매장출고 대기 목록에 상품 ' + pend.list.length + '개(' + pend.list.join(',') + ')가 있어 시작하지 않았습니다 — 먼저 출고하거나 비우세요' };
     //  본문 구성은 실사용 중인 skin.js dcmDelete 와 같다(검색조건 + sKey + idx). 리다이렉트 경로는 단정하지 않는다(호스트만).
     const pairs = Object.entries(delivSearch(target.barcode)).concat([['sKey', before.sKey], ['idx', target.idx]]);
     let res;
@@ -255,16 +260,50 @@
     } finally { fr.remove(); }
   }
 
+  /* ------------------------------------------------------------ 매장출고 대기 목록 */
+  //  매장출고 화면은 2단계다: 바코드 엔터 = 대기 목록에 올리기, [출고하기](form10) = 출고장 등록(2026-10-23 첫 실기).
+  //  대기 목록은 같은 계정이 함께 쓰므로 남의 대기 상품이 있으면 [출고하기]가 그것까지 출고한다 → 비어 있을 때만 진행.
+  //  listFlag=1(리스트 보이기)로 받아야 목록이 그려진다. 목록 표가 없으면 판단할 수 없으므로 null(=진행 금지).
+  const WRITE_FORM_LIST = WRITE_FORM + '&listFlag=1';
+  function pendingBarcodes(html) {
+    const t = doc(html).querySelector('table.t_list');
+    if (!t) return null;
+    const out = [];
+    for (const r of t.rows) {
+      if (!/^\d+$/.test((r.cells[0] ? r.cells[0].textContent : '').replace(/\s+/g, ''))) continue;
+      out.push(((r.cells[2] ? r.cells[2].textContent : '').replace(/\s+/g, ' ').trim().split(' ')[0] || '').toUpperCase());
+    }
+    return out;
+  }
+  async function pendingNow() {
+    const g = await req(WRITE_FORM_LIST, null, WRITE_RE);
+    return { html: g.html, list: pendingBarcodes(g.html) };
+  }
+
   /* ------------------------------------------------------------ 재출고 */
-  //  페이지 checkBarcode → form1.submit 과 같은 본문, printFlag=0(인쇄 창 없음).
+  //  1) 대기 목록이 비었는지 → 2) form1 로 올리기(printFlag=0) → 3) 목록이 정확히 [그 바코드] 인지 → 4) form10 [출고하기](printFlag=0).
   async function redeliver(target) {
-    const g = await req(WRITE_FORM, null, WRITE_RE);
+    const g = await pendingNow();
+    if (g.list === null) return { ok: false, msg: '매장출고 대기 목록을 읽지 못함' };
+    if (g.list.length) return { ok: false, msg: '매장출고 대기 목록에 다른 상품이 있음(' + g.list.join(',') + ')' };
     const opts = O.oiSelectOptions(S.spForm1Segment(g.html), 'searchShop') || [];
     if (!opts.some((o) => o.value === target.shop.code)) return { ok: false, msg: '출고 화면에 매장 ' + target.shop.name + ' 이 없음' };
     const { pairs, missing } = S.spRedelivPairs(g.html, target);
     if (missing.length) return { ok: false, msg: '출고 화면 필드 없음: ' + missing.join(',') };
     const r = await post('/deliv/item/delivItemWrite.do?tcode=deliv_item', pairs, null);
-    return O.oiSubmitResult(new URL(r.url, location.origin).href);
+    const add = O.oiSubmitResult(new URL(r.url, location.origin).href);
+    if (!add.ok) return { ok: false, msg: '대기 목록에 올리지 못함: ' + add.msg };
+
+    const after = await pendingNow();
+    if (!after.list || after.list.length !== 1 || after.list[0] !== target.barcode) {
+      return { ok: false, msg: '대기 목록이 예상과 다름(' + (after.list ? after.list.join(',') || '비어 있음' : '읽지 못함') + ') — 매장출고 화면에서 직접 확인' };
+    }
+    const c = S.spCompletePairs(after.html, new Date());
+    if (c.missing.length) return { ok: false, msg: '출고장 필드 없음: ' + c.missing.join(',') + ' — 대기 목록에 올라가 있음, [출고하기] 직접' };
+    const r2 = await post('/jun/delivitem/delivItemJunWrite.do?tcode=deliv_item', c.pairs, null);
+    const done = O.oiSubmitResult(new URL(r2.url, location.origin).href);
+    if (!done.ok) return { ok: false, msg: '출고장 등록 실패: ' + done.msg + ' — 대기 목록에 올라가 있음, [출고하기] 직접' };
+    return { ok: true };
   }
   async function verifyRedeliv(target) {
     const [{ rows }, opts] = await Promise.all([delivList(target.barcode), shopOpts()]);
