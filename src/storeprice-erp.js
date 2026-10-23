@@ -87,18 +87,26 @@
   /* ------------------------------------------------------------ 출고 삭제 */
   //  페이지 del() 과 같다: form2(sKey + 체크된 idx) → delivItemDelete.do + 현재 검색조건.
   //  삭제 직전에 다시 조회해 그 행이 그대로 최신인지 확인하고(그새 누가 바꿨으면 멈춤), 삭제 뒤 사라졌는지 본다.
+  //  반환: {ok:true} 삭제 확인 · {ok:false} 요청 전 실패(아무것도 안 바뀜) · {ok:false, uncertain:true} 요청은 나갔는데 결과 불명.
+  //  🔴 요청을 보낸 뒤의 실패를 '안 바뀜'으로 돌려주면 실행기가 재출고를 건너뛰어 제품이 본사에 남는다(Terra 1R P1).
   async function deleteDeliv(target) {
-    const before = await delivList(target.barcode);
+    let before;
+    try { before = await delivList(target.barcode); } catch (e) { return { ok: false, msg: '삭제 전 조회 실패: ' + (e && e.message || e) }; }
     const cur = before.rows.find((x) => x.barcode === target.barcode);
     if (!cur || cur.idx !== target.idx) return { ok: false, msg: '출고 내역이 조회 뒤 바뀌었습니다' };
     if (!before.sKey) return { ok: false, msg: 'sKey 없음' };
     //  본문 구성은 실사용 중인 skin.js dcmDelete 와 같다(검색조건 + sKey + idx). 리다이렉트 경로는 단정하지 않는다(호스트만).
     const pairs = Object.entries(delivSearch(target.barcode)).concat([['sKey', before.sKey], ['idx', target.idx]]);
-    const r = await post('/jun/delivitem/delivItemDelete.do?tcode=deliv_item', pairs, null);
-    const res = O.oiSubmitResult(new URL(r.url, location.origin).href);
+    let res;
+    try {
+      const r = await post('/jun/delivitem/delivItemDelete.do?tcode=deliv_item', pairs, null);
+      res = O.oiSubmitResult(new URL(r.url, location.origin).href);
+    } catch (e) { return { ok: false, uncertain: true, msg: '삭제 요청 응답 없음: ' + (e && e.message || e) }; }
     if (!res.ok) return { ok: false, msg: res.msg };
-    const after = await delivList(target.barcode);
-    if (after.rows.some((x) => x.idx === target.idx)) return { ok: false, msg: '삭제 응답은 성공인데 출고 행이 남아 있습니다' };
+    try {
+      const after = await delivList(target.barcode);
+      if (after.rows.some((x) => x.idx === target.idx)) return { ok: false, msg: '삭제 응답은 성공인데 출고 행이 남아 있습니다' };
+    } catch (e) { return { ok: false, uncertain: true, msg: '삭제 후 확인 조회 실패: ' + (e && e.message || e) }; }
     return { ok: true };
   }
 
@@ -261,7 +269,7 @@
     if (r.idx === target.idx || r.junNum === target.junNum) return { ok: false, msg: '최신 출고가 예전 출고장 그대로입니다' };
     const shop = S.spShopCode(r.shopText, opts);
     if (!shop || shop.code !== target.shop.code) return { ok: false, msg: '다른 매장으로 출고됨: ' + r.shopText.slice(0, 20) };
-    if (r.orderType !== target.orderType) return { ok: false, msg: '구분이 달라짐: ' + r.kind };
+    if (r.orderType !== target.orderType || r.itemType !== target.itemType) return { ok: false, msg: '구분이 달라짐: ' + r.kind };
     return { ok: true, junNum: r.junNum };
   }
 

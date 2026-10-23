@@ -45,7 +45,8 @@ test('spDelivRows — 헤더 이름으로 열을 찾고 구분을 코드로 바�
 test('spClassify — 일반·회전 + 출고완료 + 매장 판독일 때만 진행', () => {
   const html = delivHtml([
     delivRow(5, '1,AAAAA1,1,1', 'J1', '일반 (상품)', '누리엔점18K 2 g', '출고완료'),
-    delivRow(4, '2,AAAAA2,1,1', 'J2', '회전 (메인석)', '광주점18K', '출고완료'),
+    delivRow(4, '2,AAAAA2,1,1', 'J2', '회전 (상품)', '광주점18K', '출고완료'),
+    delivRow(4, '10,AAAAB0,1,1', 'J10', '회전 (메인석)', '광주점18K', '출고완료'),
     delivRow(3, '3,AAAAA3,1,1', 'J3', '고객 (상품)', '누리엔점', '출고완료'),
     delivRow(2, '4,AAAAA4,1,1', 'J4', '수리 (상품)', '누리엔점', '출고완료'),
     delivRow(1, '5,AAAAA5,1,1', 'J5', '일반 (상품)', '누리엔점', '판매완료'),
@@ -62,8 +63,9 @@ test('spClassify — 일반·회전 + 출고완료 + 매장 판독일 때만 진
   const z = S.spClassify('AAAAA2', rows, SHOPS);
   assert.equal(z.go, true);
   assert.equal(z.target.orderType, 'Z');
-  assert.equal(z.target.itemType, '2');
+  assert.equal(z.target.itemType, '1');
   assert.equal(z.target.shop.code, 'GJ');
+  assert.match(S.spClassify('AAAAB0', rows, SHOPS).reason, /메인석/);   // 입고 경로가 달라 지원 안 함
   assert.match(S.spClassify('AAAAA3', rows, SHOPS).reason, /고객/);
   assert.match(S.spClassify('AAAAA4', rows, SHOPS).reason, /수리/);
   assert.match(S.spClassify('AAAAA5', rows, SHOPS).reason, /판매완료/);
@@ -186,6 +188,19 @@ test('spRunOne — 삭제 실패면 재출고하지 않는다(아무것도 안 �
   assert.equal(r.status, 'delete_failed');
   assert.ok(!calls.some((c) => c.startsWith('redeliver')));
 });
+
+for (const [name, over] of [
+  ['삭제 결과 불명(uncertain)', { deleteDeliv: async () => ({ ok: false, uncertain: true, msg: 'timeout' }) }],
+  ['삭제 예외', { deleteDeliv: async () => { throw new Error('boom'); } }]
+]) {
+  test('spRunOne — ' + name + '면 가격은 건드리지 않고 재출고를 시도한다', async () => {
+    const { E, calls } = stub(over);
+    const r = await S.spRunOne(TARGET('AAAAA1'), 50000, E);
+    assert.deepEqual(calls, ['redeliver:NU', 'verifyRedeliv']);
+    assert.equal(r.status, 'price_failed');
+    assert.match(r.msg, /확인하지 못함/);
+  });
+}
 
 test('spRunAll — limit=1 이면 1건만(시범)', async () => {
   const { E, calls } = stub();

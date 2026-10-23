@@ -80,6 +80,8 @@
     const kindName = (r.kind.match(/^\s*(\S+)/) || [])[1] || '';
     if (!r.orderType || !r.itemType) return { go: false, reason: '구분 판독 불가 (' + r.kind + ')', row: r };
     if (TARGET_ORDER_TYPES.indexOf(r.orderType) < 0) return { go: false, reason: '구분 ' + kindName + ' — 대상 아님', row: r };
+    //  메인석은 입고 경로(inputStone)가 달라 상품입고 수정 화면으로 가격을 바꿀 수 없다(Terra 1R P2).
+    if (r.itemType !== '1') return { go: false, reason: '메인석 — 지원하지 않음', row: r };
     if (IN_STORE_STATUSES.indexOf(r.status) < 0) return { go: false, reason: '상태 ' + (r.status || '없음') + ' — 매장 재고 아님', row: r };
     const shop = spShopCode(r.shopText, shopOpts);
     if (!shop) return { go: false, reason: '매장 판독 불가 (' + r.shopText.slice(0, 20) + ')', row: r };
@@ -119,13 +121,18 @@
     if (!E.log({ phase: 'before_delete', barcode: target.barcode, junNum: target.junNum, shop: target.shop, orderType: target.orderType, itemType: target.itemType, idx: target.idx, price: price })) {
       return Object.assign(out, { status: 'delete_failed', step: 'log', msg: '처리 로그를 남길 수 없어 삭제하지 않았습니다' });
     }
+    //  삭제 결과가 불확실하면(요청은 나갔는데 응답·확인이 끊김 — 어댑터의 uncertain 또는 예외) 지워졌다고 보고
+    //  가격은 건드리지 않은 채 재출고만 시도한다. 안 지워졌다면 서버가 재출고를 거절할 뿐이다(Terra 1R P1).
     let d;
-    try { d = await E.deleteDeliv(target); } catch (e) { d = { ok: false, msg: String(e && e.message || e) }; }
-    if (!d || !d.ok) return Object.assign(out, { status: 'delete_failed', step: 'delete', msg: (d && d.msg) || '삭제 실패' });
-    E.log({ phase: 'deleted', barcode: target.barcode, junNum: target.junNum });
-
+    try { d = await E.deleteDeliv(target); } catch (e) { d = { ok: false, uncertain: true, msg: String(e && e.message || e) }; }
     let fail = null;
-    try {
+    if (!d || !d.ok) {
+      if (!(d && d.uncertain)) return Object.assign(out, { status: 'delete_failed', step: 'delete', msg: (d && d.msg) || '삭제 실패' });
+      fail = { step: 'delete', msg: '출고 삭제 결과를 확인하지 못함(' + (d.msg || '') + ')' };
+      E.log({ phase: 'delete_uncertain', barcode: target.barcode, junNum: target.junNum, msg: d.msg });
+    } else E.log({ phase: 'deleted', barcode: target.barcode, junNum: target.junNum });
+
+    if (!fail) try {
       const v = await E.findVoucherItem(target.barcode);
       if (!v || !v.ok) fail = { step: 'find', msg: (v && v.msg) || '입고장 품목을 못 찾음' };
       else {
