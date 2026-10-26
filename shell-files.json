@@ -1,9 +1,9 @@
 {
-  "version": "4.4.2",
+  "version": "4.4.3",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "3f047a6b47af4c8042a4df525520adb5450324aae130b025185be27014f790da"
+      "sha256": "3001602571dec33b16cee1bdb58db0f69e786e036e2be157fbcc5fc58ad6ff43"
     },
     {
       "path": "src/loader.js",
@@ -83,7 +83,7 @@
     },
     {
       "path": "src/storeprice.js",
-      "sha256": "25165fbebb50ef2351d60c1c1886aad824225f70fba5b79ad393ff8348908d8d"
+      "sha256": "b9e3b5c7604ee66f57d4809e8fcf753ccaed4f0fd7540d375d7153b7a40e6db9"
     },
     {
       "path": "icons/icon128.png",

@@ -91,3 +91,12 @@ test('금액 ±5%·10% 버튼: data-act=step → stepPrice → C.spStepPrice, �
   assert.ok(/C\.spStepPrice\(n, pct\)/.test(b) && /el\.value = C\.spComma\(v\);/.test(b));
   assert.ok(/data-act="step" data-pct="' \+ s \+ '"' \+ \(locked \? ' disabled' : ''\)/.test(UI), '잠금이면 버튼도 disabled');
 });
+
+test('상품명 열: 체크한 행의 말풍선 "상품명 :" 을 읽고(매입처상품코드 끝과 구분), 표 두 번째 열에 넣는다', () => {
+  assert.ok(UI.includes('<thead><tr><th>바코드</th><th>상품명</th><th>매장</th>'));
+  assert.ok(UI.includes(`'</td><td class="sp-name">' + esc(it.name || '') + '</td>`), '이름은 esc 거쳐 출력');
+  const at = UI.indexOf('function rowName(tr) {');
+  const b = UI.slice(at, UI.indexOf('\n  }\n', at));
+  assert.ok(/t\.indexOf\('상품명:'\)/.test(b) && /\/\[가-힣A-Za-z\]\/\.test\(t\[i - 1\]\)/.test(b), "'매입처상품코드:' 오인 방지");
+  assert.ok(/name: rowName\(c\.closest\('tr'\)\)/.test(UI));
+});

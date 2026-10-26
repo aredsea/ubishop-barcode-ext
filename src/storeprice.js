@@ -31,19 +31,42 @@
     b.addEventListener('click', openPanel);
     a.insertAdjacentElement('afterend', b);
   }
-  function checkedBarcodes() {
+  //  체크한 행 → [{ barcode, name }]. 상품명은 그 행의 말풍선(div.tooltip2#note_N) "상품명 :" 값.
+  //  collector.js(MAIN world)의 noteField·findRowNote 와 같은 규칙 — 다른 world 라 불러 쓸 수 없어 옮겨 둔다.
+  function checkedItems() {
     const f = document.forms['form2'];
     const boxes = f ? [...document.querySelectorAll('input[name="idx"]')].filter((c) => c.form === f) : [];
     const seen = new Set();
-    return boxes.filter((c) => c.checked).map((c) => String(c.value || '').trim().toUpperCase()).filter((v) => v && !seen.has(v) && seen.add(v));
+    return boxes.filter((c) => c.checked).map((c) => ({ barcode: String(c.value || '').trim().toUpperCase(), name: rowName(c.closest('tr')) }))
+      .filter((it) => it.barcode && !seen.has(it.barcode) && seen.add(it.barcode));
+  }
+  function rowNote(tr) {
+    if (!tr) return null;
+    const cell = tr.querySelector('[onmouseover*="note_"]');
+    const m = cell ? (cell.getAttribute('onmouseover') || '').match(/note_\d+/) : null;
+    return (m && document.getElementById(m[0])) || tr.querySelector('div.tooltip2[id^=note]') || null;
+  }
+  function rowName(tr) {
+    const note = rowNote(tr);
+    if (!note) return '';
+    //  '상품명 :' 은 '매입처상품코드 :' 끝과도 겹치므로 라벨 앞 글자가 한글·영문이 아닐 때만 받는다.
+    for (const sp of note.querySelectorAll('span')) {
+      const t = (sp.textContent || '').replace(/\s+/g, '');
+      const i = t.indexOf('상품명:');
+      if (i < 0 || (i > 0 && /[가-힣A-Za-z]/.test(t[i - 1]))) continue;
+      let n = sp.nextSibling, out = '';
+      while (n && n.nodeName !== 'BR') { out += n.nodeType === 3 ? n.nodeValue : (n.textContent || ''); n = n.nextSibling; }
+      if (out.trim()) return out.trim();
+    }
+    return '';
   }
 
   /* ------------------------------------------------------------ 패널 */
   function openPanel() {
     if (S.running) return;
-    const bcs = checkedBarcodes();
-    if (!bcs.length) { alert('가격을 바꿀 제품을 체크하세요.'); return; }
-    Object.assign(S, { barcodes: bcs, items: bcs.map((b) => ({ barcode: b, cls: null, err: '' })), results: [], phase: 'idle', price: null });
+    const picked = checkedItems();
+    if (!picked.length) { alert('가격을 바꿀 제품을 체크하세요.'); return; }
+    Object.assign(S, { barcodes: picked.map((x) => x.barcode), items: picked.map((x) => ({ barcode: x.barcode, name: x.name, cls: null, err: '' })), results: [], phase: 'idle', price: null });
     render();
   }
   function closePanel() {
@@ -107,7 +130,7 @@
     else judge = '<span class="sp-skip">건너뜀</span><div class="sp-sub">' + esc(c.reason) + '</div>';
     const row = c && (c.target || c.row);
     const shop = c && c.target ? c.target.shop.name : (c && c.row ? c.row.shopText.slice(0, 12) : '');
-    return '<tr><td class="sp-bc">' + esc(it.barcode) + '</td><td>' + esc(shop) + '</td><td>' + esc(row ? (row.kind || '') : '') + '</td>'
+    return '<tr><td class="sp-bc">' + esc(it.barcode) + '</td><td class="sp-name">' + esc(it.name || '') + '</td><td>' + esc(shop) + '</td><td>' + esc(row ? (row.kind || '') : '') + '</td>'
       + '<td class="sp-num">' + esc(row ? (row.salePrice || '') : '') + '</td><td>' + judge + '</td></tr>';
   }
   function render() {
@@ -142,7 +165,7 @@
         + ' aria-label="' + Math.abs(s) + '% ' + (s > 0 ? '올리기' : '내리기') + '">' + (s > 0 ? '+' : '−') + Math.abs(s) + '%</button>').join('')
       + '</span>'
       + '<span class="sp-sub">소비자가·판매가에 같은 금액 · %는 만원 단위 올림</span></div>'
-      + '<div class="sp-body"><table><thead><tr><th>바코드</th><th>매장</th><th>구분</th><th class="sp-num">현재 판매가</th><th>판정</th></tr></thead><tbody>'
+      + '<div class="sp-body"><table><thead><tr><th>바코드</th><th>상품명</th><th>매장</th><th>구분</th><th class="sp-num">현재 판매가</th><th>판정</th></tr></thead><tbody>'
       + S.items.map(rowHtml).join('') + '</tbody></table></div>'
       + '<div class="sp-f"><span class="sp-note">' + esc(note) + '</span>' + actions + '</div>';
     if (!locked) { const i = p.querySelector('.sp-price'); if (i && document.activeElement !== i) i.focus(); }
@@ -185,7 +208,7 @@
 #${BTN_ID}:hover{background:#2bb5e0}
 #${BTN_ID}:focus-visible{outline:2px solid #1b1b1b;outline-offset:2px}
 #${PANEL_ID}{--ub-bg:#ffffff;--ub-bg2:#f7f9fc;--ub-fg:#1b1b1b;--ub-sub:#6b7280;--ub-line:#e5e7eb;--ub-on:#35C5F0;--ub-on-hover:#2bb5e0;--sp-ok:#12995a;--sp-warn:#c77a12;--sp-err:#e0483f;
-  position:fixed;top:24px;right:24px;bottom:24px;width:620px;max-width:calc(100vw - 48px);z-index:2147483647;display:flex;flex-direction:column;overflow:hidden;background:var(--ub-bg);color:var(--ub-fg);border:1px solid var(--ub-line);border-radius:12px;box-shadow:0 8px 24px rgba(15,20,25,.12),0 24px 64px rgba(15,20,25,.18);font:13px/1.45 'Pretendard','Malgun Gothic',sans-serif;-webkit-font-smoothing:antialiased}
+  position:fixed;top:24px;right:24px;bottom:24px;width:760px;max-width:calc(100vw - 48px);z-index:2147483647;display:flex;flex-direction:column;overflow:hidden;background:var(--ub-bg);color:var(--ub-fg);border:1px solid var(--ub-line);border-radius:12px;box-shadow:0 8px 24px rgba(15,20,25,.12),0 24px 64px rgba(15,20,25,.18);font:13px/1.45 'Pretendard','Malgun Gothic',sans-serif;-webkit-font-smoothing:antialiased}
 #${PANEL_ID} .sp-h{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--ub-bg2);border-bottom:1px solid var(--ub-line)}
 #${PANEL_ID} .sp-h b{font-size:15px}
 #${PANEL_ID} .sp-x{margin-left:auto;width:32px;height:32px;border:0;background:none;border-radius:8px;color:var(--ub-sub);font-size:20px;cursor:pointer}
@@ -204,6 +227,7 @@
 #${PANEL_ID} td{padding:8px 6px;border-bottom:1px solid var(--ub-line);vertical-align:top}
 #${PANEL_ID} .sp-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 #${PANEL_ID} .sp-bc{font-family:Consolas,monospace;font-weight:600}
+#${PANEL_ID} .sp-name{max-width:220px;overflow-wrap:anywhere}
 #${PANEL_ID} .sp-sub{color:var(--ub-sub);font-size:12px}
 #${PANEL_ID} .sp-ok{color:var(--sp-ok);font-weight:600}
 #${PANEL_ID} .sp-skip{color:var(--ub-sub);font-weight:600}
