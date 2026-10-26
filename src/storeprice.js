@@ -13,8 +13,9 @@
 
   const BTN_ID = 'ub-sp-btn', PANEL_ID = 'ub-sp-panel', STYLE_ID = 'ub-sp-style';
   const STEPS = [-10, -5, 5, 10];   // 금액 올리고 내리기 버튼(%)
-  const S = { enabled: false, barcodes: [], price: null, items: [], running: false, results: [], phase: 'idle' };
-  //  items: [{ barcode, cls:{go,target,reason,row} | null, err }]  phase: idle | looking | ready | trial_done | done | stopped
+  const S = { enabled: false, barcodes: [], price: null, items: [], running: false, results: [], phase: 'idle', sortDir: 'asc' };
+  //  items: [{ barcode, name, sel, cls:{go,target,reason,row} | null, err }]  phase: idle | looking | ready | trial_done | done | stopped
+  //  sel = 패널에서 체크한 줄(처리 예정 줄만 켤 수 있다). 처리 대상 = cls.go && sel && 아직 안 한 것.
 
   const sget = (q) => new Promise((res) => chrome.storage.local.get(q, res));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -66,14 +67,28 @@
     if (S.running) return;
     const picked = checkedItems();
     if (!picked.length) { alert('가격을 바꿀 제품을 체크하세요.'); return; }
-    Object.assign(S, { barcodes: picked.map((x) => x.barcode), items: picked.map((x) => ({ barcode: x.barcode, name: x.name, cls: null, err: '' })), results: [], phase: 'idle', price: null });
+    Object.assign(S, { barcodes: picked.map((x) => x.barcode), items: picked.map((x) => ({ barcode: x.barcode, name: x.name, sel: false, cls: null, err: '' })), results: [], phase: 'idle', price: null, sortDir: 'asc' });
     render();
   }
+  //  상품명 순(가나다, 숫자는 크기 순). 이름 없는 줄은 방향과 무관하게 맨 뒤. 같은 이름끼리는 체크한 순서 유지.
+  const nameCmp = new Intl.Collator('ko', { numeric: true }).compare;
+  function sortedItems() {
+    const dir = S.sortDir === 'desc' ? -1 : 1;
+    return S.items.map((it, i) => [it, i]).sort((a, b) => {
+      const x = a[0].name || '', y = b[0].name || '';
+      if (!x !== !y) return x ? -1 : 1;
+      return (x && y ? dir * nameCmp(x, y) : 0) || a[1] - b[1];
+    }).map((p) => p[0]);
+  }
+  //  체크할 수 있는 줄 = 처리 예정이고 아직 처리하지 않은 줄(실행 중엔 아무것도 못 바꾼다).
+  const selectable = (it) => !S.running && !!(it.cls && it.cls.go) && !doneSet().has(it.barcode);
   function closePanel() {
     if (S.running) { alert('처리 중에는 닫을 수 없습니다. 현재 제품 처리가 끝나면 멈춥니다.'); return; }
     const p = document.getElementById(PANEL_ID); if (p) p.remove();
   }
-  const targets = () => S.items.filter((it) => it.cls && it.cls.go).map((it) => it.cls.target);
+  //  처리 대상 = 처리 예정 + 패널에서 체크한 줄, 화면에 보이는 순서대로(시범 1건 = 체크된 첫 줄).
+  const eligible = () => S.items.filter((it) => it.cls && it.cls.go);
+  const targets = () => sortedItems().filter((it) => it.cls && it.cls.go && it.sel).map((it) => it.cls.target);
   const doneSet = () => new Set(S.results.map((r) => r.barcode));
 
   async function doLookup() {
@@ -85,6 +100,7 @@
       if (!S.enabled) return;
       try { it.cls = await E.lookup(it.barcode); it.err = ''; }
       catch (e) { it.cls = null; it.err = String(e && e.message || e); }
+      it.sel = !!(it.cls && it.cls.go);   // 처리 예정 줄은 기본으로 체크
       render();
     }
     S.phase = 'ready'; render();
@@ -94,7 +110,7 @@
     const pending = targets().filter((t) => !doneSet().has(t.barcode));
     if (!pending.length) return;
     const n = limit == null ? pending.length : Math.min(limit, pending.length);
-    const msg = (limit === 1 ? '시범으로 1건만 처리합니다.\n\n' : '나머지 ' + n + '건을 처리합니다.\n\n')
+    const msg = (limit === 1 ? '시범으로 1건만 처리합니다(' + pending[0].barcode + ').\n\n' : '체크한 나머지 ' + n + '건을 처리합니다.\n\n')
       + '금액: ' + C.spComma(S.price) + '원 (소비자가·판매가)\n'
       + '제품마다 출고 삭제 → 가격 저장 → 원래 매장 재출고(인쇄 없음) 순서로 진행합니다.\n'
       + '재출고 출고장은 새 번호·오늘 날짜로 잡힙니다.\n\n계속할까요?';
@@ -130,7 +146,10 @@
     else judge = '<span class="sp-skip">건너뜀</span><div class="sp-sub">' + esc(c.reason) + '</div>';
     const row = c && (c.target || c.row);
     const shop = c && c.target ? c.target.shop.name : (c && c.row ? c.row.shopText.slice(0, 12) : '');
-    return '<tr><td class="sp-bc">' + esc(it.barcode) + '</td><td class="sp-name">' + esc(it.name || '') + '</td><td>' + esc(shop) + '</td><td>' + esc(row ? (row.kind || '') : '') + '</td>'
+    const can = selectable(it);
+    const box = '<input type="checkbox" data-act="sel" data-bc="' + esc(it.barcode) + '"' + (it.sel ? ' checked' : '') + (can ? '' : ' disabled')
+      + ' aria-label="' + esc(it.barcode) + ' 선택">';
+    return '<tr' + (c && c.go && !it.sel ? ' class="sp-off"' : '') + '><td class="sp-chk">' + box + '</td><td class="sp-bc">' + esc(it.barcode) + '</td><td class="sp-name">' + esc(it.name || '') + '</td><td>' + esc(shop) + '</td><td>' + esc(row ? (row.kind || '') : '') + '</td>'
       + '<td class="sp-num">' + esc(row ? (row.salePrice || '') : '') + '</td><td>' + judge + '</td></tr>';
   }
   function render() {
@@ -143,18 +162,23 @@
       p.addEventListener('click', onClick);
       p.addEventListener('input', onInput);
     }
-    const nGo = targets().length, nDone = doneSet().size;
+    const nGo = targets().length, nDone = doneSet().size, nElig = eligible().length;
     const left = targets().filter((t) => !doneSet().has(t.barcode)).length;
     const locked = S.phase !== 'idle';
     let actions = '';
     if (S.phase === 'idle') actions = '<button class="sp-primary" data-act="lookup">조회</button>';
     else if (S.phase === 'ready' && nGo && !nDone) actions = '<button class="sp-primary" data-act="trial"' + (S.running ? ' disabled' : '') + '>시작 — 첫 1건 시범</button>';
-    else if (S.phase === 'trial_done' && left) actions = '<button class="sp-primary" data-act="rest"' + (S.running ? ' disabled' : '') + '>나머지 ' + left + '건 진행</button>';
+    //  시범 뒤(또는 다 끝난 뒤 체크를 더 켠 경우)에도 체크된 남은 줄이 있으면 이어서 진행할 수 있다.
+    else if ((S.phase === 'trial_done' || S.phase === 'done') && left) actions = '<button class="sp-primary" data-act="rest"' + (S.running ? ' disabled' : '') + '>체크한 ' + left + '건 진행</button>';
     const note = S.running ? '처리 중… 창을 닫거나 페이지를 옮기지 마세요.'
-      : S.phase === 'ready' ? (nGo ? '처리 예정 ' + nGo + '건 · 건너뜀 ' + (S.items.length - nGo) + '건' : '처리할 제품이 없습니다.')
-      : S.phase === 'trial_done' ? '시범 1건이 끝났습니다. 결과를 확인하고 나머지를 진행하세요.'
-      : S.phase === 'done' ? '모두 끝났습니다.'
+      : S.phase === 'ready' ? (nElig ? '선택 ' + nGo + '건 / 처리 가능 ' + nElig + '건 · 건너뜀 ' + (S.items.length - nElig) + '건' : '처리할 제품이 없습니다.')
+      : (S.phase === 'trial_done' || S.phase === 'done') && left ? '체크한 ' + left + '건이 남았습니다. 결과를 확인하고 진행하세요.'
+      : S.phase === 'trial_done' || S.phase === 'done' ? '체크한 제품을 모두 처리했습니다.'
       : S.phase === 'stopped' ? '실패가 있어 멈췄습니다. 아래 결과를 확인하세요.' : '';
+    const selAble = S.items.filter(selectable);
+    const allOn = selAble.length > 0 && selAble.every((it) => it.sel);
+    const head = '<input type="checkbox" data-act="selall"' + (allOn ? ' checked' : '') + (selAble.length ? '' : ' disabled') + ' aria-label="처리 가능한 줄 모두 선택">';
+    const sortMark = S.sortDir === 'desc' ? '▼' : '▲';
     p.innerHTML =
       '<div class="sp-h"><b>매장 제품 가격 변경</b><span class="sp-sub">체크 ' + S.items.length + '건 · 일반·회전 출고 제품만</span>'
       + '<button class="sp-x" data-act="close" aria-label="닫기">×</button></div>'
@@ -165,8 +189,10 @@
         + ' aria-label="' + Math.abs(s) + '% ' + (s > 0 ? '올리기' : '내리기') + '">' + (s > 0 ? '+' : '−') + Math.abs(s) + '%</button>').join('')
       + '</span>'
       + '<span class="sp-sub">소비자가·판매가에 같은 금액 · %는 만원 단위 올림</span></div>'
-      + '<div class="sp-body"><table><thead><tr><th>바코드</th><th>상품명</th><th>매장</th><th>구분</th><th class="sp-num">현재 판매가</th><th>판정</th></tr></thead><tbody>'
-      + S.items.map(rowHtml).join('') + '</tbody></table></div>'
+      + '<div class="sp-body"><table><thead><tr><th class="sp-chk">' + head + '</th><th>바코드</th>'
+      + '<th aria-sort="' + (S.sortDir === 'desc' ? 'descending' : 'ascending') + '"><button type="button" class="sp-sort" data-act="sort">상품명 ' + sortMark + '</button></th>'
+      + '<th>매장</th><th>구분</th><th class="sp-num">현재 판매가</th><th>판정</th></tr></thead><tbody>'
+      + sortedItems().map(rowHtml).join('') + '</tbody></table></div>'
       + '<div class="sp-f"><span class="sp-note">' + esc(note) + '</span>' + actions + '</div>';
     if (!locked) { const i = p.querySelector('.sp-price'); if (i && document.activeElement !== i) i.focus(); }
   }
@@ -194,7 +220,18 @@
   function onClick(e) {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const act = b.dataset.act;
-    if (act === 'step') stepPrice(Number(b.dataset.pct));
+    if (act === 'sel') {
+      const it = S.items.find((x) => x.barcode === b.dataset.bc);
+      if (it && selectable(it)) it.sel = !!b.checked;
+      render();
+    } else if (act === 'selall') {
+      S.items.filter(selectable).forEach((it) => { it.sel = !!b.checked; });
+      render();
+    } else if (act === 'sort') {
+      if (S.running) return;
+      S.sortDir = S.sortDir === 'desc' ? 'asc' : 'desc';
+      render();
+    } else if (act === 'step') stepPrice(Number(b.dataset.pct));
     else if (act === 'close') closePanel();
     else if (act === 'lookup') doLookup();
     else if (act === 'trial') run(1);
@@ -228,6 +265,12 @@
 #${PANEL_ID} .sp-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 #${PANEL_ID} .sp-bc{font-family:Consolas,monospace;font-weight:600}
 #${PANEL_ID} .sp-name{max-width:220px;overflow-wrap:anywhere}
+#${PANEL_ID} .sp-chk{width:28px;text-align:center}
+#${PANEL_ID} .sp-chk input{width:16px;height:16px;margin:0;cursor:pointer;accent-color:var(--ub-on)}
+#${PANEL_ID} .sp-chk input:disabled{cursor:default}
+#${PANEL_ID} tr.sp-off td:not(.sp-chk){opacity:.45}
+#${PANEL_ID} .sp-sort{padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}
+#${PANEL_ID} .sp-sort:hover{color:var(--ub-fg)}
 #${PANEL_ID} .sp-sub{color:var(--ub-sub);font-size:12px}
 #${PANEL_ID} .sp-ok{color:var(--sp-ok);font-weight:600}
 #${PANEL_ID} .sp-skip{color:var(--ub-sub);font-weight:600}

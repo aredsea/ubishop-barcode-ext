@@ -93,10 +93,19 @@ test('금액 ±5%·10% 버튼: data-act=step → stepPrice → C.spStepPrice, �
 });
 
 test('상품명 열: 체크한 행의 말풍선 "상품명 :" 을 읽고(매입처상품코드 끝과 구분), 표 두 번째 열에 넣는다', () => {
-  assert.ok(UI.includes('<thead><tr><th>바코드</th><th>상품명</th><th>매장</th>'));
+  assert.ok(UI.includes("<th>바코드</th>'") && UI.includes('data-act="sort">상품명 '), '바코드 다음 열이 상품명(정렬 버튼)');
   assert.ok(UI.includes(`'</td><td class="sp-name">' + esc(it.name || '') + '</td>`), '이름은 esc 거쳐 출력');
   const at = UI.indexOf('function rowName(tr) {');
   const b = UI.slice(at, UI.indexOf('\n  }\n', at));
   assert.ok(/t\.indexOf\('상품명:'\)/.test(b) && /\/\[가-힣A-Za-z\]\/\.test\(t\[i - 1\]\)/.test(b), "'매입처상품코드:' 오인 방지");
   assert.ok(/name: rowName\(c\.closest\('tr'\)\)/.test(UI));
+});
+
+test('패널 체크: 처리 대상은 처리 예정 + 체크한 줄, 화면 순서(상품명 정렬)대로', () => {
+  assert.ok(UI.includes('const targets = () => sortedItems().filter((it) => it.cls && it.cls.go && it.sel).map((it) => it.cls.target);'));
+  assert.ok(UI.includes('it.sel = !!(it.cls && it.cls.go);'), '조회 뒤 처리 예정 줄은 기본 체크');
+  assert.ok(UI.includes("const selectable = (it) => !S.running && !!(it.cls && it.cls.go) && !doneSet().has(it.barcode);"));
+  assert.ok(/if \(it && selectable\(it\)\) it\.sel = !!b\.checked;/.test(UI), '건너뜀·처리한 줄·실행 중엔 체크를 못 바꾼다');
+  assert.ok(/S\.items\.filter\(selectable\)\.forEach\(\(it\) => \{ it\.sel = !!b\.checked; \}\);/.test(UI), '전체 체크도 가능한 줄만');
+  assert.ok(UI.includes('sortedItems().map(rowHtml)'), '표도 같은 순서');
 });
