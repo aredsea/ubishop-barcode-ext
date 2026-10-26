@@ -24,6 +24,13 @@
     return Number.isSafeInteger(n) && n >= 1 && n <= 999999999 ? n : null;
   }
   const spComma = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  //  입력 금액에서 pct% 올리거나 내린 값, 만원 단위 올림(사장님 확정 2026-10-26 — 적용시세 일괄변경과 같은 규칙).
+  //  정수 연산으로만 계산한다(부동소수 0.1 오차로 만원 경계에서 한 칸 튀지 않게). 범위 밖이면 null.
+  function spStepPrice(n, pct) {
+    if (!Number.isSafeInteger(n) || n < 1 || !Number.isInteger(pct)) return null;
+    const v = Math.ceil(n * (100 + pct) / 1000000) * 10000;
+    return v >= 1 && v <= 999999999 ? v : null;
+  }
 
   //  매장출고전표 목록 → 데이터 행. 열은 헤더 이름으로 찾고, 못 찾으면 실측 배치(2·4·7·8·12·14)로 폴백.
   //  ⚠ 바코드는 검색폼에 echo 되므로 행 판별은 idx value 의 2번째 칸으로만 한다.
@@ -214,7 +221,7 @@
 
   const api = {
     ORDER_TYPES, ITEM_TYPES, TARGET_ORDER_TYPES, IN_STORE_STATUSES,
-    spParsePrice, spComma, spDelivRows, spShopCode, spClassify, spForm1Segment, spRedelivPairs, spForm10Segment, spCompletePairs, spRunOne, spRunAll
+    spParsePrice, spComma, spStepPrice, spDelivRows, spShopCode, spClassify, spForm1Segment, spRedelivPairs, spForm10Segment, spCompletePairs, spRunOne, spRunAll
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubSp = api; }

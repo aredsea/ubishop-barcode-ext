@@ -81,3 +81,13 @@ test('erp: 삭제 전 재조회로 같은 행인지 확인하고, 삭제 뒤 사
   assert.ok(/cur\.idx !== target\.idx/.test(b));
   assert.ok(/after\.rows\.some\(\(x\) => x\.idx === target\.idx\)/.test(b));
 });
+
+test('금액 ±5%·10% 버튼: data-act=step → stepPrice → C.spStepPrice, 조회 뒤(잠금)에는 비활성', () => {
+  assert.ok(UI.includes('const STEPS = [-10, -5, 5, 10];'));
+  assert.ok(UI.includes("if (act === 'step') stepPrice(Number(b.dataset.pct));"));
+  const at = UI.indexOf('function stepPrice(pct) {');
+  const b = UI.slice(at, UI.indexOf('\n  }\n', at));
+  assert.ok(/if \(!el \|\| el\.disabled\) return;/.test(b), '잠긴 입력칸은 안 바꾼다');
+  assert.ok(/C\.spStepPrice\(n, pct\)/.test(b) && /el\.value = C\.spComma\(v\);/.test(b));
+  assert.ok(/data-act="step" data-pct="' \+ s \+ '"' \+ \(locked \? ' disabled' : ''\)/.test(UI), '잠금이면 버튼도 disabled');
+});

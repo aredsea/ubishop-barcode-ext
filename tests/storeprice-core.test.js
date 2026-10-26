@@ -250,3 +250,13 @@ test('spRunAll — 실패하면 그 자리에서 멈춘다', async () => {
   assert.equal(res[0].status, 'price_failed');
   assert.ok(!calls.includes('delete:AAAAA2'));
 });
+
+test('spStepPrice — 입력 금액에서 ±5%·10%, 만원 단위 올림', () => {
+  assert.equal(S.spStepPrice(1000000, 5), 1050000);
+  assert.equal(S.spStepPrice(1000000, -10), 900000);
+  assert.equal(S.spStepPrice(3000400, 5), 3160000);     // 3,150,420 → 만원 올림
+  assert.equal(S.spStepPrice(2700000, -5), 2570000);    // 2,565,000 → 만원 올림
+  assert.equal(S.spStepPrice(12345, -10), 20000);       // 11,110.5 → 20,000
+  for (const bad of [null, 0, -1, 1.5, NaN]) assert.equal(S.spStepPrice(bad, 5), null, String(bad));
+  assert.equal(S.spStepPrice(999999999, 10), null);     // 상한(spParsePrice 와 같은 999,999,999) 초과
+});

@@ -12,6 +12,7 @@
   if (!C || !E) { console.warn('[UB][sp] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const BTN_ID = 'ub-sp-btn', PANEL_ID = 'ub-sp-panel', STYLE_ID = 'ub-sp-style';
+  const STEPS = [-10, -5, 5, 10];   // 금액 올리고 내리기 버튼(%)
   const S = { enabled: false, barcodes: [], price: null, items: [], running: false, results: [], phase: 'idle' };
   //  items: [{ barcode, cls:{go,target,reason,row} | null, err }]  phase: idle | looking | ready | trial_done | done | stopped
 
@@ -136,7 +137,11 @@
       + '<button class="sp-x" data-act="close" aria-label="닫기">×</button></div>'
       + '<div class="sp-bar"><label>변경 금액 <input class="sp-price" inputmode="numeric" autocomplete="off" placeholder="예: 1,250,000"'
       + (locked ? ' disabled value="' + esc(C.spComma(S.price || '')) + '"' : '') + '> 원</label>'
-      + '<span class="sp-sub">소비자가·판매가에 같은 금액</span></div>'
+      + '<span class="sp-steps" role="group" aria-label="금액 올리고 내리기">'
+      + STEPS.map((s) => '<button type="button" class="sp-step" data-act="step" data-pct="' + s + '"' + (locked ? ' disabled' : '')
+        + ' aria-label="' + Math.abs(s) + '% ' + (s > 0 ? '올리기' : '내리기') + '">' + (s > 0 ? '+' : '−') + Math.abs(s) + '%</button>').join('')
+      + '</span>'
+      + '<span class="sp-sub">소비자가·판매가에 같은 금액 · %는 만원 단위 올림</span></div>'
       + '<div class="sp-body"><table><thead><tr><th>바코드</th><th>매장</th><th>구분</th><th class="sp-num">현재 판매가</th><th>판정</th></tr></thead><tbody>'
       + S.items.map(rowHtml).join('') + '</tbody></table></div>'
       + '<div class="sp-f"><span class="sp-note">' + esc(note) + '</span>' + actions + '</div>';
@@ -152,10 +157,22 @@
     while (pos < el.value.length && seen < before) { if (/\d/.test(el.value[pos])) seen++; pos++; }
     el.setSelectionRange(pos, pos);
   }
+  //  입력칸 금액에서 ±5%·10% — 결과는 만원 단위 올림(core spStepPrice). 조회 뒤(잠금)에는 안 바뀐다.
+  function stepPrice(pct) {
+    const el = document.querySelector('#' + PANEL_ID + ' .sp-price');
+    if (!el || el.disabled) return;
+    const n = C.spParsePrice(el.value);
+    if (!n) { alert('먼저 금액을 입력하세요.'); el.focus(); return; }
+    const v = C.spStepPrice(n, pct);
+    if (!v) { alert('계산한 금액이 범위를 벗어났습니다.'); return; }
+    el.value = C.spComma(v);
+    el.focus();
+  }
   function onClick(e) {
     const b = e.target.closest('[data-act]'); if (!b) return;
     const act = b.dataset.act;
-    if (act === 'close') closePanel();
+    if (act === 'step') stepPrice(Number(b.dataset.pct));
+    else if (act === 'close') closePanel();
     else if (act === 'lookup') doLookup();
     else if (act === 'trial') run(1);
     else if (act === 'rest') run(null);
@@ -176,6 +193,11 @@
 #${PANEL_ID} .sp-bar{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--ub-line)}
 #${PANEL_ID} .sp-price{width:150px;height:32px;padding:0 10px;margin:0 4px;border:1px solid var(--ub-line);border-radius:6px;font:600 15px/30px 'Pretendard','Malgun Gothic',sans-serif;text-align:right;font-variant-numeric:tabular-nums}
 #${PANEL_ID} .sp-price:focus{outline:2px solid var(--ub-on);outline-offset:0;border-color:var(--ub-on)}
+#${PANEL_ID} .sp-bar{flex-wrap:wrap}
+#${PANEL_ID} .sp-steps{display:inline-flex;gap:4px}
+#${PANEL_ID} .sp-step{min-width:48px;height:32px;padding:0 8px;border:1px solid var(--ub-line);border-radius:6px;background:var(--ub-bg);color:var(--ub-fg);font:600 13px/30px 'Pretendard','Malgun Gothic',sans-serif;font-variant-numeric:tabular-nums;cursor:pointer}
+#${PANEL_ID} .sp-step:hover{background:var(--ub-bg2);border-color:var(--ub-on)}
+#${PANEL_ID} .sp-step:disabled{opacity:.4;cursor:default;background:var(--ub-bg)}
 #${PANEL_ID} .sp-body{flex:1;overflow:auto;padding:0 16px}
 #${PANEL_ID} table{width:100%;border-collapse:collapse}
 #${PANEL_ID} th{position:sticky;top:0;background:var(--ub-bg);text-align:left;font-weight:600;color:var(--ub-sub);font-size:12px;padding:10px 6px;border-bottom:1px solid var(--ub-line)}
