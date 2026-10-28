@@ -1092,7 +1092,8 @@
     if (!mgr) issues.push('no_sale_manager');
     const get = (n) => { const f = fields.find((x) => x[0] === n); return f ? f[1] : ''; };
     const tmp = slInt(get('tmpSalePrice')), cashPoint = slInt(get('cashPoint'));
-    if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || !Number.isFinite(tmp) || amount > tmp) { issues.push('bad_amount'); return { fields, issues }; }
+    //  실판매가가 판매가보다 커도 막지 않는다 — 말일 반품유보 지급이 합산된 입금액이면 DC금액·DC율이 마이너스가 된다(사장님 지시 2026-10-28 "그냥 진행").
+    if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 0 || !Number.isFinite(tmp)) { issues.push('bad_amount'); return { fields, issues }; }
     const dcPrice = tmp - amount - (Number.isFinite(cashPoint) ? cashPoint : 0);
     const dcRate = tmp === 0 ? '0.00' : (Math.round(dcPrice / tmp * 10000) / 100).toFixed(2);
     const set = (n, v) => { const f = fields.find((x) => x[0] === n); if (f) f[1] = v; };

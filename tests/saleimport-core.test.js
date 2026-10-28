@@ -231,9 +231,17 @@ test('slModifyPayload: 사은품 0원 → DC 전액·DC율 100.00', () => {
   assert.equal(m.saleDcPrice, '0'); assert.equal(m.dcPrice, '112,000'); assert.equal(m.dcRate, '100.00');
 });
 
+test('slModifyPayload: 실판매가 > 판매가(말일 반품유보 지급 합산) → 막지 않고 DC금액·DC율 마이너스', () => {
+  const p = C.slModifyPayload(MODIFY, 150000);
+  assert.deepEqual(p.issues, []);
+  const m = Object.fromEntries(p.fields);
+  assert.equal(m.saleDcPrice, '150,000'); assert.equal(m.dcPrice, '-38,000'); assert.equal(m.dcRate, '-33.93');
+  assert.equal(Object.fromEntries(C.slModifyPayload(MODIFY, 112001).fields).dcPrice, '-1');   // 경계: 1원 초과
+});
+
 test('slModifyPayload: issues — 판매직원 없음 · 금액 이상 · 필드 누락', () => {
   assert.ok(C.slModifyPayload(MODIFY.replace('form1.saleManager.value = "홍해진";', ''), 75722).issues.includes('no_sale_manager'));
-  for (const bad of [-1, 112001, 1.5, NaN, '75722']) assert.ok(C.slModifyPayload(MODIFY, bad).issues.includes('bad_amount'), String(bad));
+  for (const bad of [-1, 1.5, NaN, '75722']) assert.ok(C.slModifyPayload(MODIFY, bad).issues.includes('bad_amount'), String(bad));
   assert.ok(C.slModifyPayload(MODIFY.replace(/<input[^>]*name="tmpSalePrice"[^>]*>/, ''), 75722).issues.includes('missing:tmpSalePrice'));
 });
 
