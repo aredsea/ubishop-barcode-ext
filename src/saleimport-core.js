@@ -423,6 +423,12 @@
   //  group = { key, rows, source, ledger: Map(주문번호→원장 행), retOrders: Set, retFull: Set, block, pickable }
   const SPLIT_BUYER = '같은 구매자의 결제 일부만 원장에서 확인됨 — 직접 처리';
   const LEDGER_NO_RE = /^[A-Za-z0-9-]{4,40}$/;
+  //  §10.11 파일에 상품명이 없는 마켓 — 원장 본품 품목(상품+옵션) 수로 '상품 외N건' 이름을 만든 새 행. perOrder 상품 수 대조와 화면이 이 이름을 쓴다.
+  function slLedgerNamed(r, lr) {
+    const items = lr.filter((x) => !isGiftRow(x));
+    const kinds = new Set(items.map((x) => JSON.stringify([trimS(x.product), trimS(x.opt)])));
+    return Object.assign({}, r, { name: trimS((items[0] || {}).product) + (kinds.size > 1 ? ' 외' + (kinds.size - 1) + '건' : '') });
+  }
   function slGroupLedger(rows, adapter, idx, opts) {
     const failed = !!(opts && opts.lookupFailed), keyed = failed || !!idx;
     const full = slFullReturnSet(rows);
@@ -445,19 +451,22 @@
     rows.filter((r) => !r.isReturn).forEach((r) => {
       const hard = (key, block) => add(key + (r.ledgerNo || r.orderNo), { source: '', buyer: trimS(r.buyer), retOrders, retFull, block }, r);
       if (failed) { hard('원장 조회 실패 ', '원장 조회 실패 — 다시 시도하세요'); return; }
-      if (r.ledgerBlock) { hard('원장 시각 모호 ', r.ledgerBlock); return; }
+      if (r.ledgerBlock) { hard(r.blockLabel || '원장 시각 모호 ', r.ledgerBlock); return; }
       if (keyed && !LEDGER_NO_RE.test(trimS(r.ledgerNo))) { hard('원장 번호 오류 ', '원장 번호 형식 오류'); return; }
       const lr = idx && r.ledgerNo ? idx.get(r.ledgerNo) : null;
       if (lr && lr.length) {
+        if (adapter.ledgerProductName && lr.every(isGiftRow)) { hard('원장 주문 ', '원장에 본품 줄이 없음 — 직접 처리'); return; }
+        if (adapter.ledgerProductName && lr.some((x) => !isGiftRow(x) && !trimS(x.product))) { hard('원장 주문 ', '원장 본품 상품명이 없음 — 직접 처리'); return; }
         const cl = slLedgerClient(lr, adapter);
-        const lg = cl.name ? add(cl.name, { source: '원장', buyer: cl.recipient, retOrders, retFull }, r) : null;
+        const lg = cl.name ? add(cl.name, { source: '원장', buyer: cl.recipient, retOrders, retFull }, adapter.ledgerProductName ? slLedgerNamed(r, lr) : r) : null;
         if (lg) lg.ledger.set(r.ledgerNo, lr);
         if (trimS(r.buyer)) { const b = buyerKey(r.buyer); if (!ledgerBuyers.has(b)) ledgerBuyers.set(b, new Set()); if (lg) ledgerBuyers.get(b).add(lg); }
         if (!lg) add('원장 주문 ' + r.ledgerNo, { source: '원장', buyer: '', retOrders, retFull, block: cl.block }, r);
       } else rest.push(r);
     });
     if (adapter.clientRule === 'ledger') {
-      rest.forEach((r) => add('원장 없음 ' + (r.ledgerNo || r.orderNo), { source: '', buyer: trimS(r.buyer), retOrders, retFull, block: '원장에 없는 주문 — 직접 처리하세요' }, r));
+      //  §10.11 카카오페이는 전부 취소된 주문이 원장에서 빠진다(실측 2건) — 사유를 '원장에 없음' 이 아니라 전부 반품으로 보인다.
+      rest.forEach((r) => add('원장 없음 ' + (r.ledgerNo || r.orderNo), { source: '', buyer: trimS(r.buyer), retOrders, retFull, block: adapter.ledgerDropsReturned && full.has(trimS(r.orderNo)) ? trimS(r.orderNo) + ': ' + FULL_RETURN_BLOCK : '원장에 없는 주문 — 직접 처리하세요' }, r));
     } else {
       slGroupByClient(rest, adapter, { full }).forEach((g) => {
         //  같은 구매자의 결제 일부만 원장에서 확인됐으면 서로 다른 고객일 수 있다 — 그 구매자의 묶음을 전부(원장 묶음 포함) 차단.
@@ -878,12 +887,55 @@
     if (!out.length) return { ok: false, error: '데이터 행 없음' };
     return { ok: true, rows: out };
   }
+  //  §10.11 카페24 카카오페이 건별 정산내역 — 입금예정금액 = 유비샵 비고 정산 N(실측 6건). 이름·상품명이 없어 원장에서만 고객·상품을 얻는다. 결제만 판매 행.
+  const KP_COLS = ['결제상태', '결제세부상태', '가맹점주문번호', '결제번호(TID)', '총 결제금액', 'PG 수수료', '무이자 수수료', '환불대행 수수료', '수수료 VAT', '입금예정금액'];
+  const KP_FEES = ['PG 수수료', '무이자 수수료', '환불대행 수수료', '수수료 VAT'];
+  const KP_PARTIAL = '부분취소가 있는 주문 — 직접 처리';
+  const KP_DUP = '같은 주문번호의 결제가 2건 이상 — 직접 처리';
+  function parseKakaoPay(rows) {
+    const c = colsOf(rows, KP_COLS); if (c.error) return { ok: false, error: c.error };
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || []; if (blankRow(r)) continue;
+      const no = c.cell(r, '가맹점주문번호');
+      if (!no) return { ok: false, error: i + '행: 가맹점주문번호 없음' };
+      const pay = slMoney(c.cell(r, '입금예정금액')), gross = intOrNull(c.cell(r, '총 결제금액'));
+      if (pay == null || !Number.isInteger(pay)) return { ok: false, error: no + ': 입금예정금액을 읽을 수 없음' };
+      if (gross == null) return { ok: false, error: no + ': 총 결제금액을 읽을 수 없음' };
+      let net = gross;
+      for (const f of KP_FEES) {
+        const v = intOrNull(c.cell(r, f));
+        if (v == null) return { ok: false, error: no + ': ' + f + ' 를 읽을 수 없음' };
+        net -= v;
+      }
+      if (net !== pay) return { ok: false, error: no + ': 입금예정금액 검산 불일치' };
+      const st = c.cell(r, '결제상태'), sub = c.cell(r, '결제세부상태');
+      const sale = st === '결제' && pay > 0;
+      out.push({ r: i, orderNo: no, ledgerNo: no, buyer: '', phone: '', qty: null, key: pay, amount: pay, isReturn: !sale, name: '', option: '',
+        kindHint: sale ? '' : st === '취소' ? (sub && sub !== '-' ? sub : st) : st === '결제' ? '결제 금액 0 이하' : st });
+    }
+    if (!out.length) return { ok: false, error: '데이터 행 없음' };
+    //  같은 번호의 취소·제외 행과 합이 0 이 아니면(부분취소·재결제) 그 판매 행을 취소 전 금액으로 팔면 안 된다. 합 0 은 전부 반품 규칙(slFullReturnSet)이 맡는다.
+    //  한 주문번호의 결제는 1건이어야 한다 — 금액이 다른 2건은 matchPerOrder 의 같은 정산 검사(seen)에 걸리지 않아 원 주문보다 많이 팔릴 수 있다.
+    const by = new Map();
+    out.forEach((r) => { const g = by.get(r.orderNo) || { sale: 0, ret: 0, sum: 0 }; by.set(r.orderNo, g); if (r.isReturn) g.ret++; else g.sale++; g.sum += r.amount; });
+    out.forEach((r) => {
+      const g = by.get(r.orderNo);
+      if (r.isReturn) return;
+      if (g.ret && g.sum !== 0) { r.ledgerBlock = KP_PARTIAL; r.blockLabel = '부분취소 '; }
+      else if (g.sale > 1) { r.ledgerBlock = KP_DUP; r.blockLabel = '중복 결제 '; }
+    });
+    return { ok: true, rows: out };
+  }
   const hasAll = (header, names) => { const h = (header || []).map(norm); return names.every((n) => h.indexOf(norm(n)) >= 0); };
   const SL_ADAPTERS = [
     { id: 'gs', label: 'GS샵', suffix: 'G', clientRule: 'exact', matchMode: 'perUnit',
       detect: (h) => hasAll(h, [COLS.W, COLS.AA, COLS.final]), parse: parseGs },
     { id: 'cafe24-inicis-card', label: '카페24 이니시스 신용카드', suffix: '카', clientRule: 'prefix4', matchMode: 'perOrder', ledgerMarket: '카페24',
       detect: (h) => hasAll(h, ['상점MID', 'TID', '구매자', '지급액', '상태']), parse: parseInicis },
+    //  §10.11 — 원장은 고객명·상품 수에만 쓰고 줄 매칭은 이니시스와 같은 결제 단위(perOrder). 파일에 이름이 없어 원장에 없으면 차단(clientRule 'ledger').
+    { id: 'cafe24-kakaopay', label: '카페24 카카오페이', suffix: '카', clientRule: 'ledger', matchMode: 'perOrder', ledgerMarket: '카페24', ledgerProductName: true, ledgerDropsReturned: true,
+      detect: (h) => hasAll(h, ['가맹점주문번호', '결제번호(TID)', '입금예정금액', '결제상태']), parse: parseKakaoPay },
     { id: 'ssg-settle', label: 'SSG', suffix: 's', clientRule: 'prefix4', matchMode: 'perUnit', ledgerMarket: 'SSG',
       detect: (h) => hasAll(h, ['원주문ID', '주문순번', '정산금액(VAT포함)', '순판매액']), parse: parseSsg },
     { id: 'smartstore-daily', label: '스마트스토어', suffix: '스', clientRule: 'prefix4', matchMode: 'perUnit',

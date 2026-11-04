@@ -74,7 +74,7 @@
   }
   function parseEntries(parsed) {
     const p = C.slParseFile(parsed.rows);
-    if (!p.ok) throw new Error(p.error === '알 수 없는 파일 양식' ? '알 수 없는 파일 양식 — 지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리' : p.error);
+    if (!p.ok) throw new Error(p.error === '알 수 없는 파일 양식' ? '알 수 없는 파일 양식 — 지원: GS샵 · 카페24 이니시스(신용카드) · 카페24 카카오페이 · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리' : p.error);
     S.adapter = p.adapter;
     S.parsed = p.rows;
     S.returns = C.slClassifyRows(p.rows).manual;
@@ -691,7 +691,7 @@
     p.querySelector('.sl-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.sl-top').innerHTML =
       '<div class="sl-bar"><label class="sl-btn">' + ico('file') + '정산 파일 선택<input type="file" id="ub-sl-file" accept=".xls,.xlsx,.csv" hidden' + lock + '></label>'
-      + (S.adapter ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter.label) + '</b></span>' + (nEnt ? '<span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 판매 추정 <b>' + c.nInf + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 수동 <b>' + c.nRet + '</b></span>' : '') : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
+      + (S.adapter ? '<span class="sl-file">' + esc(S.fileName) + '</span><span class="sl-count">마켓 <b>' + esc(S.adapter.label) + '</b></span>' + (nEnt ? '<span class="sl-count">체크 가능 <b>' + c.nOk + '</b> <i>·</i> 이미 판매 <b>' + c.nSold + '</b> <i>·</i> 판매 추정 <b>' + c.nInf + '</b> <i>·</i> 차단 <b>' + c.nBlock + '</b> <i>·</i> 수동 <b>' + c.nRet + '</b></span>' : '') : '<span class="sl-muted">지원: GS샵 · 카페24 이니시스(신용카드) · 카페24 카카오페이 · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리 — xlsx 를 선택하세요</span>')
       + '<span class="sl-spacer"></span>'
       + '<button class="sl-btn pri" data-act="run"' + (c.nChk && !S.running && !S.starting && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '판매 중…' : '판매 시작') + '</button>'
       + '<button class="sl-btn quiet" data-act="export-log">로그 JSON</button></div>'

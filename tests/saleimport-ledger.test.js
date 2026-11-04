@@ -314,7 +314,7 @@ test('패널 배선: 조회는 파싱 뒤 · 묶음 전, 열쇠 없으면 한 �
   assert.ok(b.indexOf('parseEntries(parsed)') < b.indexOf('fetchLedgerIndex()') && b.indexOf('fetchLedgerIndex()') < b.indexOf('buildEntries(li.idx)'));
   assert.ok(ui.includes("'아틀리에 조회 열쇠가 없어요 — 팝업에서 넣어 주세요'"));
   assert.ok(ui.includes("chip('gray', '근거 ' + e.source)"));
-  assert.ok(ui.includes('GS샵 · 카페24 이니시스(신용카드) · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리'));
+  assert.ok(ui.includes('GS샵 · 카페24 이니시스(신용카드) · 카페24 카카오페이 · SSG · 스마트스토어 · 쿠팡 · 퀸잇 · 아몬즈 · 에이블리'));
 });
 
 test('slMatchLedger: 같은 금액 줄이 여러 주문일(두 주문)이거나 한 주문의 줄이 다른 날짜면 각각 차단', () => {
