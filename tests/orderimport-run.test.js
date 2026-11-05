@@ -8,6 +8,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const C = require(path.join(__dirname, '..', 'src', 'orderimport-core.js'));
+//  옛 양식 픽스처(주문수량 열 없음)에 수량 1 열을 붙여 읽는다 — 수량 규칙 자체는 tests/orderimport-qty.test.js 가 맡는다.
+const withQty = (rows) => { if (!Array.isArray(rows) || !rows.length || !Array.isArray(rows[0])) return rows; const h = rows[0].map((c) => String(c).replace(/\s+/g, '')); if (h.includes('수량') || h.includes('주문수량')) return rows; return rows.map((r, i) => (Array.isArray(r) ? (i === 0 ? r.concat(['수량']) : (String(r[0] == null ? '' : r[0]).trim() === '합계' ? r : r.concat([1]))) : r)); };
+const parseRows = (rows, meta) => C.oiParseRows(withQty(rows), meta);
 
 const MASTER = { seq: '7083', code: 'F-RF-I-WG-PA-00F6', name: 'F-퓨어컷팅(실버)R' };
 function order(lines) {
@@ -116,7 +119,7 @@ test('휴대폰 형식 불가: 휴대폰 빈칸·원문 번호는 비고로 등�
 test('숫자 셀 번호: 파일에서 온 그대로(ok=false) 실행하면 휴대폰 빈칸·원문 숫자는 비고', async () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
     ['아몬즈', '2178934182592088', 'F-퓨어컷팅(실버)R', '[925-17호]', 17000, 12033, '차카타', 1060000256]];
-  const parsed = C.oiGroupOrders(C.oiParseRows(rows, { numericPhoneRows: [1] }).lines)[0];
+  const parsed = C.oiGroupOrders(parseRows(rows, { numericPhoneRows: [1] }).lines)[0];
   const erp = makeErp();
   const o = order([{ master: MASTER, spec: { k: '925', color: null, itemSize: '17', qty: 1, price: 17000, remark: '' } }]);
   o.phone = parsed.phone; o.clientName = parsed.clientName;
@@ -568,4 +571,16 @@ test('완료 응답은 성공인데 세션에 남으면 fatal(세션 오염 신�
   erp.postComplete = async (fields) => { erp.calls.push(['postComplete']); return { ok: true, msg: '' }; };   // 서버가 비우지 않음
   const r = await C.oiRunOrder(order(), erp, hooks);
   assert.equal(r.status, 'fatal'); assert.equal(r.reason, 'session_not_clear');
+});
+
+test('주문수량 2: 같은 상품 2줄이 orderQty 1 로 각각 등록되고 대조를 통과한다', async () => {
+  const same = { k: '925', color: null, itemSize: '9', qty: 1, price: 17000, remark: '정산 13,850 원' };
+  const erp = makeErp();
+  const r = await C.oiRunOrder(order([{ master: MASTER, spec: Object.assign({}, same) }, { master: MASTER, spec: Object.assign({}, same) }]), erp, hooks);
+  assert.equal(r.status, 'done');
+  assert.equal(r.orderSeqs.length, 2);
+  assert.equal(new Set(r.orderSeqs).size, 2);
+  const posts = erp.calls.filter((c) => c[0] === 'postLine');
+  assert.equal(posts.length, 2);
+  posts.forEach((c) => { assert.equal(c[1].orderQty, '1'); assert.equal(c[1].orderPrice, '17,000'); });
 });

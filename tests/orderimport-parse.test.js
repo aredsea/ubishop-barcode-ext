@@ -10,6 +10,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const C = require(path.join(__dirname, '..', 'src', 'orderimport-core.js'));
+//  옛 양식 픽스처(주문수량 열 없음)에 수량 1 열을 붙여 읽는다 — 수량 규칙 자체는 tests/orderimport-qty.test.js 가 맡는다.
+const withQty = (rows) => { if (!Array.isArray(rows) || !rows.length || !Array.isArray(rows[0])) return rows; const h = rows[0].map((c) => String(c).replace(/\s+/g, '')); if (h.includes('수량') || h.includes('주문수량')) return rows; return rows.map((r, i) => (Array.isArray(r) ? (i === 0 ? r.concat(['수량']) : (String(r[0] == null ? '' : r[0]).trim() === '합계' ? r : r.concat([1]))) : r)); };
+const parseRows = (rows, meta) => C.oiParseRows(withQty(rows), meta);
 const FX = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', 'orderimport', name), 'utf8');
 const ROWS_A = JSON.parse(FX('rows-a.json'));   // 원본 양식(판매가 열 없음) 35행
 const ROWS_B = JSON.parse(FX('rows-b.json'));   // 개선 양식(판매가 열 있음) 9행 + 합계 + 빈 행
@@ -17,11 +20,11 @@ const ROWS_B = JSON.parse(FX('rows-b.json'));   // 개선 양식(판매가 열 �
 /* ---------------------------------------------------------------- §2.1 헤더 */
 test('oiHeaderMap: 열은 이름으로 찾고 순서·추가 열은 무관, 판매가 없으면 missing', () => {
   const b = C.oiHeaderMap(ROWS_B[0]);
-  assert.deepEqual(b.missing, []);
+  assert.deepEqual(b.missing, ['주문수량'], '옛 양식은 수량 열이 없어 거부');
   assert.equal(ROWS_B[0][b.idx.price], '판매가');
   assert.equal(ROWS_B[0][b.idx.phone], '수령자휴대폰');
   const a = C.oiHeaderMap(ROWS_A[0]);
-  assert.deepEqual(a.missing, ['판매가']);
+  assert.deepEqual(a.missing, ['판매가', '주문수량']);
   const shuffled = ['수령자휴대폰', '판매가', '주문번호', '상품명', '옵션명', '판매처', '정산금액', '수령자이름', '수량'];
   const s = C.oiHeaderMap(shuffled);
   assert.deepEqual(s.missing, []);
@@ -30,7 +33,7 @@ test('oiHeaderMap: 열은 이름으로 찾고 순서·추가 열은 무관, 판�
 });
 
 test('oiParseRows: 개선 양식 9줄, 합계·빈 행 제외, 판매가·정산·마켓·휴대폰 정규화', () => {
-  const r = C.oiParseRows(ROWS_B);
+  const r = parseRows(ROWS_B);
   assert.equal(r.error, null);
   assert.equal(r.lines.length, 9);
   const first = r.lines[0];
@@ -39,16 +42,16 @@ test('oiParseRows: 개선 양식 9줄, 합계·빈 행 제외, 판매가·정산
   assert.equal(first.price, 125000); assert.equal(first.settle, 87500); assert.equal(first.qty, 1);
   assert.equal(first.phone.phone, '0504-0000-4166'); assert.equal(first.phone.last4, '4166');
   assert.equal(first.optionText, '[14K-옐로우골드-12호]');
-  const r2 = C.oiParseRows(ROWS_A);
+  const r2 = parseRows(ROWS_A);
   assert.match(r2.error, /필수 열 없음: 판매가/);
-  assert.deepEqual(C.oiParseRows([]).lines, []);
+  assert.deepEqual(parseRows([]).lines, []);
 });
 
 test('oiParseRows: 수령자휴대폰이 비면 수령자전화로 대체하고 사용한 열을 표시한다', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자전화', '수령자휴대폰'],
     ['GS샵', '3473031135', '14K 목걸이', '[14K-로즈골드-38cm]', 1492000, 1044400, '이주', '0504-2185-5122', ''],
     ['스마트스토어', '2', 'Silver925 목걸이', '', 1000, 500, '김혜진', '02-123-4567', '010-8518-3509']];
-  const r = C.oiParseRows(rows);
+  const r = parseRows(rows);
   assert.equal(r.error, null);
   assert.equal(r.lines[0].phone.phone, '0504-2185-5122');
   assert.equal(r.lines[0].phoneSource, '수령자전화');
@@ -58,7 +61,7 @@ test('oiParseRows: 수령자휴대폰이 비면 수령자전화로 대체하고 
 });
 
 test('oiHeaderMap: 휴대폰 열이 없어도 수령자전화 열이 있으면 읽을 수 있다', () => {
-  const h = C.oiHeaderMap(['판매처', '주문번호', '상품명', '옵션명', '판매가', '수령자이름', '수령자전화']);
+  const h = C.oiHeaderMap(['판매처', '주문번호', '상품명', '옵션명', '판매가', '수령자이름', '수령자전화', '주문수량']);
   assert.deepEqual(h.missing, []);
   assert.equal(h.idx.recipientPhone, 6);
 });
@@ -69,7 +72,7 @@ test('oiParseRows/oiGroupOrders: 주문번호가 빈 행은 검토 대상이 되
     ['쿠팡', '', 'A', '', 1000, 100, '홍길동', '010-1234-5678'],
     ['쿠팡', '', 'B', '', 2000, 200, '김철수', '010-2222-3333'],
     ['', 'X1', 'C', '', 3000, 300, '이영희', '010-3333-4444']];
-  const r = C.oiParseRows(rows);
+  const r = parseRows(rows);
   assert.equal(r.lines.length, 3);
   const g = C.oiGroupOrders(r.lines);
   assert.equal(g.length, 3, '주문번호 없는 행끼리 합쳐지면 안 된다');
@@ -84,7 +87,7 @@ test('oiGroupOrders: 같은 주문장 안에서 수령자나 휴대폰이 첫 �
     ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', '010-1234-5678'],
     ['쿠팡', 'O1', 'C', '', 3000, 300, '김철수', '010-1234-5678'],
     ['쿠팡', 'O1', 'D', '', 4000, 400, '홍길동', '010-9999-0000']];
-  const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
+  const g = C.oiGroupOrders(parseRows(rows).lines);
   assert.equal(g.length, 1);
   //  2026-09-22 사장님 지시로 '수령자 불일치' 는 차단(issues)이 아니라 경고(warnings) — 체크는 가능, 표시만.
   const iss = (l) => C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') });
@@ -99,7 +102,7 @@ test('oiGroupOrders: 같은 주문장 안에서 수령자나 휴대폰이 첫 �
 //  Terra 4R P2 (2026-09-15): 미해석 토큰(3푼)을 사람이 보정해도 영구 차단됐다.
 //  2026-09-22 사장님 지시: 미해석 토큰은 애초에 차단이 아니라 경고 — optOverride 면 경고도 내지 않는다.
 test('oiLineWarnings: 미해석 토큰은 경고이고 optOverride 면 그 경고도 내지 않는다', () => {
-  const line = C.oiParseRows(ROWS_B).lines[0];
+  const line = parseRows(ROWS_B).lines[0];
   const parsed = C.oiParseOption('[14K-로즈골드-3푼-45cm]');
   assert.deepEqual(C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed }), []);
   assert.ok(C.oiLineWarnings(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed }).some((s) => s.startsWith('옵션 해석 불가')));
@@ -111,7 +114,7 @@ test('oiLineWarnings: 미해석 토큰은 경고이고 optOverride 면 그 경�
 test('oiLineReview: 차단(issues)과 경고(warnings)를 나눈다 — 경고만 있는 줄은 issues 가 비어 실행 가능', () => {
   const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
   const rows = [H, ['쿠팡', '1103109837088', '헤링본 소가죽 팔찌', '', 25000, 20000, '고객가', '+82 10-0000-1234']];
-  const line = C.oiParseRows(rows).lines[0];
+  const line = parseRows(rows).lines[0];
   assert.equal(line.phone.ok, false, '국가코드 번호는 형식 불가');
   const entry = { seq: '7083', code: 'F-RF-I-QQ-PA-00F6' };            // 코드 4번째 토막 QQ 는 색상 셀렉트에 없음 → 폴백 없음
   const form = { kOpts: [{ value: '5', text: '925' }], colorOpts: [{ value: '' }, { value: 'WG' }], defaults: { color: '' } };
@@ -137,7 +140,7 @@ test('oiLineReview: 차단(issues)과 경고(warnings)를 나눈다 — 경고�
 test('oiApplyMarket: 미등록 판매처에 세션 한정 접미·마켓을 넣으면 고객명이 생기고 줄에도 전파된다', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
     ['11번가', 'O9', 'A', '', 1000, 100, '홍길동', '010-1234-5678']];
-  const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
+  const g = C.oiGroupOrders(parseRows(rows).lines);
   assert.equal(g[0].market, null); assert.equal(g[0].clientName, '');
   C.oiApplyMarket(g[0], '십', '12');
   assert.deepEqual(g[0].market, { name: '11번가', suffix: '십', clientJob: '12', sessionOnly: true });
@@ -151,7 +154,7 @@ test('oiApplyCustomer: 검토 화면에서 바꾼 수령자와 전화가 주문 
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
     ['GS샵', '1', 'A', '', 1000, 100, '홍길동', '010-1234-5678'],
     ['GS샵', '1', 'B', '', 2000, 200, '홍길동', '010-1234-5678']];
-  const o = C.oiGroupOrders(C.oiParseRows(rows).lines)[0];
+  const o = C.oiGroupOrders(parseRows(rows).lines)[0];
   o.customer = { mode: 'reuse', seq: '9' };
   C.oiApplyCustomer(o, '김수정', '010 9999 0000');
   assert.equal(o.buyer, '김수정');
@@ -165,7 +168,7 @@ test('oiApplyCustomer: 검토 화면에서 바꾼 수령자와 전화가 주문 
 
 //  Terra 8R P2 (2026-09-15): code 없는 매핑({seq}만)이 실행까지 통과해 POST 뒤 code 대조에서 fatal 로 끝났다 — POST 전에 막아야 한다.
 test('oiLineIssues: 매핑 항목에 seq·code 가 없으면 매핑 불완전으로 차단', () => {
-  const line = C.oiParseRows(ROWS_B).lines[0];
+  const line = parseRows(ROWS_B).lines[0];
   const parsed = C.oiParseOption(line.optionText);
   assert.ok(C.oiLineIssues(line, { mapping: { entry: { seq: '7083' } }, parsed }).some((s) => s.startsWith('매핑 불완전')));
   assert.ok(C.oiLineIssues(line, { mapping: { entry: { code: 'F-RF-I-WG-PA-00F6' } }, parsed }).some((s) => s.startsWith('매핑 불완전')));
@@ -201,20 +204,21 @@ test('oiOrderReady: 휴대폰 형식 불가·경고만 있는 주문장은 실�
 test('oiGroupOrders: 20줄을 넘는 주문장은 모든 줄에 "줄 수 초과" 이슈', () => {
   const hdr = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
   const mk = (n) => [hdr].concat(Array.from({ length: n }, (_, i) => ['쿠팡', 'BIG', 'P' + i, '', 1000, 100, '홍길동', '010-1234-5678']));
-  const ok = C.oiGroupOrders(C.oiParseRows(mk(20)).lines);
+  const ok = C.oiGroupOrders(parseRows(mk(20)).lines);
   assert.deepEqual(C.oiLineIssues(ok[0].lines[19], { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }), []);
-  const big = C.oiGroupOrders(C.oiParseRows(mk(21)).lines);
+  const big = C.oiGroupOrders(parseRows(mk(21)).lines);
   assert.equal(big[0].lines.length, 21);
   big[0].lines.forEach((l) => assert.ok(C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).some((s) => s.startsWith('줄 수 초과'))));
   assert.equal(C.OI_MAX_LINES, 20);
 });
 
-test('oiParseRows: 수량 열이 있으면 읽고, 판매가가 비면 null(검토 대상)', () => {
+test('oiParseRows: 수량 2 는 1개씩 2줄, 판매가가 비면 null(검토 대상)', () => {
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰', '수량'],
     ['쿠팡', '1', 'A', '', '', 100, '홍길동', '010-0000-5678', '2']];
-  const r = C.oiParseRows(rows);
+  const r = parseRows(rows);
   assert.equal(r.lines[0].price, null);
-  assert.equal(r.lines[0].qty, 2);
+  assert.equal(r.lines.length, 2);
+  assert.equal(r.lines[0].qty, 1);
 });
 
 /* ------------------------------------------------------------- §2.2 정규화 */
@@ -233,7 +237,7 @@ test('oiMoney: 원 단위는 정수만 — 소수·음수·문자는 null(검토
   assert.equal(C.oiMoney('17000.5'), null); assert.equal(C.oiMoney(17000.5), null); assert.equal(C.oiMoney('17000.0'), null);
   assert.equal(C.oiMoney('0'), null); assert.equal(C.oiMoney('-5'), null); assert.equal(C.oiMoney('abc'), null); assert.equal(C.oiMoney(''), null);
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'], ['쿠팡', '1', 'A', '', 17000.5, 100, '홍길동', '010-1234-5678']];
-  const l = C.oiParseRows(rows).lines[0];
+  const l = parseRows(rows).lines[0];
   assert.equal(l.price, null);
   assert.ok(C.oiLineIssues(l, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') }).includes('판매가 없음'));
 });
@@ -245,7 +249,7 @@ test('정산금액 0 은 비고 "정산 0 원", 비어 있으면 생략, 소수�
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
     ['아몬즈', '1', '[사은품] 가죽 트레이', '', 1400, 0, '홍길동', '010-1234-5678'],
     ['아몬즈', '1', 'A', '', 1000, '', '홍길동', '010-1234-5678']];
-  const ls = C.oiParseRows(rows).lines;
+  const ls = parseRows(rows).lines;
   assert.equal(ls[0].settle, 0); assert.equal(C.oiRemark(ls[0].settle), '정산 0 원');
   assert.equal(ls[1].settle, null); assert.equal(C.oiRemark(ls[1].settle), '');
 });
@@ -266,7 +270,7 @@ test('oiParseRows: 숫자형 휴대폰 셀(meta.numericPhoneRows)은 검토 대�
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
     ['쿠팡', '1', 'A', '', 1000, 100, '홍길동', 1065783269],
     ['쿠팡', '2', 'B', '', 1000, 100, '김철수', '010-2222-3333']];
-  const r = C.oiParseRows(rows, { numericPhoneRows: [1] });
+  const r = parseRows(rows, { numericPhoneRows: [1] });
   assert.equal(r.lines[0].phoneNumericCell, true); assert.equal(r.lines[1].phoneNumericCell, false);
   //  2026-09-22 사장님 지시로 경고(warnings) — 체크는 막지 않는다.
   const res = { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') };
@@ -293,11 +297,11 @@ test('oiParseRows: 숫자형 휴대폰 셀(meta.numericPhoneRows)은 검토 대�
 //  Opus 5 O2 Nit (2026-09-22): 숫자 셀 두 줄은 둘 다 phone '' 라 번호가 달라도 수령자 불일치가 안 떴다 → 숫자 셀끼리는 원문(raw)으로 가른다.
 test('oiGroupOrders: 숫자 셀 두 줄의 번호가 다르면 수령자 불일치, 같으면 아니다', () => {
   const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
-  const diff = C.oiGroupOrders(C.oiParseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', 1011112222], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', 1033334444]], { numericPhoneRows: [1, 2] }).lines);
+  const diff = C.oiGroupOrders(parseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', 1011112222], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', 1033334444]], { numericPhoneRows: [1, 2] }).lines);
   assert.equal(diff[0].lines[1].groupMismatch, true);
-  const same = C.oiGroupOrders(C.oiParseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', 1011112222], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', 1011112222]], { numericPhoneRows: [1, 2] }).lines);
+  const same = C.oiGroupOrders(parseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', 1011112222], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', 1011112222]], { numericPhoneRows: [1, 2] }).lines);
   assert.equal(same[0].lines[1].groupMismatch, false);
-  const intl = C.oiGroupOrders(C.oiParseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', '+82 10-1111-2222'], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', '+82 10-1111-2222']]).lines);
+  const intl = C.oiGroupOrders(parseRows([H, ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', '+82 10-1111-2222'], ['쿠팡', 'O1', 'B', '', 2000, 200, '홍길동', '+82 10-1111-2222']]).lines);
   assert.equal(intl[0].lines[1].groupMismatch, false, '형식 불가라도 원문이 같으면 불일치가 아니다');
 });
 
@@ -306,7 +310,7 @@ test('oiLineWarnings: 휴대폰이 아예 비면 "비고에" 라고 하지 않�
   const rows = [['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'],
     ['쿠팡', 'O1', 'A', '', 1000, 100, '홍길동', ''],
     ['쿠팡', 'O1', 'B', '', 2000, 200, '김철수', '']];
-  const g = C.oiGroupOrders(C.oiParseRows(rows).lines);
+  const g = C.oiGroupOrders(parseRows(rows).lines);
   const res = { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption('') };
   const w0 = C.oiLineWarnings(g[0].lines[0], res);
   assert.equal(w0.length, 1); assert.ok(w0[0].startsWith('휴대폰 없음') && w0[0].includes('빈칸으로 등록') && !w0[0].includes('비고'));
@@ -367,7 +371,7 @@ test('oiClientName / oiMarket / oiRemark', () => {
 });
 
 test('oiGroupOrders: 판매처+주문번호로 묶고 고객명을 만든다(카*타 3줄, 차카타 2줄)', () => {
-  const g = C.oiGroupOrders(C.oiParseRows(ROWS_B).lines);
+  const g = C.oiGroupOrders(parseRows(ROWS_B).lines);
   assert.equal(g.length, 6);
   assert.equal(g[0].lines.length, 3); assert.equal(g[0].clientName, '카*타4166/G');
   const last = g[g.length - 1];
@@ -425,7 +429,7 @@ test('oiSuggestQueries: 괄호 안 우선 → 범주어 제거·공백 제거 �
 
 /* ---------------------------------------------------------- §3.3 검토 판정 */
 test('oiLineIssues: 미매칭·옵션 미해석·판매처 미등록·판매가 없음', () => {
-  const line = C.oiParseRows(ROWS_B).lines[0];
+  const line = parseRows(ROWS_B).lines[0];
   assert.deepEqual(C.oiLineIssues(line, { mapping: null, parsed: C.oiParseOption(line.optionText) }), ['상품 미매칭']);
   const ok = C.oiLineIssues(line, { mapping: { entry: { seq: '1', code: 'X' } }, parsed: C.oiParseOption(line.optionText) });
   assert.deepEqual(ok, []);
@@ -499,7 +503,7 @@ test('사은품 줄: 판매가가 비었거나 0 이면 0 으로 읽고 검토�
   const H = ['판매처', '주문번호', '상품명', '옵션명', '판매가', '정산금액', '수령자이름', '수령자휴대폰'];
   const rows = [H, ['GS샵', '1', '[사은품] 쥬얼리 박스', '', '', 0, '홍길동', '010-1234-5678'], ['GS샵', '1', '(사은품) 파우치', '', '0', 0, '홍길동', '010-1234-5678'],
     ['GS샵', '1', '14K 반지', '', '', 100, '홍길동', '010-1234-5678'], ['GS샵', '1', '[사은품] 박스', '', 'abc', 0, '홍길동', '010-1234-5678']];
-  const ls = C.oiParseRows(rows).lines;
+  const ls = parseRows(rows).lines;
   assert.equal(ls[0].gift, true); assert.equal(ls[0].price, 0);
   assert.equal(ls[1].gift, true); assert.equal(ls[1].price, 0);
   assert.equal(ls[2].gift, false); assert.equal(ls[2].price, null);

@@ -26,27 +26,36 @@
   });
   const MARKET_INDEX = {};
   Object.keys(MARKETS).forEach((k) => { MARKET_INDEX[k.replace(/\s+/g, '').toLowerCase()] = k; });
+  MARKET_INDEX['이마트'] = 'SSG';                             // 이마트 판매처 = SSG 마켓(사장님 2026-11-05 — 아틀리에 원장도 같게 정규화)
+  const sellerKey = (seller) => String(seller == null ? '' : seller).replace(/\s+/g, '').toLowerCase();
 
-  //  판매처 문자열 → { name, suffix, clientJob } | null. 공백·대소문자만 무시(별칭 추측 없음 — 표에 없으면 검토).
+  //  판매처 문자열 → { name, suffix, clientJob } | null. 공백·대소문자만 무시(위 이마트 외 별칭 추측 없음 — 표에 없으면 검토).
   function oiMarket(seller) {
-    const key = String(seller == null ? '' : seller).replace(/\s+/g, '').toLowerCase();
-    const name = MARKET_INDEX[key];
+    const name = MARKET_INDEX[sellerKey(seller)];
     return name ? { name, suffix: MARKETS[name].suffix, clientJob: MARKETS[name].clientJob } : null;
+  }
+  //  D102 패션 판매처 주문장은 기본으로 검토 표에서 숨긴다(사장님 2026-11-05). 패널의 [보기] 를 눌러야 표로 들어온다.
+  function oiHiddenSeller(seller) { return sellerKey(seller) === 'd102패션'; }
+  function oiSplitHidden(orders) {
+    const list = orders || [];
+    return { visible: list.filter((o) => !oiHiddenSeller(o.seller)), hidden: list.filter((o) => oiHiddenSeller(o.seller)) };
   }
 
   /* --------------------------------------------------------------- §2.1 헤더 */
   const COLS = Object.freeze({
     seller: '판매처', orderNo: '주문번호', name: '상품명', option: '옵션명', price: '판매가',
-    settle: '정산금액', buyer: '수령자이름', phone: '수령자휴대폰', recipientPhone: '수령자전화', qty: '수량', status: '상태',
+    settle: '정산금액', buyer: '수령자이름', phone: '수령자휴대폰', recipientPhone: '수령자전화', qty: '주문수량', status: '상태',
     sellerName: '판매처상품명'                              // 선택 열(2026-10-19 확장주문검색에 추가) — oiPickName
   });
-  const REQUIRED = ['seller', 'orderNo', 'name', 'price', 'buyer'];
+  //  주문수량은 필수 — 열이 없는 옛 양식을 1개로 읽으면 2개 주문이 덜 등록된다(사장님 2026-11-05).
+  const REQUIRED = ['seller', 'orderNo', 'name', 'price', 'buyer', 'qty'];
 
   //  첫 행(헤더) → 열 인덱스. 이름으로만 찾는다(순서·추가 열 무관). 공백은 무시.
   function oiHeaderMap(headerRow) {
     const cells = (headerRow || []).map((c) => String(c == null ? '' : c).replace(/\s+/g, ''));
     const idx = {};
     Object.keys(COLS).forEach((key) => { const i = cells.indexOf(COLS[key]); if (i >= 0) idx[key] = i; });
+    if (!('qty' in idx) && cells.indexOf('수량') >= 0) idx.qty = cells.indexOf('수량');
     const missing = REQUIRED.filter((k) => !(k in idx)).map((k) => COLS[k]);
     if (!('phone' in idx) && !('recipientPhone' in idx)) missing.push('수령자휴대폰/수령자전화');
     return { idx, missing };
@@ -131,11 +140,14 @@
     if (hm.missing.length) return { error: '필수 열 없음: ' + hm.missing.join(', '), lines: [] };
     const numericPhone = new Set(((meta && meta.numericPhoneRows) || []).map(Number));
     const lines = [];
+    let qtySum = 0, qtyTotal = '';
     rows.slice(1).forEach((r, i) => {
       const row = Array.isArray(r) ? r : [];
       const cell = (k) => (k in hm.idx) ? String(row[hm.idx[k]] == null ? '' : row[hm.idx[k]]).trim() : '';
       const seller = cell('seller'), orderNo = cell('orderNo');
-      if (!seller && !orderNo) return;                      // 빈 행·'합계' 행(판매처·주문번호가 없다)
+      //  '합계' 행(상품명이 없다)은 어느 열에 라벨이 있어도 건너뛰고 검산에 쓴다. 빈 행만 버린다 — 상품이 있으면 판매처·주문번호가 없어도 차단 줄로 올린다(조용히 빠지면 덜 주문된다).
+      if (!cell('name') && row.some((c) => String(c == null ? '' : c).trim() === '합계')) { qtyTotal = cell('qty'); return; }
+      if (!seller && !orderNo && !cell('name')) return;
       //  주문번호만 빈 행은 버리지도 합치지도 않는다 — 검토 표에 '주문번호 없음' 으로 올려 사람이 보게 한다(Terra 2R P2).
       const qtyRaw = cell('qty'), priceRaw = cell('price');
       const mobile = cell('phone'), recipientPhone = cell('recipientPhone');
@@ -145,7 +157,9 @@
       //  남겨 실행기가 고객 비고에 싣는다(형식 불가와 같은 경로, Opus 5 P2-1 2026-09-22). 뒤 4자리는 그대로라 고객명은 유지. 연락처 칸에서 고치면 신뢰.
       const numericCell = numericPhone.has(i + 1), normPhone = oiNormPhone(mobile || recipientPhone);
       const picked = oiPickName(cell('name'), cell('sellerName'), { gift });
-      lines.push({
+      const qty = oiMoney(qtyRaw);                           // 비었거나 0·소수·문자면 null — 1 로 추측하지 않고 그 줄을 차단한다
+      qtySum += qty || 0;
+      const base = {
         row: i + 2,                                          // 엑셀 행 번호(헤더=1)
         seller, orderNo,
         market: oiMarket(seller),
@@ -161,10 +175,15 @@
         gift,
         price: gift ? (priceRaw ? oiMoney0(priceRaw) : 0) : oiMoney(priceRaw),
         settle: (k => (k in hm.idx) ? oiMoney0(cell('settle')) : null)('settle'),
-        qty: qtyRaw ? oiMoney(qtyRaw) : 1,
+        qty,
         status: cell('status')
-      });
+      };
+      //  유비샵 주문 줄은 바코드가 하나씩 붙고 판매 처리도 그 형태를 전제한다(§3.2) — N개 주문은 1개씩 N줄로 등록한다. 판매가·정산금액은 1개 기준(아몬즈 실측).
+      if (qty > 1 && qty <= OI_MAX_LINES) for (let n = 1; n <= qty; n++) lines.push(Object.assign({}, base, { qty: 1, qtySplit: { of: qty, n } }));
+      else lines.push(qty > OI_MAX_LINES ? Object.assign(base, { qtyOver: qty }) : base);
     });
+    //  파일 끝 합계 행의 주문수량으로 검산한다 — 못 읽은 줄이나 빠진 행이 있으면 합이 달라 파일째 막는다.
+    if (qtyTotal !== '' && oiMoney(qtyTotal) !== qtySum) return { error: '주문수량 검산 불일치: 파일 합계 ' + qtyTotal + ' · 읽은 합 ' + qtySum, lines: [] };
     return { error: null, lines };
   }
 
@@ -362,6 +381,8 @@
     if (!line.buyer) issues.push('수령자 없음');
     if (line.price == null) issues.push('판매가 없음');
     if (line.qty == null) issues.push('수량');
+    if (line.qtyOver) issues.push('주문수량 ' + line.qtyOver + '개: 주문장 최대 ' + OI_MAX_LINES + '줄 — 유비샵에서 나눠 넣으세요');
+    if (line.qtySplit) warnings.push('주문수량 ' + line.qtySplit.of + '개: 1개씩 ' + line.qtySplit.of + '줄로 등록(' + line.qtySplit.n + '/' + line.qtySplit.of + ') — 판매가·정산금액이 1개 기준인지 확인하세요');
     const parsed = resolved && resolved.parsed;
     //  사람이 품위·색상·사이즈를 직접 보정했으면(optOverride) 원문의 미해석 토큰은 경고도 아니다(Terra 4R P2).
     if (parsed && parsed.unresolved.length && !(resolved && resolved.optOverride)) warnings.push('옵션 해석 불가: ' + parsed.unresolved.join(', '));
@@ -919,7 +940,7 @@
 
   const api = {
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
-    oiMarket, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiPickName, oiParseRows,
+    oiMarket, oiHiddenSeller, oiSplitHidden, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiPickName, oiParseRows,
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineReview, oiLineIssues, oiLineWarnings, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,

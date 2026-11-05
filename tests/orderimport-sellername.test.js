@@ -10,6 +10,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const C = require(path.join(__dirname, '..', 'src', 'orderimport-core.js'));
+//  옛 양식 픽스처(주문수량 열 없음)에 수량 1 열을 붙여 읽는다 — 수량 규칙 자체는 tests/orderimport-qty.test.js 가 맡는다.
+const withQty = (rows) => { if (!Array.isArray(rows) || !rows.length || !Array.isArray(rows[0])) return rows; const h = rows[0].map((c) => String(c).replace(/\s+/g, '')); if (h.includes('수량') || h.includes('주문수량')) return rows; return rows.map((r, i) => (Array.isArray(r) ? (i === 0 ? r.concat(['수량']) : (String(r[0] == null ? '' : r[0]).trim() === '합계' ? r : r.concat([1]))) : r)); };
+const parseRows = (rows, meta) => C.oiParseRows(withQty(rows), meta);
 
 const same = (name, seller) => assert.equal(C.oiPickName(name, seller).source, 'name', name + ' ↔ ' + seller);
 
@@ -47,7 +50,7 @@ test('oiPickName: 판매처 상품명이 비었거나 사은품이면 상품명 
 test('oiParseRows: 판매처 상품명 열은 선택 — 있으면 판정해 productName 을 정하고 원래 이름을 남긴다', () => {
   const head = ['관리번호', '판매처', '주문번호', '상태', 'CS', '상품명', '옵션명', '판매가', '정산금액', '주문일', '수령자이름', '수령자전화', '수령자휴대폰', '판매처 상품명', ''];
   const row = (name, sellerName, price) => ['1', 'CJ몰', 'A1', '배송전', '', name, '', price, '0', '2026-10-19', '가나다', '', '010-0000-1234', sellerName, ''];
-  const r = C.oiParseRows([head,
+  const r = parseRows([head,
     row('14K, 18K 하프 볼 귀걸이', '[D102 패션] 14K, 18K 하프 볼 귀걸이', '30000'),
     row('[사은품] 티타늄 실버 귀걸이', '[D102 패션] 14K, 18K 하프 볼 귀걸이', ''),
     row('14K, 18K 하프 볼 귀걸이', '[D102 패션] 14K, 18K 쿠션퀼팅 귀걸이', '30000')]);
@@ -59,6 +62,6 @@ test('oiParseRows: 판매처 상품명 열은 선택 — 있으면 판정해 pro
   assert.equal(d.ezName, '14K, 18K 하프 볼 귀걸이');
   assert.equal(d.sellerName, '[D102 패션] 14K, 18K 쿠션퀼팅 귀걸이');
   //  열이 없는 옛 양식은 그대로
-  const old = C.oiParseRows([head.slice(0, 13), row('A 반지', '', '1000').slice(0, 13)]);
+  const old = parseRows([head.slice(0, 13), row('A 반지', '', '1000').slice(0, 13)]);
   assert.equal(old.lines[0].productName, 'A 반지'); assert.equal(old.lines[0].nameSource, 'name');
 });

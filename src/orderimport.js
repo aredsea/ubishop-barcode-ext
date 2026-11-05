@@ -12,7 +12,7 @@
   if (!C || !E) { console.warn('[UB][oi] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const KEY_MAP = 'ubOiMap', KEY_LEDGER = 'ubOiLedger', PANEL_ID = 'ub-oi-panel', STYLE_ID = 'ub-oi-style';
-  const S = { enabled: false, map: {}, ledger: {}, orders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '',
+  const S = { enabled: false, map: {}, ledger: {}, orders: [], hiddenOrders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '',
     //  진행 표시(스펙 2026-09-16 §3): phase 는 idle|reading|enriching|running, progress 는 스트립이 읽는 카운터·문구.
     phase: 'idle', progress: { done: 0, total: 0, m: [0, 0], c: [0, 0], s: [0, 0], key: '', label: '' } };
 
@@ -98,7 +98,9 @@
   function buildOrders(parsed) {
     const pr = C.oiParseRows(parsed.rows, { numericPhoneRows: parsed.numericPhoneRows });
     if (pr.error) throw new Error(pr.error);
-    S.orders = C.oiGroupOrders(pr.lines);
+    const split = C.oiSplitHidden(C.oiGroupOrders(pr.lines));
+    S.orders = split.visible;
+    S.hiddenOrders = split.hidden;                          // 표·조회·등록 어디에도 안 들어간다 — [보기] 를 누르면 S.orders 로 옮긴다
     S.orders.forEach(refreshOrder);
   }
   //  읽기 전용 보강: 마스터 폼(k/색상 옵션·기본값)·고객 판정·추천 후보. 실패해도 검토 표는 뜬다.
@@ -482,7 +484,7 @@
     p.querySelector('.oi-steps-slot').innerHTML = stepsHtml();
     p.querySelector('.oi-top').innerHTML =
       '<div class="oi-bar"><label class="oi-btn">' + ico('file') + 'xls 선택<input type="file" id="ub-oi-file" accept=".xls,.xlsx" hidden' + lock + '></label>'
-      + (nOrd ? '<span class="oi-file">' + esc(S.fileName) + '</span><span class="oi-count">주문장 <b>' + nOrd + '</b> <i>·</i> 줄 <b>' + nLines + '</b> <i>·</i> 실행 가능 <b>' + nReady + '</b> <i>·</i> 체크 <b>' + nChk + '</b></span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가 열 포함)를 선택하세요</span>')
+      + (nOrd ? '<span class="oi-file">' + esc(S.fileName) + '</span><span class="oi-count">주문장 <b>' + nOrd + '</b> <i>·</i> 줄 <b>' + nLines + '</b> <i>·</i> 실행 가능 <b>' + nReady + '</b> <i>·</i> 체크 <b>' + nChk + '</b></span>' : '<span class="oi-muted">이지어드민 확장주문검색 xls(판매가·주문수량 열 포함)를 선택하세요</span>')
       + '<span class="oi-spacer"></span>'
       + '<button class="oi-btn pri" data-act="run"' + (nChk && !S.running && !S.enriching && S.enabled ? '' : ' disabled') + (S.enabled ? '' : ' title="스위치가 꺼져 있습니다"') + '>' + (S.running ? '등록 중…' : '등록 시작') + '</button>'
       + '<button class="oi-btn quiet" data-act="export-map">매핑표 내보내기</button><label class="oi-btn quiet">매핑표 가져오기<input type="file" id="ub-oi-mapfile" accept=".json" hidden' + (S.running ? ' disabled' : '') + '></label>'
@@ -500,11 +502,13 @@
       ? '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.'
       : '이미 등록된 것과 같은 주문장 ' + nDup + '개 중 ' + (nDup - nDupUnchecked) + '개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다.' });
     if (nWarnChk) banners.push({ cls: 'warn', text: '경고 있는 주문장 ' + nWarnChk + '개가 체크돼 있습니다 — 주황색 경고를 확인하고 등록하세요.' });
+    const nHidden = S.hiddenOrders.length;
     p.querySelector('.oi-b').innerHTML =
-      banners.map((b) => '<div class="oi-banner ' + b.cls + '">' + ico('warn') + b.text + '</div>').join('')
+      (nHidden ? '<div class="oi-banner warn">D102 패션 주문장 ' + nHidden + '개를 숨겼습니다. <button class="oi-btn sm" data-act="show-hidden">보기</button></div>' : '')
+      + banners.map((b) => '<div class="oi-banner ' + b.cls + '">' + ico('warn') + b.text + '</div>').join('')
       + (nOrd ? '<table class="oi-t"><colgroup><col class="c-chk"><col><col><col class="c-prod"><col class="c-k"><col class="c-color"><col class="c-size"><col class="c-qty"><col class="c-price"><col class="c-remark"></colgroup>'
         + '<thead><tr><th><input type="checkbox" class="oi-chk" data-f="chkall" title="실행 가능한 주문장 전체 체크/해제(중복 제외)"' + (nAll && nChkAll === nAll ? ' checked' : '') + (nAll && !S.running ? '' : ' disabled') + '></th><th>판매처 · 주문번호</th><th>고객명 · 휴대폰</th><th>유비샵 상품</th><th>품위</th><th>색상</th><th>사이즈</th><th class="num">수량</th><th class="num">판매가</th><th>비고</th></tr></thead><tbody>'
-        + S.orders.map(orderRow).join('') + '</tbody></table>' : (S.phase === 'reading' ? '' : '<div class="oi-empty">파일을 선택하면 주문장 검토 표가 여기에 뜹니다.</div>'))
+        + S.orders.map(orderRow).join('') + '</tbody></table>' : (S.phase === 'reading' || nHidden ? '' : '<div class="oi-empty">파일을 선택하면 주문장 검토 표가 여기에 뜹니다.</div>'))
       + (S.results.length ? '<div class="oi-res"><h3>결과 <span class="oi-muted">— 완료 ' + done + ' · 건너뜀/중단 ' + skipped + '</span></h3><table class="oi-t" style="margin-top:6px"><thead><tr><th>주문장</th><th>상태</th><th>사유</th><th>고객</th><th>관리번호</th><th class="num">되돌림</th></tr></thead><tbody>'
         + S.results.map((r) => '<tr><td>' + esc(r.key) + '</td><td>' + resultChip(Object.assign({}, r, { reason: '' })) + '</td><td>' + esc(r.reason || '') + '</td><td>' + esc(r.client ? r.client.name + ' #' + r.client.seq + ' (' + r.client.mode + ')' : '') + '</td><td>' + esc([...new Set((r.junNums || []).map((j) => j.junNum))].join(', ')) + '</td><td class="num">' + esc(r.rolledBack || 0) + '</td></tr>').join('')
         + '</tbody></table></div>' : '');
@@ -546,6 +550,11 @@
       if (!suf.trim() || !job) { alert('접미와 마켓을 모두 고르세요.'); return; }
       if (!C.oiApplyMarket(o, suf, job)) return;
       o.customer = null; refreshOrder(o); render(); await enrich(); render();
+    }
+    else if (act === 'show-hidden') {
+      const shown = S.hiddenOrders;
+      S.orders = S.orders.concat(S.hiddenOrders); S.hiddenOrders = [];
+      shown.forEach(refreshOrder); render(); await enrich(); render();
     }
     else if (act === 'unmap') {
       const l = S.orders[+btn.dataset.o].lines[+btn.dataset.l];
@@ -643,7 +652,7 @@
     //  파일을 연달아 고르면 먼저 고른(큰) 파일의 파싱이 나중에 끝나 나중 파일의 표를 덮어쓴다(Terra 8R P1) — 세대 토큰으로 최신 선택만 반영.
     const gen = ++S.fileGen;
     try {
-      S.fileName = file.name; S.results = []; S.orders = [];
+      S.fileName = file.name; S.results = []; S.orders = []; S.hiddenOrders = [];
       S.phase = 'reading'; render();
       const parsed = await readXls(file);
       if (gen !== S.fileGen) return;
@@ -652,7 +661,7 @@
       await enrich();
       if (gen !== S.fileGen) return;
       render();
-    } catch (err) { if (gen !== S.fileGen) return; S.phase = 'idle'; alert('파일을 읽지 못했습니다: ' + (err && err.message || err)); S.orders = []; render(); }
+    } catch (err) { if (gen !== S.fileGen) return; S.phase = 'idle'; alert('파일을 읽지 못했습니다: ' + (err && err.message || err)); S.orders = []; S.hiddenOrders = []; render(); }
   }
   async function importMap(file) {
     try {
