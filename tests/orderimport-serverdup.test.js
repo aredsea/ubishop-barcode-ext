@@ -377,3 +377,25 @@ test('erp listJunRowsRange: 0건 목록은 정상, 머리글 없는 페이지·2
     await assert.rejects(E.listJunRowsRange(RANGE), /order_list_http_500/);
   });
 });
+
+//  라이브 14열 형식(2026-11-13, 발주처명 열이 있는 화면 — 439행 전부 이 형식): '이름 주문 비고 : 정산 N [원] 발주 비고 : …'.
+//  4.4.8 은 '이름 비고 :' 만 받아 이 형식의 행을 하나도 못 잡았다(라이브 읽기 대조에서 발견).
+test('14열 형식 — 이름 뒤 "주문 비고 :" 도 읽는다', () => {
+  const t = 'SN212 F-NF-Z-XY-PA-00FP 정다경0037/아 주문 비고 : 정산 51,614 원 발주 비고 : 정산 51,614 원';
+  assert.equal(C.oiServerDupCheck(order('정다경0037/아', [51614]), [row(t)]).kind, 'same');
+  assert.equal(C.oiServerDupCheck(order('정다경0037/아', [9999]), [row(t)]).kind, 'customer');
+});
+
+test('14열 형식 — 정산 뒤 "원" 이 빠져도 같은 금액이면 same', () => {
+  const t = 'PRH0026(2mm) F-RF-I-YG-ZZ-005M 신선정0840/카 주문 비고 : 정산 247,682 발주 비고 :';
+  assert.equal(C.oiServerDupCheck(order('신선정0840/카', [247682]), [row(t)]).kind, 'same');
+});
+
+test('14열 형식 — 발주 비고 쪽 정산만 맞아도 same, 이름 앞(상품명)의 "정산" 숫자는 근거가 아니다', () => {
+  assert.equal(C.oiServerDupCheck(order('정다경0037/아', [51614]), [row('X Y 정다경0037/아 주문 비고 : 발주 비고 : 정산 51,614 원')]).kind, 'same');
+  assert.equal(C.oiServerDupCheck(order('정다경0037/아', [51614]), [row('정산 51,614 기념 Y 정다경0037/아 주문 비고 : 정산 1 원')]).kind, 'customer');
+});
+
+test('14열 형식 — 앞뒤에 글자가 붙은 다른 고객은 여전히 오탐 아님', () => {
+  assert.equal(C.oiServerDupCheck(order('김진경9097/카', [12133]), [row('X Y 김진경9097/카카 주문 비고 : 정산 12,133 원')]).kind, 'none');
+});

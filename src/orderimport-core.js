@@ -567,13 +567,16 @@
     const none = { kind: 'none', rows: [] };
     if (!name) return none;
     //  이름 안 공백은 목록 쪽에서 몇 칸이든(태그 제거·접기 차이) 맞게 \s+ 로 푼다(Opus Nit-2).
-    const re = new RegExp('(^|\\s)' + oiEsc(name.replace(/\s+/g, ' ').trim()).replace(/ /g, '\\s+') + '\\s+비고\\s*:');
+    //  목록 제목 형식은 둘이다(라이브 2026-11-13): 13열 '… 이름 비고 : 정산 N 원', 14열(발주처명 열) '… 이름 주문 비고 : 정산 N [원] 발주 비고 : 정산 N 원'.
+    //  14열은 '원' 이 빠진 행도 있다(3/439) → '주문' 은 선택, '원' 은 요구하지 않고 이름 뒤의 정산 값을 전부 본다.
+    const re = new RegExp('(^|\\s)' + oiEsc(name.replace(/\s+/g, ' ').trim()).replace(/ /g, '\\s+') + '\\s+(?:주문\\s*)?비고\\s*:');
     const settles = new Set(oiActiveLines(order).map((l) => Number(l.settle)).filter((n) => Number.isFinite(n) && n !== 0));
     const hit = (rows || []).filter((r) => r && !(r.junNum && ex.has(String(r.junNum))) && !/취소/.test(String(r.status || '')) && re.test(String(r.title || '')));
     if (!hit.length) return none;
     const same = hit.filter((r) => {
-      const m = String(r.title).match(/정산\s*([\d,]+)\s*원/);
-      return !!m && settles.has(Number(m[1].replace(/,/g, '')));
+      const t = String(r.title); const m = t.match(re);
+      const tail = t.slice(m.index + m[0].length);
+      return [...tail.matchAll(/정산\s*([\d,]+)/g)].some((x) => settles.has(Number(x[1].replace(/,/g, ''))));
     });
     return same.length ? { kind: 'same', rows: same } : { kind: 'customer', rows: hit };
   }

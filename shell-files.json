@@ -1,9 +1,9 @@
 {
-  "version": "4.4.9",
+  "version": "4.5.0",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "c7229d0a48faceae4943af63f4399ac8bf252ead43c06f658729e5e5da3f7292"
+      "sha256": "915481ab574fa05136d811f4eac9e95c5b7ed8ad3a83d569ceba68766ec85d80"
     },
     {
       "path": "src/loader.js",
@@ -43,7 +43,7 @@
     },
     {
       "path": "src/orderimport-core.js",
-      "sha256": "641583a75c21f39e00bfb7a3802a1b59c55283305a5ec189b5843d4c0d4330b5"
+      "sha256": "d6a194fd6f89c98406395a5baaf0f95c7e04a5f6e684ea55023a50bcf72587a1"
     },
     {
       "path": "src/orderimport-erp.js",
