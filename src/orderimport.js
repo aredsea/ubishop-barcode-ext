@@ -12,7 +12,7 @@
   if (!C || !E) { console.warn('[UB][oi] core/erp 미로드 — manifest 순서 확인'); return; }
 
   const KEY_MAP = 'ubOiMap', KEY_LEDGER = 'ubOiLedger', PANEL_ID = 'ub-oi-panel', STYLE_ID = 'ub-oi-style';
-  const S = { enabled: false, map: {}, ledger: {}, orders: [], hiddenOrders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], xlsReady: false, seq: 0, fileGen: 0, fileName: '',
+  const S = { enabled: false, map: {}, ledger: {}, orders: [], hiddenOrders: [], masters: {}, running: false, starting: false, enriching: null, results: [], log: [], server: { rows: null, at: '', error: '', capped: false }, xlsReady: false, seq: 0, fileGen: 0, fileName: '',
     //  진행 표시(스펙 2026-09-16 §3): phase 는 idle|reading|enriching|running, progress 는 스트립이 읽는 카운터·문구.
     phase: 'idle', progress: { done: 0, total: 0, m: [0, 0], c: [0, 0], s: [0, 0], key: '', label: '' } };
 
@@ -83,6 +83,7 @@
     line.issues = rv.issues; line.warnings = rv.warnings;
   }
   //  주문장에 경고가 있나 — 등록 제외한 사은품 줄은 세지 않는다.
+  const srvSame = (o) => !!(o.sdup && o.sdup.kind === 'same' && !o.ledgered);   // 이번 실행에서 완료된(o.ledgered) 주문은 제외
   const hasWarn = (o) => C.oiActiveLines(o).some((l) => l.warnings && l.warnings.length);
   function refreshOrder(o) {
     o.lines.forEach(refreshLine);
@@ -91,9 +92,14 @@
     //  장부와 주문번호·상품이 완전히 같으면 기본 체크를 풀어 두고 사람이 정하게 한다(스펙 2026-09-16 §5b). 첫 판정 때만 — 그 뒤는 사용자의 체크가 우선.
     const wasDup = !!(o.dup && o.dup.dup);
     o.dup = C.oiDupCheck(o, o.prev);
+    //  유비샵 서버 목록 대조(2026-11-13): 'same'(고객명+정산 일치)이면 장부 중복과 똑같이 취급한다. 'customer' 는 안내만 — 체크에 영향 없음.
+    o.sdup = S.server.rows ? C.oiServerDupCheck(o, S.server.rows) : null;
+    const isSame = srvSame(o), wasSame = !!o.sdupWasSame;
+    o.sdupWasSame = isSame;
     //  첫 판정, 또는 판정 뒤에 새로 중복이 된 순간(다른 탭이 그 사이 등록 — 그때의 체크는 중복을 모르고 한 것)에만 기본값을 적용한다(Opus O1 P2-5).
     if (o.checked == null || (o.dup.dup && !wasDup && !o.ledgered)) o.checked = o.ready && !o.dup.dup;
     else if (!o.ready) o.checked = false;
+    if (isSame && !wasSame) o.checked = false;   // 서버 same 도 같은 패턴 — 첫 판정이거나 새로 same 이 된 순간에만 해제, 이후 사용자 체크는 존중
   }
   function buildOrders(parsed) {
     const pr = C.oiParseRows(parsed.rows, { numericPhoneRows: parsed.numericPhoneRows });
@@ -117,8 +123,19 @@
   //  진행 카운터: 요청 하나 끝날 때마다 +1. 표는 사람이 입력 중이 아닐 때만 다시 그린다(입력 중 포커스를 뺏지 않게) — 스트립은 항상 갱신.
   function progInit(tot) { S.progress = { done: 0, total: tot.total, m: [0, tot.masters], c: [0, tot.customers], s: [0, tot.suggests], key: '', label: '' }; }
   function progStep(cat) { const pr = S.progress; pr.done++; pr[cat][0]++; renderSoft(); }
+  //  유비샵 서버 주문전표 목록(최근 14일) — 다른 PC 에서 넣은 주문을 거른다. enrich 와 run() 시작 직전(S.running 전)에만 부르고 run 의 sKey GET→POST 사이엔 끼우지 않는다(위 F2/G1).
+  async function loadServerRows() {
+    try {
+      const r = await E.listJunRowsRange(C.oiServerDupRange(new Date()));
+      S.server = { rows: r.rows, at: new Date().toISOString(), error: '', capped: !!r.capped };
+      return null;
+    } catch (e) { const msg = String(e && e.message || e); S.server.error = msg; logLine('-', 'server_dup_error', msg); return msg; }
+  }
   async function enrichBody() {
     progInit(C.oiEnrichTotal(S.orders, S.masters)); renderSoft();
+    //  마스터 폼 조회 전에 1회. 직전 성공이 60초 안이면 재사용(입력 수정마다 enrich 가 도는데 매번 500행을 받지 않게). 실패는 S.server.error 에 남는다.
+    if (S.running) return;
+    if (!S.server.rows || S.server.error || Date.now() - Date.parse(S.server.at || 0) > 60000) { await loadServerRows(); if (S.running) return; S.orders.forEach(refreshOrder); }
     const seqs = new Set();
     S.orders.forEach((o) => C.oiActiveLines(o).forEach((l) => { if (l.mapping) seqs.add(l.mapping.entry.seq); }));
     for (const seq of seqs) {
@@ -175,6 +192,7 @@
     if (S.running || S.starting) return;
     S.starting = true;
     let jobs = [];
+    const skippedNew = [];
     try {
       await loadState();                                     // 패널을 연 뒤 팝업에서 스위치를 껐을 수 있다(Terra 3R P2) — 실행 직전에 다시 읽는다
       if (!S.enabled) { alert('[유비샵 스킨모드]·[주문 가져오기] 스위치가 꺼져 있어 실행하지 않습니다.'); render(); return; }
@@ -182,19 +200,41 @@
       if (!targets.length) { alert('실행할 주문장이 없습니다(문제 있는 주문장은 체크되지 않습니다).'); return; }
       const nDup = targets.filter((o) => o.dup && o.dup.dup).length;
       const nWarn = targets.filter(hasWarn).length;
+      const sameAtConfirm = new Set(targets.filter(srvSame).map((o) => o.key));
       if (!confirm(targets.length + '개 주문장(' + targets.reduce((n, o) => n + C.oiActiveLines(o).length, 0) + '줄)을 유비샵에 등록합니다.'
         + (nDup ? '\n※ 이미 등록된 것과 같은 주문장 ' + nDup + '개가 포함돼 있습니다(중복 등록).' : '')
+        + (sameAtConfirm.size ? '\n※ 유비샵에 이미 등록된 주문(고객명·정산 금액 동일) ' + sameAtConfirm.size + '개가 포함돼 있습니다(중복 등록).' : '')
+        + (S.server.error ? '\n※ 유비샵 중복 확인에 실패했습니다(' + S.server.error + ') — 다른 PC에서 넣은 주문은 걸러지지 않았습니다.' : '')
         + (nWarn ? '\n※ 경고 있는 주문장 ' + nWarn + '개가 포함돼 있습니다(색상 빈칸·옵션 미해석 등 — 표의 주황색 경고 참고).' : '')
         + '\n실행 중에는 주문 화면을 조작하지 마세요. 진행할까요?')) return;
-      jobs = targets.map(toRunOrder);                          // confirm 한 집합을 그대로 실행한다 — 조회 대기 뒤 다시 거르지 않는다(Fable F3 Nit)
+      jobs = targets.map(toRunOrder);                          // confirm 한 집합을 실행한다 — 조회 대기 뒤 다시 거르지 않고, 서버 재조회로 새로 중복이 된 것만 뺀다(Fable F3 Nit · 2026-11-13)
       while (S.enriching) { try { await S.enriching; } catch (_) {} }   // 진행 중인 조회가 실행기의 요청 사이에 끼지 않게 끝까지 기다린다(Fable G1)
+      //  confirm 뒤 시작 직전에 서버 목록을 한 번 더 읽는다(그 사이 다른 PC 가 넣었을 수 있다). 조회 대기가 끝난 뒤·S.running 전이라 실행기의 요청 사이엔 끼지 않는다.
+      const rerr = await loadServerRows();
+      if (rerr && !confirm('유비샵 중복 재확인에 실패했습니다(' + rerr + '). 그래도 등록할까요?')) return;
+      if (!rerr) {
+        const keep = [];
+        jobs.forEach((j) => {
+          const o = S.orders.find((x) => x.key === j.key);
+          //  이 PC 장부에 관리번호가 남은 행(이 PC 가 넣은 것 — 사람이 알고 체크)은 대조에서 뺀다. 장부가 '미확인'(관리번호 없음)이거나
+          //  다른 관리번호로 새로 보인 행은 그대로 대조한다 — 그 사이 다른 PC 가 넣었거나 완료 응답이 유실된 이전 시도일 수 있다(Opus 2R P2).
+          const nowSame = !!o && C.oiServerDupCheck(o, S.server.rows, { excludeJuns: (o.prev && o.prev.junNums) || [] }).kind === 'same';
+          if (nowSame && !sameAtConfirm.has(j.key)) {
+            const r = { key: j.key, status: 'skipped', reason: 'server_dup_new: 유비샵 목록에 같은 주문(고객명·정산)이 새로 보임 — 이전 시도분일 수 있으니 주문전표에서 확인' };   // 장부엔 쓰지 않는다 — 이 PC 장부 항목이 있으면 그대로 두고, 없으면 이 PC 가 넣은 게 아니다
+            skippedNew.push(r); o.result = r; o.checked = false;
+          } else keep.push(j);
+        });
+        jobs = keep;
+        if (!jobs.length) { S.results = skippedNew; S.orders.forEach(refreshOrder); alert('확인하는 사이 유비샵 목록에 같은 주문이 새로 보여 등록하지 않았습니다 — 주문전표에서 확인하세요.'); return; }
+      }
+      S.orders.forEach(refreshOrder);
       S.running = true;
     } finally { S.starting = false; if (!S.running) render(); }   // 조기 return(취소·대상 없음)이면 시작 대기 중 삼킨 체크박스 클릭의 표시를 모델과 다시 맞춘다(Fable F4 Nit)
     if (!S.running) return;
-    await runTargets(jobs);
+    await runTargets(jobs, skippedNew);
   }
-  async function runTargets(jobs) {
-    S.results = [];
+  async function runTargets(jobs, pre) {
+    S.results = (pre || []).slice();
     window.addEventListener('beforeunload', onUnload);
     S.phase = 'running'; S.progress = { done: 0, total: jobs.length, m: [0, 0], c: [0, 0], s: [0, 0], key: jobs.length ? jobs[0].key : '', label: '시작' };
     render();
@@ -214,7 +254,7 @@
           render();
         }
       });
-      S.results = results;
+      S.results = (pre || []).concat(results);
     } catch (e) { logLine('-', 'run_exception', String(e && e.message || e)); alert('실행 중 오류: ' + (e && e.message || e)); }
     S.running = false; S.phase = 'idle';
     window.removeEventListener('beforeunload', onUnload);
@@ -422,11 +462,19 @@
     if (d.kind === 'legacy') return chip('dup', '이미 등록 ' + when + ' (상품 대조 불가)', 'warn');
     return chip('prev', '이전에 넣음 ' + when + ' · 상품은 다름');
   }
+  //  유비샵 서버 대조 칩: same 빨강 · customer 주황 안내. 이번 실행에서 완료된 주문은 숨긴다.
+  function srvChip(o) {
+    const d = o.sdup; if (!d || d.kind === 'none' || o.ledgered) return '';
+    const juns = [...new Set(d.rows.map((r) => r.junNum).filter(Boolean))].join(',');
+    const jt = juns ? ' · 관리번호 ' + juns : '';
+    if (d.kind === 'same') return chip('dup', '유비샵에 이미 등록' + jt + ' · ' + (d.rows[0].status || '').replace(/\s+/g, ' ').trim(), 'warn');
+    return chip('prev', '같은 고객 최근 주문 있음(정산 금액 다름)' + jt);
+  }
   function orderRow(o, oi) {
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
     //  이번 실행의 결과가 있으면 그 칩만 — 방금 등록한 주문장이 장부에 오르며 '이미 등록' 으로도 보이는 중복 표시를 막는다.
-    const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : '') + (o.ledgered ? '' : ' ' + prevChip(o)) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
-    return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.ready && hasWarn(o) ? ' warn' : '') + (o.dup && o.dup.dup ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
+    const chips = (o.market ? custChip(o) : marketPick(o, oi)) + ' ' + (o.result ? resultChip(o.result) : '') + (o.ledgered ? '' : ' ' + prevChip(o)) + ' ' + srvChip(o) + (cur ? ' ' + chip('busy', '등록 중 · ' + (S.progress.label || ''), 'spin') : '');
+    return '<tr class="oi-o' + (o.ready ? '' : ' bad') + (o.ready && hasWarn(o) ? ' warn' : '') + ((o.dup && o.dup.dup) || srvSame(o) ? ' dup' : '') + (o.result ? (o.result.status === 'done' ? ' res-done' : ' res-bad') : '') + '"><td><input type="checkbox" class="oi-chk" data-f="chk" data-o="' + oi + '"' + (o.checked ? ' checked' : '') + (o.ready && !S.running ? '' : ' disabled') + '></td>'
       + '<td><span class="oi-key"><span class="seller">' + esc(o.seller) + '</span>' + esc(o.orderNo) + '</span></td><td><span class="oi-cust"><input class="oi-in" aria-label="수령자 이름" data-f="buyer" data-o="' + oi + '" value="' + esc(o.buyer) + '"' + (S.running ? ' disabled' : '') + '><input class="oi-in oi-sub-in" aria-label="연락처" data-f="phone" data-o="' + oi + '" value="' + esc(o.phone.phone || o.phone.raw) + '"' + (S.running ? ' disabled' : '') + '>' + (o.phoneSource === '수령자전화' ? '<small class="oi-source">수령자전화 자동 사용</small>' : '') + '</span></td>'
       + '<td colspan="7">' + chips + '</td></tr>' + o.lines.map((l, li) => lineRow(o, oi, l, li)).join('');
   }
@@ -472,10 +520,11 @@
     const nOrd = S.orders.length, nReady = S.orders.filter((o) => o.ready).length, nChk = S.orders.filter((o) => o.checked && o.ready).length;
     const nDup = S.orders.filter((o) => o.dup && o.dup.dup && !o.ledgered).length, nDupUnchecked = S.orders.filter((o) => o.dup && o.dup.dup && !o.ledgered && !o.checked).length;
     //  머리글 체크 상태는 '중복 아닌 실행 가능' 주문장만 센다 — 손으로 켠 중복이 섞이면 양방향으로 틀린다(Opus O2 Nit-C).
-    const nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup)).length, nChkAll = S.orders.filter((o) => o.checked && o.ready && !(o.dup && o.dup.dup)).length;
+    const nAll = S.orders.filter((o) => o.ready && !(o.dup && o.dup.dup) && !srvSame(o)).length, nChkAll = S.orders.filter((o) => o.checked && o.ready && !(o.dup && o.dup.dup) && !srvSame(o)).length;
+    const nSrv = S.orders.filter(srvSame).length, nSrvUnchecked = S.orders.filter((o) => srvSame(o) && !o.checked).length;
     const nWarnChk = S.orders.filter((o) => o.checked && o.ready && hasWarn(o)).length;   // 경고는 체크를 막지 않으니 체크된 것을 센다(2026-09-22)
     const nLines = S.orders.reduce((n, o) => n + o.lines.length, 0);
-    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nAll, nChkAll, nWarnChk, nLines };
+    return { nOrd, nReady, nChk, nDup, nDupUnchecked, nSrv, nSrvUnchecked, nAll, nChkAll, nWarnChk, nLines };
   }
   function render() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
@@ -495,12 +544,17 @@
   //  표·결과만 다시 그린다(툴바 제외). 배너 문구는 실제 체크 상태를 말한다(Opus O1 P2-5 — 체크된 채 남은 중복이 있으면 "풀어 두었다" 고 하지 않는다).
   function renderBody() {
     const p = document.getElementById(PANEL_ID); if (!p) return;
-    const { nOrd, nDup, nDupUnchecked, nAll, nChkAll, nWarnChk } = counts();
+    const { nOrd, nDup, nDupUnchecked, nSrv, nSrvUnchecked, nAll, nChkAll, nWarnChk } = counts();
     const done = S.results.filter((r) => r.status === 'done').length, skipped = S.results.filter((r) => r.status !== 'done').length;
     const banners = [];   // 중복은 빨강(dup), 경고는 주황(warn) — 줄의 경고 색과 맞춘다
     if (nDup) banners.push({ cls: 'dup', text: nDupUnchecked === nDup
       ? '이미 등록된 것과 같은 주문장 ' + nDup + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.'
       : '이미 등록된 것과 같은 주문장 ' + nDup + '개 중 ' + (nDup - nDupUnchecked) + '개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다.' });
+    if (S.server.error) banners.push({ cls: 'dup', text: '유비샵 중복 확인 실패 — 다른 PC에서 넣은 주문을 못 거릅니다: ' + esc(S.server.error) });
+    if (S.server.capped) banners.push({ cls: 'warn', text: '최근 14일 주문이 500건을 넘어 일부만 대조했습니다' });
+    if (nSrv) banners.push({ cls: 'dup', text: nSrvUnchecked === nSrv
+      ? '유비샵에 이미 등록된 것과 같은 주문장 ' + nSrv + '개는 체크를 풀어 두었습니다 — 다시 넣으려면 직접 체크하세요.'
+      : '유비샵에 이미 등록된 것과 같은 주문장 ' + nSrv + '개 중 ' + (nSrv - nSrvUnchecked) + '개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다.' });
     if (nWarnChk) banners.push({ cls: 'warn', text: '경고 있는 주문장 ' + nWarnChk + '개가 체크돼 있습니다 — 주황색 경고를 확인하고 등록하세요.' });
     const nHidden = S.hiddenOrders.length;
     p.querySelector('.oi-b').innerHTML =
@@ -601,7 +655,7 @@
     if (el.id === 'ub-oi-mapfile') { const f = el.files && el.files[0]; if (f) await importMap(f); return; }
     const f = el.dataset.f; if (!f) return;
     if (f === 'chk') { const o = S.orders[+el.dataset.o]; o.checked = el.checked && o.ready; render(); return; }
-    if (f === 'chkall') { S.orders.forEach((o) => { if (o.dup.dup) return; o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장과 중복 주문장(§5b, 개별 체크로만)은 제외
+    if (f === 'chkall') { S.orders.forEach((o) => { if (o.dup.dup || srvSame(o)) return; o.checked = el.checked && o.ready; }); render(); return; }   // 일괄 체크(사장님 요청 2026-09-15) — 문제 있는 주문장과 중복 주문장(§5b, 개별 체크로만)은 제외
     const o = S.orders[+el.dataset.o];
     if (f === 'buyer' || f === 'phone') {
       C.oiApplyCustomer(o, f === 'buyer' ? el.value : o.buyer, f === 'phone' ? el.value : (o.phone.phone || o.phone.raw));

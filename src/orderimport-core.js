@@ -556,6 +556,36 @@
     });
   }
 
+  //  유비샵 서버 주문전표 목록(다른 PC 에서 넣은 주문 포함)과 대조한다(2026-11-13 — PC 로컬 장부는 다른 PC 의 등록을 모른다).
+  //  판정은 고객명 + 정산 금액이다: 같은 주문이 어제는 다른 상품(2.5mm↔2mm)으로 매핑돼 들어간 실사례가 있어 상품명 대조는 놓친다.
+  //  title = '상품명 상품코드 고객명 비고 : 정산 538,230 원'. 상품명엔 공백이 있을 수 있고 고객명엔 없다 → 앞이 공백/문두, 뒤가 '비고 :' 인 것만 맞다.
+  //  정산은 줄의 원본 settle(파일 값)을 쓴다 — 사용자가 비고를 고쳐도 판정이 바뀌지 않게. 사은품 줄(정산 0)은 근거로 쓰지 않는다.
+  //  opts.excludeJuns = 대조에서 뺄 관리번호들(이 PC 장부에 남은 것 — run 시작 직전 재조회에서만 쓴다).
+  function oiServerDupCheck(order, rows, opts) {
+    const ex = new Set(((opts && opts.excludeJuns) || []).map(String).filter(Boolean));
+    const name = String((order && order.clientName) || '');
+    const none = { kind: 'none', rows: [] };
+    if (!name) return none;
+    //  이름 안 공백은 목록 쪽에서 몇 칸이든(태그 제거·접기 차이) 맞게 \s+ 로 푼다(Opus Nit-2).
+    const re = new RegExp('(^|\\s)' + oiEsc(name.replace(/\s+/g, ' ').trim()).replace(/ /g, '\\s+') + '\\s+비고\\s*:');
+    const settles = new Set(oiActiveLines(order).map((l) => Number(l.settle)).filter((n) => Number.isFinite(n) && n !== 0));
+    const hit = (rows || []).filter((r) => r && !(r.junNum && ex.has(String(r.junNum))) && !/취소/.test(String(r.status || '')) && re.test(String(r.title || '')));
+    if (!hit.length) return none;
+    const same = hit.filter((r) => {
+      const m = String(r.title).match(/정산\s*([\d,]+)\s*원/);
+      return !!m && settles.has(Number(m[1].replace(/,/g, '')));
+    });
+    return same.length ? { kind: 'same', rows: same } : { kind: 'customer', rows: hit };
+  }
+  //  조회 기간 = 오늘 포함 최근 days 일(로컬 날짜, 월·일 2자리). a.orderDate 는 유비샵에 등록한 날이다.
+  function oiServerDupRange(now, days) {
+    const n = days == null ? 14 : days;
+    const e = now instanceof Date ? now : new Date(now);
+    const s = new Date(e.getFullYear(), e.getMonth(), e.getDate() - n);
+    const p = (x) => String(x).padStart(2, '0');
+    return { syear: String(s.getFullYear()), smonth: p(s.getMonth() + 1), sday: p(s.getDate()), eyear: String(e.getFullYear()), emonth: p(e.getMonth() + 1), eday: p(e.getDate()) };
+  }
+
   //  고객 검색 결과 행: 1 고객명·2 매장·3 휴대폰·4 전화, 선택 링크 setSeting(form1,'i','<seq>'). (idx 가 없는 표라 링크로 고른다)
   function oiClientSearchRows(html) {
     const h = String(html); const out = [];
@@ -944,7 +974,7 @@
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
     oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineReview, oiLineIssues, oiLineWarnings, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
-    oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiClientSearchRows, oiMasterSearchRows,
+    oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiServerDupCheck, oiServerDupRange, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,
     oiCheckForm, oiCheckFinal, oiRunOrder, oiRunAll, oiPostRunState,
     oiOrderSig, oiDupCheck, oiStepLabel, oiEnrichTotal

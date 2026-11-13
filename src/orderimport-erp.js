@@ -110,10 +110,23 @@
     const r = await req('/jun/orderitem/orderItemList.do?tcode=order_item&pageSize=100&searchSortType=seq', null, /\/jun\/orderitem\/orderItemList\.do$/);
     return C.oiJunListRows(r.html);
   }
+  //  기간 지정 주문전표 목록(최대 500행) — 서버 중복 대조용(2026-11-13). a.orderDate = 유비샵에 등록한 날. 반환 capped = 500행 꽉 참(일부만 본 것).
+  async function listJunRowsRange(range) {
+    const r = await post('/jun/orderitem/orderItemList.do?tcode=order_item', {
+      tcode: 'order_item', reqPage: 1, pageSize: 500, searchSortType: 'seq', searchItemStatus: '', searchDateType: 'a.orderDate',
+      syear: range.syear, smonth: range.smonth, sday: range.sday, eyear: range.eyear, emonth: range.emonth, eday: range.eday
+    }, /\/jun\/orderitem\/orderItemList\.do$/);
+    //  200 이 아니거나 목록 머리글(주문장번호·상태)이 없으면 '0건' 으로 넘기지 않고 던진다 → 패널의 조회 실패 배너·재확인 confirm 경로(Opus Nit-3).
+    if (r.status !== 200) throw new Error('order_list_http_' + r.status);
+    const text = String(r.html).replace(/<[^>]*>/g, ' ');
+    if (!/주문장\s*번호/.test(text) || !/상\s*태/.test(text)) throw new Error('unexpected_page: 주문전표 목록 머리글 없음');
+    const rows = C.oiJunListRows(r.html);
+    return { rows, capped: rows.length >= 500 };
+  }
   async function findJunNums(orderSeqs) {
     const want = new Set(orderSeqs.map(String));
     return (await listJunRows()).filter((x) => want.has(x.orderSeq));
   }
 
-  globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums, listJunRows };
+  globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums, listJunRows, listJunRowsRange };
 })();

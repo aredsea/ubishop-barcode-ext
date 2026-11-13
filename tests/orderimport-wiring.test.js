@@ -77,7 +77,7 @@ test('skin.js: 기본값 ubOrderImport:true, 주문 화면 판별, 섹션 버튼
 
 test('erp 어댑터·UI·브리지가 기대한 이름을 노출한다', () => {
   const erp = read('src/orderimport-erp.js');
-  assert.ok(erp.includes('globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums, listJunRows };'));
+  assert.ok(erp.includes('globalThis.ubOiErp = { state, searchClient, searchMaster, registerClient, getWriteForm, postLine, getForm10, postComplete, deleteLines, findJunNums, listJunRows, listJunRowsRange };'));
   const ui = read('src/orderimport.js');
   assert.ok(ui.includes("closest('#ub-oi-open')"), 'UI 는 사이드바 버튼을 문서 위임으로 받는다');
   assert.ok(ui.includes("type: 'ubOiInjectXls'"));
@@ -104,11 +104,11 @@ test('UI 배선: 실행 중에는 onClick/onChange/enrich 가 조작을 받지 �
   assert.ok(/async function enrich\(\) \{\s*if \(S\.running \|\| S\.starting\) return;/.test(ui), 'enrich 실행 중 게이트');
   //  Fable 5 G1 (2026-09-15): 진입 게이트만으론 파일 로드 직후 진행 중인 enrich 가 실행 시작 뒤에도 요청을 보냈다 → 진행 중 프라미스 대기 + 루프 내 게이트.
   assert.ok(/S\.enriching = p; render\(\);/.test(ui), 'enrich 가 진행 중 프라미스를 S.enriching 에 잡는다');
-  assert.ok(/jobs = targets\.map\(toRunOrder\);[^\n]*\n\s*while \(S\.enriching\) \{ try \{ await S\.enriching; \} catch \(_\) \{\} \}\s*\/\/[^\n]*\n\s*S\.running = true;/.test(ui), 'run() 은 confirm 한 집합을 스냅샷한 뒤 진행 중 enrich 를 기다리고 running 을 세운다');
-  assert.ok(ui.includes('await runTargets(jobs);') && ui.includes('await C.oiRunAll(jobs, E, {'), 'runTargets 는 대기 뒤 다시 거르지 않고 스냅샷을 실행한다(Fable F3 Nit)');
+  assert.ok(/jobs = targets\.map\(toRunOrder\);[^\n]*\n\s*while \(S\.enriching\) \{ try \{ await S\.enriching; \} catch \(_\) \{\} \}\s*\/\/[^\n]*\n(?:[\s\S]*?)\s*S\.running = true;/.test(ui), 'run() 은 confirm 한 집합을 스냅샷한 뒤 진행 중 enrich 를 기다리고(그 사이 서버 목록 재조회 블록이 끼어도 됨) running 을 세운다');
+  assert.ok(ui.includes('await runTargets(jobs, skippedNew);') && ui.includes('await C.oiRunAll(jobs, E, {'), 'runTargets 는 대기 뒤 다시 거르지 않고 스냅샷을 실행한다(Fable F3 Nit)');
   const body = ui.slice(ui.indexOf('async function enrichBody()'), ui.indexOf('/* ------------------------------------------------------------ 실행 */'));
   const awaits = (body.match(/await E\./g) || []).length, gates = (body.match(/if \(S\.running\) return;/g) || []).length;
-  assert.equal(awaits, 4, 'enrichBody 의 ERP 요청 수'); assert.equal(gates, 4, 'ERP 요청마다 실행 중 게이트');
+  assert.equal(awaits, 4, 'enrichBody 의 ERP 요청 수'); assert.equal(gates, 6, 'ERP 요청마다 실행 중 게이트(+서버 목록 조회 앞뒤 2개, 2026-11-13)');
   assert.ok(ui.includes(`data-act="run"' + (nChk && !S.running && !S.enriching && S.enabled ? '' : ' disabled')`), '조회 중엔 실행 버튼 잠금');
   assert.ok(/function lineRow\(o, oi, l, li\) \{\s*const dis = S\.running \? ' disabled' : '';/.test(ui), 'lineRow dis');
   for (const frag of ['data-f="pick" data-o="\' + oi + \'" data-l="\' + li + \'"\' + dis + \'>', 'data-act="unmap" data-o="\' + oi + \'" data-l="\' + li + \'" title="매핑 지우기"\' + dis + \'>',
@@ -238,14 +238,14 @@ test('패널 리디자인: 폼 컨트롤 font inherit · 이모지 0 · reduced-
   assert.ok(/const wasDup = !!\(o\.dup && o\.dup\.dup\);\s*o\.dup = C\.oiDupCheck\(o, o\.prev\);/.test(ui), '중복 판정 전 이전 판정을 기억');
   assert.ok(/if \(o\.checked == null \|\| \(o\.dup\.dup && !wasDup && !o\.ledgered\)\) o\.checked = o\.ready && !o\.dup\.dup;/.test(ui), '첫 판정과 새로 중복이 된 순간에만 기본값(Opus O1 P2-5), 장부에 오른 결과 행은 제외(O2 Nit-D)');
   assert.ok(/else if \(!o\.ready\) o\.checked = false;/.test(ui), '실행 불가면 해제, 그 외엔 사용자 체크 유지');
-  assert.ok(/if \(f === 'chkall'\) \{ S\.orders\.forEach\(\(o\) => \{ if \(o\.dup\.dup\) return; o\.checked = el\.checked && o\.ready; \}\);/.test(ui), '전체 체크는 중복을 건너뛴다(손으로 켠 것도 끄지 않는다)');
+  assert.ok(/if \(f === 'chkall'\) \{ S\.orders\.forEach\(\(o\) => \{ if \(o\.dup\.dup \|\| srvSame\(o\)\) return; o\.checked = el\.checked && o\.ready; \}\);/.test(ui), '전체 체크는 중복을 건너뛴다(손으로 켠 것도 끄지 않는다)');
   assert.ok(/이미 등록된 것과 같은 주문장 ' \+ nDup \+ '개가 포함돼 있습니다\(중복 등록\)/.test(ui), '확인창 경고');
   assert.ok(/sig: C\.oiOrderSig\(o\),/.test(ui), 'toRunOrder 가 서명을 싣는다');
   assert.ok(/gift: !!l\.gift,/.test(ui), 'toRunOrder 가 사은품 플래그를 싣는다(Opus O1 P2-4 M1)');
   assert.ok(/개는 체크를 풀어 두었습니다/.test(ui) && /개가 체크돼 있습니다 — 그대로 등록하면 중복 주문장이 됩니다/.test(ui), '배너는 실제 체크 상태를 말한다');
   assert.ok(/const nDup = S\.orders\.filter\(\(o\) => o\.dup && o\.dup\.dup && !o\.ledgered\)\.length, nDupUnchecked/.test(ui), '장부에 오른 결과 행은 중복 집계에서 뺀다(M3·O2 Nit-D)');
   assert.ok(/o\.ledgered = !!ps\.ledgerEntry;/.test(ui), 'onOrder 가 장부 기록 여부를 행에 남긴다');
-  assert.ok(/nChkAll === nAll \? ' checked'/.test(ui) && /nChkAll = S\.orders\.filter\(\(o\) => o\.checked && o\.ready && !\(o\.dup && o\.dup\.dup\)\)\.length/.test(ui), '머리글 체크 상태는 중복 제외 집계(O2 Nit-C)');
+  assert.ok(/nChkAll === nAll \? ' checked'/.test(ui) && /nChkAll = S\.orders\.filter\(\(o\) => o\.checked && o\.ready && !\(o\.dup && o\.dup\.dup\) && !srvSame\(o\)\)\.length/.test(ui), '머리글 체크 상태는 중복 제외 집계(O2 Nit-C)');
   assert.ok(/l\.spec\.price = l\.gift \? C\.oiMoney0\(el\.value\) : C\.oiMoney\(el\.value\);/.test(ui), '판매가 편집은 사은품만 0 허용(M2)');
   assert.ok(/if \(f === 'chk'\) \{ const o = S\.orders\[\+el\.dataset\.o\]; o\.checked = el\.checked && o\.ready; render\(\); return; \}/.test(ui), '개별 체크는 중복도 켤 수 있다(M8 — 사람이 결정)');
   assert.ok(/\(o\.result \? resultChip\(o\.result\) : ''\) \+ \(o\.ledgered \? '' : ' ' \+ prevChip\(o\)\)/.test(ui), '장부에 오른 결과 행은 결과 칩만(M5·O2 Nit-D)');
@@ -316,7 +316,7 @@ test('UI 배선: 판정은 oiLineReview 로 issues/warnings 를 나눠 싣고, �
   //  ready·기본 체크·전체 체크 판정은 그대로(경고가 끼지 않는다) — 사장님 결정: 경고 주문장은 일반 주문장과 같이 기본 체크·전체 체크 포함.
   assert.ok(/o\.ready = C\.oiOrderReady\(o\);/.test(ui) && !/warnings[^\n]*o\.ready =/.test(ui) && !/o\.ready =[^\n]*warnings/.test(ui), 'ready 는 core 판정 그대로');
   assert.ok(/if \(o\.checked == null \|\| \(o\.dup\.dup && !wasDup && !o\.ledgered\)\) o\.checked = o\.ready && !o\.dup\.dup;/.test(ui), '기본 체크 규칙 불변');
-  assert.ok(/if \(f === 'chkall'\) \{ S\.orders\.forEach\(\(o\) => \{ if \(o\.dup\.dup\) return; o\.checked = el\.checked && o\.ready; \}\);/.test(ui), '전체 체크 규칙 불변');
+  assert.ok(/if \(f === 'chkall'\) \{ S\.orders\.forEach\(\(o\) => \{ if \(o\.dup\.dup \|\| srvSame\(o\)\) return; o\.checked = el\.checked && o\.ready; \}\);/.test(ui), '전체 체크 규칙 불변(서버 same 도 건너뜀 — 2026-11-13)');
   //  경고는 사람에게 두 번 보인다: 표 위 배너(체크된 경고 주문장 수) + 등록 직전 확인창.
   assert.ok(/const nWarnChk = S\.orders\.filter\(\(o\) => o\.checked && o\.ready && hasWarn\(o\)\)\.length;/.test(ui), '체크된 경고 주문장 집계');
   assert.ok(/if \(nWarnChk\) banners\.push\(\{ cls: 'warn', text: '경고 있는 주문장 ' \+ nWarnChk \+ '개가 체크돼 있습니다 — 주황색 경고를 확인하고 등록하세요\.' \}\);/.test(ui), '배너(집계가 0 이 아닐 때만 — 변이 핀), 주황 변형');
