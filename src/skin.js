@@ -6923,6 +6923,278 @@
     } catch (e) { ccLog('버튼 주입 실패', e); }
   }
 
+  /* ==========================================================================
+   *  주문전표 가상 필터 — 품위 '14K+18K' · 매장 '전매장(FASHION 제외)' (2026-11-13)
+   *
+   *  서버는 같은 이름 값이 여러 개면 첫 값만 쓰고('2,3' 은 오류) 'FASHION 만 빼기' 도 없다.
+   *  그래서 두 select 에 **값이 빈('') 가상 옵션**을 하나씩 더한다 — 어떤 경로(검색 버튼·엔터·
+   *  페이지 링크)로 제출돼도 서버는 넓게(전 품위/전 매장) 돌려주고, 그 결과를 로드 때 우리가 거른다.
+   *  ★제출은 가로채지 않는다(change 이벤트로 의도만 sessionStorage 에 적는다).
+   *  ★조건 밖 행은 숨기지 않고 DOM 에서 **제거**한다 — 숨기면 전체 체크가 숨은 행까지 체크해
+   *   일괄 작업이 엉뚱한 행에 간다. 이 기능들은 행을 캐시하지 않고 그때그때 DOM 을 읽는다.
+   *  ★합계(순금·개수·금액)는 클라이언트에서 계산하지 않고 서버 합계를 조합한다(품위별 순금 계수를 모름):
+   *   Σ_K [ (매장 전체 합계) − (FASHION 합계) ]. 실패하면 틀린 숫자 대신 '합계 계산 실패'.
+   *  이 블록은 읽기 조회(검색 POST) 외에는 아무 것도 부르지 않는다.
+   * ========================================================================== */
+  const OJ_KEY = 'UB_OJ_VFILTER_v1';
+  const OJ_NOTE_ID = 'ub-oj-note';
+  const OJ_K_TOKENS = ['14K', '18K'];
+  const ojLog = (...a) => { try { console.log('[UB][ojfilter]', ...a); } catch (_) {} };
+  //  의도 정규화 — 모르는 값은 버린다. 둘 다 없으면 null.
+  function ojNormIntent(v) {
+    const o = (v && typeof v === 'object') ? v : {};
+    const k = o.k === '14+18' ? '14+18' : null;
+    const shop = o.shop === 'noFashion' ? 'noFashion' : null;
+    return (k || shop) ? { k: k, shop: shop } : null;
+  }
+  //  행을 남길까. rowInfo = {product:'상품정보 셀 글', store:'매장명 셀 글'}.
+  //  품위는 상품정보의 **첫 토큰 정확일치**('14K'/'18K'). 읽어야 할 셀이 없으면(string 아님) 남기지 않는다.
+  function ojVirtualRowKeep(rowInfo, intent) {
+    const it = ojNormIntent(intent);
+    if (!it) return true;
+    const r = rowInfo || {};
+    if (it.k) {
+      if (typeof r.product !== 'string') return false;
+      const tok = r.product.replace(/\s+/g, ' ').trim().split(' ')[0];
+      if (OJ_K_TOKENS.indexOf(tok) < 0) return false;
+    }
+    if (it.shop) {
+      if (typeof r.store !== 'string') return false;
+      if (/^FASHION/.test(r.store.trim())) return false;
+    }
+    return true;
+  }
+  //  합계 행(tr.sum) 셀 글 배열 → {gold4(순금×10000 정수), count, amount, idx:{gold,count,amount}}. 못 읽으면 null.
+  function ojParseSum(cells) {
+    if (!Array.isArray(cells)) return null;
+    const t = cells.map(c => String(c == null ? '' : c).replace(/\s+/g, ' ').trim());
+    let gi = -1, g = '';
+    for (let i = 0; i < t.length; i++) {
+      const m = t[i].match(/순금\s*:?\s*(-?\d[\d,]*(?:\.\d+)?)\s*g/);
+      if (m) { gi = i; g = m[1]; break; }
+    }
+    if (gi < 0) return null;
+    const ci = gi + 1, ai = gi + 2;
+    const intRe = /^-?\d[\d,]*$/;
+    if (!intRe.test(t[ci] || '') || !intRe.test(t[ai] || '')) return null;
+    return {
+      gold4: Math.round(parseFloat(g.replace(/,/g, '')) * 10000),
+      count: parseInt(t[ci].replace(/,/g, ''), 10),
+      amount: parseInt(t[ai].replace(/,/g, ''), 10),
+      idx: { gold: gi, count: ci, amount: ai }
+    };
+  }
+  //  [{sign:+1|-1, sum:ojParseSum 결과}] → 합산. 하나라도 못 읽었거나 결과가 음수면 null(틀린 숫자 금지).
+  function ojCombineSums(list) {
+    if (!Array.isArray(list) || !list.length) return null;
+    let gold4 = 0, count = 0, amount = 0;
+    for (const e of list) {
+      if (!e || (e.sign !== 1 && e.sign !== -1) || !e.sum) return null;
+      const s = e.sum;
+      if (![s.gold4, s.count, s.amount].every(Number.isFinite)) return null;
+      gold4 += e.sign * s.gold4; count += e.sign * s.count; amount += e.sign * s.amount;
+    }
+    if (gold4 < 0 || count < 0 || amount < 0) return null;
+    return { gold4: gold4, count: count, amount: amount };
+  }
+  function ojFmtGold(gold4) {
+    const n = Math.max(0, Math.round(Number(gold4) || 0));
+    return Math.floor(n / 10000) + '.' + String(n % 10000).padStart(4, '0');
+  }
+  function ojFmtInt(n) { return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  //  페이지 로드 때 의도를 적용할지. 서버가 그린 select 값이 '' 인 항목만 남긴다 — 다른 값이면 사용자가
+  //  다른 경로로 검색한 것이니 의도를 해제한다. 반환 = 적용할 의도(없으면 null).
+  function ojIntentApply(serverValues, intent) {
+    const it = ojNormIntent(intent);
+    if (!it) return null;
+    const sv = serverValues || {};
+    return ojNormIntent({
+      k: (it.k && sv.k === '') ? it.k : null,
+      shop: (it.shop && sv.shop === '') ? it.shop : null
+    });
+  }
+  //  합계 조회 계획 [{k, shop, sign}]. cur = 지금 form1 의 {k, shop}.
+  //  14K+18K → K ∈ ['3','2'] / 아니면 현재 K. 패션제외 → (shop '' ) − (shop 'LT') / 아니면 현재 매장.
+  function ojSumPlan(intent, cur) {
+    const it = ojNormIntent(intent) || { k: null, shop: null };
+    const c = cur || {};
+    const ks = it.k ? ['3', '2'] : [String(c.k == null ? '' : c.k)];
+    const out = [];
+    ks.forEach(k => {
+      if (it.shop) { out.push({ k: k, shop: '', sign: 1 }); out.push({ k: k, shop: 'LT', sign: -1 }); }
+      else out.push({ k: k, shop: String(c.shop == null ? '' : c.shop), sign: 1 });
+    });
+    return out;
+  }
+  // ── DOM·네트워크 ───────────────────────────────────────────────────────
+  function ojLoadIntent() {
+    try { return ojNormIntent(JSON.parse(sessionStorage.getItem(OJ_KEY))); } catch (_) { return null; }
+  }
+  function ojSaveIntent(it) {
+    try {
+      const n = ojNormIntent(it);
+      if (n) sessionStorage.setItem(OJ_KEY, JSON.stringify(n)); else sessionStorage.removeItem(OJ_KEY);
+    } catch (_) {}
+  }
+  const ojCellText = (c) => String(c ? c.textContent : '').replace(/\s+/g, ' ').trim();
+  //  목록 표(마지막 table.t_list 중 헤더에 '상품정보'·'매장명' 이 있는 것) + 열 위치(헤더 글자로).
+  function ojListTable(root) {
+    const ts = [...root.querySelectorAll('table.t_list')];
+    for (let i = ts.length - 1; i >= 0; i--) {
+      const rows = [...ts[i].rows];
+      for (let r = 0; r < rows.length; r++) {
+        const cs = [...rows[r].cells].map(ojCellText);
+        const pi = cs.findIndex(c => /상품정보/.test(c));
+        const si = cs.findIndex(c => /매장명/.test(c));
+        if (pi >= 0 && si >= 0) {
+          const data = rows.slice(r + 1).filter(tr => /^\d+$/.test(ojCellText(tr.cells[0])));
+          return { table: ts[i], pi: pi, si: si, data: data };
+        }
+      }
+    }
+    return null;
+  }
+  function ojTotalEl(root) {   // '총 : N 개' — cReadTotalCount/asgDecrementTotal 과 같은 셀렉터
+    return [...root.querySelectorAll('span.f_bold')].find(s =>
+      /^\d+$/.test((s.textContent || '').trim()) &&
+      /총/.test(((s.previousElementSibling || {}).textContent) || '')) || null;
+  }
+  function ojAddVirtualOption(sel, label, tag) {
+    if (!sel || sel.tagName !== 'SELECT') return null;
+    let op = [...sel.options].find(o => o.dataset && o.dataset.ubOjV === tag);
+    if (op) return op;
+    op = document.createElement('option');
+    op.value = ''; op.text = label; op.dataset.ubOjV = tag;
+    const first = [...sel.options].findIndex(o => o.value === '');
+    const ref = first >= 0 ? sel.options[first + 1] : null;
+    sel.insertBefore(op, ref || null);
+    return op;
+  }
+  function ojBumpPageSize() {
+    const ps = document.querySelector('select[name=pageSize]');
+    if (!ps || Number(ps.value) >= 500) return;
+    if (![...ps.options].some(o => o.value === '500')) {
+      const op = document.createElement('option'); op.value = '500'; op.text = '500'; ps.appendChild(op);
+    }
+    ps.value = '500';
+    asgToast('넓은 범위를 한 번에 보도록 페이지 크기를 500 으로 올렸습니다');
+  }
+  function ojBindSelect(sel, dim, value) {
+    if (!sel || sel.dataset.ubOjBound === '1') return;
+    sel.dataset.ubOjBound = '1';
+    sel.addEventListener('change', () => {
+      try {
+        const o = sel.options[sel.selectedIndex];
+        const virt = !!(o && o.dataset && o.dataset.ubOjV);
+        const cur = ojLoadIntent() || { k: null, shop: null };
+        const next = { k: cur.k, shop: cur.shop };
+        next[dim] = virt ? value : null;
+        ojSaveIntent(next);
+        if (virt) ojBumpPageSize();
+      } catch (e) { ojLog('change 처리 실패', e); }
+    });
+  }
+  function ojSetNote(table, label, warn) {
+    let n = document.getElementById(OJ_NOTE_ID);
+    if (!n) {
+      n = document.createElement('div'); n.id = OJ_NOTE_ID;
+      n.style.cssText = 'margin:6px 0;padding:6px 10px;border:1px solid #cfd8dc;background:#f5f9fa;color:#37474f;font-size:12px;line-height:1.5';
+      table.insertAdjacentElement('beforebegin', n);
+    }
+    n.textContent = '';
+    const a = document.createElement('div'); a.textContent = label + ' 필터 적용 중';
+    n.appendChild(a);
+    if (warn) {
+      const w = document.createElement('div'); w.style.cssText = 'color:#c62828;font-weight:bold';
+      w.textContent = warn; n.appendChild(w);
+    }
+  }
+  //  백그라운드 읽기 POST 1회 → 응답의 마지막 tr.sum 만 읽는다. 못 읽으면 null.
+  async function ojReadSum(fields) {
+    const p = new URLSearchParams();
+    Object.keys(fields).forEach(k => p.set(k, String(fields[k] == null ? '' : fields[k])));
+    const doc = await Promise.race([
+      postDoc(EP_LIST_PATH + '?tcode=order_item', p),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('합계 조회 타임아웃')), ASG_FETCH_MS))
+    ]);
+    const trs = doc.querySelectorAll('tr.sum');
+    const tr = trs.length ? trs[trs.length - 1] : null;
+    return tr ? ojParseSum([...tr.cells].map(ojCellText)) : null;
+  }
+  async function ojComputeTotals(it) {
+    const base = cReadSearchFields();
+    const plan = ojSumPlan(it, { k: base.searchK, shop: base.searchShop });
+    const list = [];
+    for (const q of plan) {   // 순차 — 읽기 요청이라도 서버에 겹쳐 보내지 않는다
+      const f = Object.assign({}, base, { searchK: q.k, searchShop: q.shop, pageSize: '20', reqPage: '1' });
+      let sum = null;
+      try { sum = await ojReadSum(f); } catch (e) { ojLog('합계 조회 실패', e); }
+      if (!sum) return null;
+      list.push({ sign: q.sign, sum: sum });
+    }
+    return ojCombineSums(list);
+  }
+  async function ojApply(it) {
+    const info = ojListTable(document);
+    if (!info) { ojLog('목록 표를 못 찾음 — 필터 생략'); return; }
+    const label = [it.k ? '14K+18K' : '', it.shop ? '전매장(FASHION 제외)' : ''].filter(Boolean).join(' · ');
+    // 1) 조건 밖 행 제거(No 열 번호는 그대로)
+    let kept = 0;
+    info.data.forEach(tr => {
+      const rowInfo = { product: ojCellText(tr.cells[info.pi]), store: ojCellText(tr.cells[info.si]) };
+      if (ojVirtualRowKeep(rowInfo, it)) kept++; else tr.remove();
+    });
+    // 2) 합계 칸 — 서버 합계를 조합해 정확값으로. 끝나기 전엔 옛 숫자(전체 기준)를 두지 않는다.
+    const sumTr = info.table.querySelector('tr.sum');
+    const live = sumTr ? ojParseSum([...sumTr.cells].map(ojCellText)) : null;
+    const totalEl = ojTotalEl(document);
+    const setSums = (g, c, a, t) => {
+      if (live) {
+        sumTr.cells[live.idx.gold].textContent = g;
+        sumTr.cells[live.idx.count].textContent = c;
+        sumTr.cells[live.idx.amount].textContent = a;
+      }
+      if (totalEl) totalEl.textContent = t;
+    };
+    //  화면 합계 줄을 못 읽으면 칸을 갈아 끼울 수 없다 — 총 개수만 바꾸면 옛 합계(전체 기준)와 섞인다(Luna R1 P2-2).
+    if (!live) {
+      if (totalEl) totalEl.textContent = '-';
+      ojSetNote(info.table, label, '합계 줄을 읽지 못했습니다. 표시된 합계·총 개수는 필터 전 값입니다 — 믿지 마세요.');
+      return;
+    }
+    ojSetNote(info.table, label, '');
+    setSums('합계 계산 중…', '', '', '…');
+    const res = await ojComputeTotals(it);
+    if (!res) {
+      setSums('합계 계산 실패', '', '', '-');
+      ojSetNote(info.table, label, '합계를 계산하지 못했습니다(조회 실패). 표시된 합계 칸을 믿지 마세요.');
+      return;
+    }
+    setSums('순금 : ' + ojFmtGold(res.gold4) + ' g', ojFmtInt(res.count), ojFmtInt(res.amount), String(res.count));
+    ojSetNote(info.table, label,
+      res.count > kept ? ('전체 ' + res.count + '건 중 ' + kept + '건만 표시 — 페이지 크기를 늘리거나 기간을 줄이세요') : '');
+  }
+  function initOrderVFilter() {
+    try {
+      if (!state.ubSkin) return;
+      if (!isOrderJunList()) return;
+      if (window !== window.top) return;   // 작업C 자동화가 목록을 iframe 에 띄운다 — 거기선 거르지 않는다
+      const selK = document.querySelector('select[name=searchK]');
+      const selS = document.querySelector('select[name=searchShop]');
+      if (!selK && !selS) return;
+      const opK = selK ? ojAddVirtualOption(selK, '14K+18K', 'k') : null;
+      const opS = selS ? ojAddVirtualOption(selS, '전매장(FASHION 제외)', 'shop') : null;
+      ojBindSelect(selK, 'k', '14+18');
+      ojBindSelect(selS, 'shop', 'noFashion');
+      const it = ojIntentApply({ k: selK ? selK.value : undefined, shop: selS ? selS.value : undefined }, ojLoadIntent());
+      ojSaveIntent(it);   // 서버 값이 다른 값이면 해제된 채로 저장
+      if (!it) return;
+      if (it.k && opK) opK.selected = true;
+      if (it.shop && opS) opS.selected = true;
+      ojApply(it).catch(e => ojLog('필터 적용 실패', e));
+    } catch (e) { ojLog('초기화 실패', e); }
+  }
+
   function init() {
     ensureDefaultPageSize();
     bindThumbEdit(document);
@@ -6932,6 +7204,7 @@
     initFactoryLiveSearch();   // v3.9.x: 매입처 목록 실시간 검색 + 표 가독성(factoryList/infoFactoryList)
     clearForcedFields(); // v3.3.4: 상품입고장 검색 팝업 입고담당자 항상 공란
     initAssign();        // v3.6.8: 주문전표 재고배정 — 부모 새로고침 제거 + 행 제자리 갱신
+    initOrderVFilter();  // 주문전표 가상 필터(14K+18K · 전매장 FASHION 제외) — 행 제거라 다른 기능보다 먼저
     initFactory();       // v3.7.0: 매입처 정보 플로팅창 + 전표 기본탭
     bindEditPopupIntercept(document);   // v3.9.9 작업B: [수정] → 플로팅 패널. 게이트 OFF 여도 항상 idempotent bind(§5)
     initEditPopupWindow();              // v3.9.9 작업B: 이 문서가 패널 안 프레임이면 크롬 정리·저장 감지
