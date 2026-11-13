@@ -132,6 +132,23 @@ test('arRows — 번호 칸은 있는데 idx 체크박스가 없는 데이터 �
   assert.strictEqual(A.arRows(table(HDR14, ['<tr><td>합 계</td><td>순금 : 0 g</td></tr>', ok])).length, 1);
 });
 
+test('arAtelierPayload — 제목에서 고객명·상품, 고객명 없으면 제외, 20건씩', () => {
+  const base = { orderSeq: '9001', key: '9001|post', stage: 'post', elapsed: 16, orderDate: '2026-10-20', baljuDate: '2026-10-21', junNum: '0000002Z02' };
+  const [c1] = A.arAtelierPayload([
+    Object.assign({}, base, { title: 'PRH0026(2mm) F-RF-I-YG-ZZ-005M 신선정0840/카 주문 비고 : 정산 247,682 발주 비고 : x' }),
+    Object.assign({}, base, { orderSeq: '9002', key: '9002|pre', stage: 'pre', title: 'F- 컷팅파이프링E(2.5cm) T-E6-I-PG-ZZ-005E 김*숙6042/G 비고 : 정산 1 원' }),
+    Object.assign({}, base, { orderSeq: '9003', key: '9003|pre', title: '상품만 있고 고객명 없음' }),
+    Object.assign({}, base, { orderSeq: '9004', key: '9004|pre', title: '이름끝 소윤주7135/토스' })
+  ]);
+  assert.strictEqual(c1.length, 3);
+  assert.deepStrictEqual([c1[0].customer, c1[0].product], ['신선정0840/카', 'PRH0026(2mm) F-RF-I-YG-ZZ-005M']);
+  assert.strictEqual(c1[1].customer, '김*숙6042/G');
+  assert.strictEqual(c1[2].customer, '소윤주7135/토스');
+  assert.deepStrictEqual(Object.keys(c1[0]).sort(), ['baljuDate', 'customer', 'elapsed', 'junNum', 'key', 'orderDate', 'product', 'stage'].sort());
+  const many = Array.from({ length: 41 }, (_, i) => Object.assign({}, base, { orderSeq: String(100 + i), key: (100 + i) + '|pre', title: 'X 홍길동1234/카 비고 : 정산 1 원' }));
+  assert.deepStrictEqual(A.arAtelierPayload(many).map((c) => c.length), [20, 20, 1]);
+});
+
 test('arNewKeys — 새 키만 fresh · 빠진 키는 제거', () => {
   const r = A.arNewKeys(['a', 'b'], ['b', 'c']);
   assert.deepStrictEqual(r.fresh, ['a']);

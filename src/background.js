@@ -1625,6 +1625,7 @@ const ARRIVAL_NOTIFY_PREFIX = 'ub-arrival-';
 const ARRIVAL_LIST_URL = 'http://ubdstore.ubshop.biz/jun/orderitem/orderItemList.do?tcode=order_item';
 const ARRIVAL_LIST_PATH = '/jun/orderitem/orderItemList.do';
 const ARRIVAL_HOLIDAY_URL = 'https://sshwwwavcbgyiyojngav.supabase.co/functions/v1/holidays?year=';
+const ARRIVAL_ATELIER_URL = 'https://sshwwwavcbgyiyojngav.supabase.co/functions/v1/arrival-notify';
 const ARRIVAL_STATUSES = [['O--', 'pre'], ['OS-', 'pre'], ['B--', 'post']];
 const ARRIVAL_BADGE_COLOR = '#e0483f';
 const ARRIVAL_MIN_GAP_MS = 2 * 3600 * 1000;
@@ -1780,7 +1781,28 @@ async function arrivalCheckInner(opts) {
   const kept = capped ? Array.from(new Set(prevNotified.concat(nk.fresh))) : nk.nextNotified;
   const next = shown ? kept : kept.filter((k) => nk.fresh.indexOf(k) < 0);
   await arrivalStorageSet({ ubArrivalNotified: next });
-  return { ok: true, count: items.length, fresh: nk.fresh.length };
+  const atelier = await arrivalSendAtelier(items);
+  return { ok: true, count: items.length, fresh: nk.fresh.length, atelier };
+}
+
+//  D102 아틀리에 앱 알림으로도 보낸다(4.5.2) — arrival-notify 함수가 key 로 중복을 걸러 새 건만 앱 알림이 된다.
+//  지연 전체를 매번 보내므로 한 번 실패해도 다음 조회에서 다시 간다. 실패는 결과에만 남기고 알림·목록엔 영향 없다.
+//  SW 는 끝나지 않은 fetch 를 두고 잠들 수 있어 기다린다(건당 15초 제한).
+async function arrivalSendAtelier(items) {
+  const out = { sent: 0, inserted: 0, error: '' };
+  try {
+    for (const chunk of self.ubArrival.arAtelierPayload(items)) {
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 15000);
+      try {
+        const r = await fetch(ARRIVAL_ATELIER_URL, { method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: chunk }) });
+        const j = await r.json().catch(() => null);
+        if (!r.ok || !j || !j.ok) { out.error = 'http_' + r.status + (j && j.error ? ':' + j.error : ''); break; }
+        out.sent += chunk.length; out.inserted += Number(j.inserted) || 0;
+      } finally { clearTimeout(to); }
+    }
+  } catch (e) { out.error = 'net:' + String(e && e.message || e); }
+  try { await arrivalStorageSet({ ubArrivalAtelier: Object.assign({ at: Date.now() }, out) }); } catch (_) {}
+  return out;
 }
 
 function arrivalOpenList() {

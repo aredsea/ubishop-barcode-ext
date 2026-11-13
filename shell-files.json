@@ -1,9 +1,9 @@
 {
-  "version": "4.5.1",
+  "version": "4.5.2",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "1395f9741f5a419069672db3bfdda6fc6d161ea50b937815c3b38c1ffe3764c4"
+      "sha256": "9ff4a11189c3cd7f15ed511cd90b536a9fff63ccd1f663cb7dceb82066e5e859"
     },
     {
       "path": "src/loader.js",
@@ -19,7 +19,7 @@
     },
     {
       "path": "src/background.js",
-      "sha256": "f4b2552fd1f73d04e3c137312fec663f08bde415f1a3d6eef5aac17b68fd26df"
+      "sha256": "a220a4fdc770f005d1ab72fe806b845962ed666e311f5da0adc1ff23f2762eee"
     },
     {
       "path": "src/skin.js",
@@ -87,7 +87,7 @@
     },
     {
       "path": "src/arrival-core.js",
-      "sha256": "5cfa6305f800748d64c473a3eac45685498d79d8ee5a1c5e14e0508472bdd3da"
+      "sha256": "6f1c8cf1d7ef1753b91d599c4d1ab498edb85a391c7a2d3b8ba35349ad735b78"
     },
     {
       "path": "pages/arrival.html",

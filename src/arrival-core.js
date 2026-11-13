@@ -147,7 +147,29 @@
     return { fresh, nextNotified: kept.concat(fresh) };
   }
 
-  const api = { ARRIVAL_DAYS, arParseYmd, arRows, arBizDaysAfter, arJudge, arSort, arNewKeys };
+  //  아틀리에 arrival-notify 로 보낼 묶음(4.5.2). 제목 칸 '<상품·코드> <이름+뒤4/마켓> [주문] 비고 : …' 에서 고객명·상품을 떼어 낸다.
+  //  고객명을 못 찾거나 서버 한도(고객명 40·상품 80자)를 넘는 고객명은 보내지 않는다(서버가 묶음 전체를 400 으로 거부하므로).
+  //  서버가 key 로 중복을 거르니 매번 지연 전체를 20건씩 보내도 된다 — 지난번 전송이 실패했어도 다음 조회에서 다시 간다.
+  function arAtelierPayload(items) {
+    const out = [];
+    for (const it of items || []) {
+      const t = String(it.title || '').replace(/\s+/g, ' ').trim();
+      const m = t.match(/^(.*?)\s*(\S+\d{4}\/\S+)\s+(?:주문\s*)?비고\s*:/) || t.match(/^(.*?)\s*(\S+\d{4}\/\S+)$/);
+      if (!m || !/^\d{1,12}$/.test(String(it.orderSeq || ''))) continue;
+      const customer = m[2];
+      if (customer.length > 40) continue;
+      out.push({
+        key: it.key, stage: it.stage, elapsed: Math.min(400, Math.max(15, Math.round(it.elapsed))),
+        customer, product: m[1].trim().slice(0, 80),
+        orderDate: it.orderDate || '', baljuDate: it.baljuDate || '', junNum: String(it.junNum || '').slice(0, 20)
+      });
+    }
+    const chunks = [];
+    for (let i = 0; i < out.length; i += 20) chunks.push(out.slice(i, i + 20));
+    return chunks;
+  }
+
+  const api = { ARRIVAL_DAYS, arParseYmd, arRows, arBizDaysAfter, arJudge, arSort, arNewKeys, arAtelierPayload };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.ubArrival = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

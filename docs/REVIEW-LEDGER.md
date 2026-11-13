@@ -217,6 +217,11 @@
 | 202 | 4.5.1-O3 | Opus 4.7 | 시간대·간격으로 건너뛸 때 배지를 다시 그리지 않아 크롬 재시작 아침에 배지 빈 채(P2) | **채택·수정** | 두 return 앞에 arrivalBadgeRefresh. 🔴 상한 도달 뒤 수정 — 재검수 없음 |
 | 203 | 4.5.1-O3 | Opus 4.7 | 스위치 재확인 ~ 알림 사이 await 창(Nit) | **채택·수정** | 알림 직전 재확인. 상한 뒤 수정 |
 | 204 | 4.5.1-O3 | Opus 4.7 | checkUpdate else 의 refresh 가 콜백 밖(Nit) | 🔴 **기각** | noUpdate:true 라 ubUpdateAvailable 을 읽지 않아 영향 없음 |
+| 205 | 4.5.2-G1 | GLM-5.2 | (atelier arrival-notify) 보상 DELETE 실패를 조용히 삼켜 key 만 남으면 영영 미알림(P3) | **채택·수정** | 상태만 로그(고객명 없음) |
+| 206 | 4.5.2-O2 | Opus 4.7 | (atelier) notifications insert 가 예외로 끝나면 보상 DELETE 를 안 탐(P2) | **채택·수정** | r2 fetch 를 catch 해 같은 되돌리기 경로로. atelier cd1f4be |
+| 207 | 4.5.2-O2 | Opus 4.7 | 배선 테스트가 arrivalSendAtelier 호출 줄을 고정 안 함(Nit) | **채택·수정** | arrivalCheckInner 본문에서 호출 assert. red 확인 |
+| 208 | 4.5.2-O2 | Opus 4.7 | (atelier) 같은 알림 두 번 누르면 go() 가 home 으로(Nit) | 🔴 **기각** | sales.js:209 가 ?q 를 읽자마자 replaceState 로 #/sales 로 바꿔, 두 번째 클릭은 hash 가 달라 정상 이동 |
+| 209 | 4.5.2-G3 | GLM-5.2 | 지적 없음 | — | 통합 가능 |
 
 ---
 
@@ -713,3 +718,12 @@ replacement 문자를 동반, 16개가 소스 코드 에코 줄). 그래도 fail
 - 🔴 **상한(T2 3R) 도달 뒤 채택 2건을 고쳤고 그 수정은 재검수하지 않았다** — 사장님께 보고, 사장님 결정 "그대로 배포해"(11-13).
 - **비용**: Luna 1R $0.3216 · 2R $0.0588(usage_daily 전후 차) · Opus 4.7 구독(미분리).
 - 테스트: arrival-* · orderimport-* · orderitem-* · no-darkmode · loader-integrity 457/457. 라이브 미확인(SW 쿠키 세션·알림·배지·목록 페이지).
+
+### 2026-11-13 입고 지연 → D102 아틀리에 앱 알림(4.5.2 + atelier arrival-notify) — #205~#209
+
+- 계기: 사장님 요청 — 입고 지연 알림을 아틀리에에도, 클릭하면 매출 현황의 주문건으로. 설계 승인: 주문 1건당 알림 1개, route `sales?q=<고객명>`, 서버 중복 제거 표 arrival_alerts.
+- 구현: atelier 함수·표·테스트 Sonnet 5.5 worker(+ 메인 보정), 확장 전송(arAtelierPayload·arrivalSendAtelier) 메인 Opus 5.5. 출처(Origin)만이 문 — 공개 저장소라 비밀 불가, 위험 수용(가짜 알림만 가능).
+- **등급 T2**(두 저장소·운영 앱에 쓰는 함수). 라운드: GLM 1R(P3 1 채택) · Opus 4.7 2R(P2 1·Nit 1 채택, Nit 1 기각; 자기 검수 회피) · GLM 3R(0). 경로: OpenRouter(codex 0.167, read-only) · Opus 구독. 선임: 최근 Luna 연속이라 GLM.
+- **비용**: GLM 1R $0.3045 · 3R $0.2432 · Opus 4.7 구독(미분리).
+- 운영 반영: arrival_alerts 생성(RLS 정책 없음, 공개 키 조회 빈 결과) · arrival-notify 배포(atelier f97e3d7·cd1f4be) — 운영 알림 오염 금지라 거부 경로(403/400/204)로만 스모크. 실제 지연 건 첫 전송은 라이브 미확인.
+- 테스트: 확장 458/458 · atelier arrival-notify 7/7 · 두 쪽 함수를 node 로 엮은 교차 확인.

@@ -33,8 +33,14 @@ test('background — ubArrivalWatch 가 꺼져 있으면 조회 전에 return', 
 
 test('background — 쓰기 URL 패턴 없음(읽기 POST·공휴일 GET 만)', () => {
   assert.ok(!/Write\.do|Delete\.do|Modify\.do|Standby|CurrentSetting/.test(arrivalBlock), '쓰기 URL 패턴 발견');
+  //  POST 는 둘: 유비샵 목록 검색(읽기) + 아틀리에 arrival-notify(4.5.2, 앱 알림 넣기 — 유비샵 쓰기 아님).
   const posts = arrivalBlock.match(/method:\s*'POST'/g) || [];
-  assert.strictEqual(posts.length, 1, 'POST 는 목록 검색 하나뿐이어야 한다');
+  assert.strictEqual(posts.length, 2, 'POST 는 목록 검색과 아틀리에 알림 둘뿐이어야 한다');
+  assert.ok(/fetch\(ARRIVAL_ATELIER_URL,\s*\{\s*method:\s*'POST'/.test(arrivalBlock));
+  //  정의만 있고 호출이 빠지면 아틀리에 알림이 조용히 끊긴다 — arrivalCheckInner 본문에서 부르는지 고정(Opus 4.7 R2 Nit).
+  const inner = arrivalBlock.slice(arrivalBlock.indexOf('async function arrivalCheckInner'), arrivalBlock.indexOf('async function arrivalSendAtelier'));
+  assert.ok(/await arrivalSendAtelier\(items\)/.test(inner), 'arrivalCheckInner 가 arrivalSendAtelier(items) 를 불러야 한다');
+  assert.ok(/ARRIVAL_ATELIER_URL\s*=\s*'https:\/\/sshwwwavcbgyiyojngav\.supabase\.co\/functions\/v1\/arrival-notify'/.test(arrivalBlock));
   assert.ok(/orderItemList\.do\?tcode=order_item/.test(arrivalBlock));
   assert.ok(/searchShop:\s*'LT'/.test(arrivalBlock));
   assert.ok(/\['O--',\s*'pre'\][\s\S]*\['OS-',\s*'pre'\][\s\S]*\['B--',\s*'post'\]/.test(arrivalBlock));
