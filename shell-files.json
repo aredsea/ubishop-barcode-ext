@@ -1,9 +1,9 @@
 {
-  "version": "4.5.0",
+  "version": "4.5.1",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "915481ab574fa05136d811f4eac9e95c5b7ed8ad3a83d569ceba68766ec85d80"
+      "sha256": "1395f9741f5a419069672db3bfdda6fc6d161ea50b937815c3b38c1ffe3764c4"
     },
     {
       "path": "src/loader.js",
@@ -19,7 +19,7 @@
     },
     {
       "path": "src/background.js",
-      "sha256": "13e847656b974fd9f48b9a5ebebf413a7703d837b492747f9ad27fb2b875f32c"
+      "sha256": "f4b2552fd1f73d04e3c137312fec663f08bde415f1a3d6eef5aac17b68fd26df"
     },
     {
       "path": "src/skin.js",
@@ -27,11 +27,11 @@
     },
     {
       "path": "popup/popup.html",
-      "sha256": "fc02e81a0702e356e096d3f8274e842adf68d6fa2d2d57ac73ec637282ee52e9"
+      "sha256": "831d21c75b8554bfa404e84935ff943ab113c2c9f0ebd129afcbd5e1bb94ad64"
     },
     {
       "path": "popup/popup.js",
-      "sha256": "293b5bfcb6de98c7afda5b51eb13209b64259ec6827840bf3ba80de930643649"
+      "sha256": "06efd94cb1bcbfda3b6a8552b334d84cbcd446c8d67671d27819810641cd17ee"
     },
     {
       "path": "rules/cache.json",
@@ -84,6 +84,18 @@
     {
       "path": "src/storeprice.js",
       "sha256": "e5fd4bbc7b32830fe3306492031b116fc91ad48cf776452c17400065ac7591ed"
+    },
+    {
+      "path": "src/arrival-core.js",
+      "sha256": "5cfa6305f800748d64c473a3eac45685498d79d8ee5a1c5e14e0508472bdd3da"
+    },
+    {
+      "path": "pages/arrival.html",
+      "sha256": "7e8614b5a91651bcf78831a9f8abf61cae85b19adf8e8ec1c3c45e1d605ca19b"
+    },
+    {
+      "path": "pages/arrival.js",
+      "sha256": "558c5fd14137f57a6d2b7bb21c35eab7aceb1d99796c67e2d772800372a93cb7"
     },
     {
       "path": "icons/icon128.png",

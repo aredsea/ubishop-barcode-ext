@@ -9,7 +9,8 @@
 
   const D = {
     ubSkin: false, ubAutoSync: false,
-    ubEditPopup: false, ubHqConfirm: false, ubOrderImport: true, ubSaleImport: true
+    ubEditPopup: false, ubHqConfirm: false, ubOrderImport: true, ubSaleImport: true,
+    ubArrivalWatch: false
   };
 
   const $ = id => document.getElementById(id);
@@ -19,6 +20,7 @@
   const hqConfirm = $('hqConfirm');
   const orderImport = $('orderImport');
   const saleImport = $('saleImport');
+  const arrivalWatch = $('arrivalWatch');
   const sub = $('sub');
 
   try { $('ver').textContent = 'v' + chrome.runtime.getManifest().version; } catch (e) {}
@@ -30,6 +32,7 @@
     hqConfirm.checked = !!s.ubHqConfirm;
     orderImport.checked = !!s.ubOrderImport;
     saleImport.checked = !!s.ubSaleImport;
+    arrivalWatch.checked = !!s.ubArrivalWatch;
     sub.classList.toggle('hidden', !s.ubSkin);
     [autoSync, editPopup, hqConfirm, orderImport, saleImport].forEach(el => { el.disabled = !s.ubSkin; });
   }
@@ -45,6 +48,8 @@
   hqConfirm.addEventListener('change',   () => save({ ubHqConfirm: hqConfirm.checked }));
   orderImport.addEventListener('change', () => save({ ubOrderImport: orderImport.checked }));
   saleImport.addEventListener('change',  () => save({ ubSaleImport: saleImport.checked }));
+  arrivalWatch.addEventListener('change', () => save({ ubArrivalWatch: arrivalWatch.checked }));
+  $('arrivalList').addEventListener('click', () => { chrome.tabs.create({ url: chrome.runtime.getURL('pages/arrival.html') }); });
 
   // 아틀리에 조회 열쇠 — 입력란은 password 형식, 저장 후 값은 다시 보이지 않고 '저장됨/없음' 만 표시한다.
   const LKEY = 'ubSlLedgerKey';

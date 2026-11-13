@@ -1,4 +1,4 @@
-importScripts('fsm.js');
+importScripts('fsm.js', 'orderimport-core.js', 'arrival-core.js');
 
 /* =============================================================================
  *  background.js — MV3 서비스워커.
@@ -272,7 +272,8 @@ async function checkUpdate() {
       // 데스크톱 알림 — 같은 버전으로 이미 알렸으면 skip(스팸 방지).
       chrome.storage.local.get({ ubUpdateNotifiedVer: '' }, (s) => {
         try {
-          chrome.storage.local.set({ ubUpdateAvailable: remote.version });
+          //  저장이 끝난 뒤 배지를 다시 계산 — 그 사이 입고 지연 갱신이 옛 값을 읽고 NEW 를 덮었을 수 있다(Luna R1 P2).
+          chrome.storage.local.set({ ubUpdateAvailable: remote.version }, () => { void chrome.runtime.lastError; arrivalBadgeRefresh(); });
         } catch (_) {}
         if (s && s.ubUpdateNotifiedVer !== remote.version) {
           try {
@@ -291,6 +292,7 @@ async function checkUpdate() {
     } else {
       try { chrome.action.setBadgeText({ text: '' }); } catch (_) {}
       try { chrome.storage.local.set({ ubUpdateAvailable: '', ubUpdateNotifiedVer: '' }); } catch (_) {}
+      arrivalBadgeRefresh({ noUpdate: true });   // 업데이트 배지를 지운 자리에 입고 지연 건수 배지를 되살린다
     }
   } catch (e) { console.warn('[UB][bg] update check failed:', e && e.message); }
 }
@@ -1609,3 +1611,205 @@ async function ubAutoDispatchNativeWrite(req, writeFn) {
   }));
   return error ? { ok: false, error, dispatched: true } : { ok: true, result, dispatched: true };
 }
+
+
+/* =============================================================================
+ *  입고 지연 알림 (v4.5.1) — FASHION(LT) 미입고 주문(O--·OS-·B--) 중 영업일 14일 초과를 조회·저장·알림·배지.
+ *  스펙: docs/superpowers/specs/2026-11-13-arrival-delay-design.md · 판정 로직은 src/arrival-core.js(ubArrival).
+ *  ⚠ 읽기 전용: 유비샵 주문전표 목록 검색 POST 와 공휴일 GET 만 한다. 스위치 ubArrivalWatch(기본 false)가 꺼져 있으면 아무 것도 안 한다.
+ *  ⚠ 서비스워커엔 DOMParser 가 없다 — HTML 파싱은 arrival-core(정규식/문자열 스캔)만 쓴다.
+ *  storage: ubArrival {at,ok,error,capped,holidaysOk,items} · ubArrivalNotified [key…] · ubArrivalHolidays {YYYY:{days,at}} · ubArrivalLastOk ISO
+ * ========================================================================== */
+const ARRIVAL_ALARM = 'ub-arrival';
+const ARRIVAL_NOTIFY_PREFIX = 'ub-arrival-';
+const ARRIVAL_LIST_URL = 'http://ubdstore.ubshop.biz/jun/orderitem/orderItemList.do?tcode=order_item';
+const ARRIVAL_LIST_PATH = '/jun/orderitem/orderItemList.do';
+const ARRIVAL_HOLIDAY_URL = 'https://sshwwwavcbgyiyojngav.supabase.co/functions/v1/holidays?year=';
+const ARRIVAL_STATUSES = [['O--', 'pre'], ['OS-', 'pre'], ['B--', 'post']];
+const ARRIVAL_BADGE_COLOR = '#e0483f';
+const ARRIVAL_MIN_GAP_MS = 2 * 3600 * 1000;
+const ARRIVAL_FETCH_TIMEOUT_MS = 30000;
+const ARRIVAL_HOLIDAY_TTL_MS = 7 * 24 * 3600 * 1000;
+let arrivalRunning = null;
+
+function arrivalYmd(d) {
+  const p = (x) => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+function arrivalStorageGet(defaults) { return new Promise((res) => { try { chrome.storage.local.get(defaults, (r) => res(r || defaults)); } catch (_) { res(defaults); } }); }
+function arrivalStorageSet(obj) { return new Promise((res) => { try { chrome.storage.local.set(obj, () => { void chrome.runtime.lastError; res(); }); } catch (_) { res(); } }); }
+
+//  배지: 업데이트('NEW', 더 새 버전이 있을 때) 우선 → 지연 건수(빨강) → 없음. noUpdate=true 면 업데이트 없음으로 본다(checkUpdate 가 방금 지운 경우).
+let arrivalBadgeGen = 0;
+async function arrivalBadgeRefresh(opts) {
+  const gen = ++arrivalBadgeGen;
+  try {
+    const s = await arrivalStorageGet({ ubArrivalWatch: false, ubArrival: null, ubUpdateAvailable: '' });
+    if (gen !== arrivalBadgeGen) return;   // 그 사이 더 새 갱신이 시작됐으면 낡은 읽기로 덮지 않는다(Luna R2 P2)
+    const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; } return false; };
+    const upd = !(opts && opts.noUpdate) && s.ubUpdateAvailable && newer(s.ubUpdateAvailable, chrome.runtime.getManifest().version);
+    if (upd) { chrome.action.setBadgeText({ text: 'NEW' }); chrome.action.setBadgeBackgroundColor({ color: '#35C5F0' }); return; }
+    const n = s.ubArrivalWatch && s.ubArrival && Array.isArray(s.ubArrival.items) ? s.ubArrival.items.length : 0;
+    if (n > 0) { chrome.action.setBadgeText({ text: String(n) }); chrome.action.setBadgeBackgroundColor({ color: ARRIVAL_BADGE_COLOR }); }
+    else chrome.action.setBadgeText({ text: '' });
+  } catch (_) {}
+}
+
+//  공휴일 Set. 필요한 해마다 캐시(과거 연도 영구, 올해 이후 7일 TTL). 조회 실패 연도는 만료 캐시라도 쓰고, 그것도 없으면 빈 것 + ok=false.
+async function arrivalHolidays(years, nowMs) {
+  const st = await arrivalStorageGet({ ubArrivalHolidays: {} });
+  const cache = (st.ubArrivalHolidays && typeof st.ubArrivalHolidays === 'object') ? st.ubArrivalHolidays : {};
+  const curYear = new Date(nowMs).getFullYear();
+  const set = new Set(); let ok = true; let changed = false;
+  for (const y of years) {
+    const c = cache[y];
+    const fresh = c && c.days && (y < curYear || (nowMs - (c.at || 0)) < ARRIVAL_HOLIDAY_TTL_MS);
+    let days = fresh ? c.days : null;
+    if (!days) {
+      try {
+        const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 15000);
+        let r; try { r = await fetch(ARRIVAL_HOLIDAY_URL + y, { cache: 'no-store', signal: ctl.signal }); } finally { clearTimeout(to); }
+        if (!r.ok) throw new Error('http_' + r.status);
+        const j = await r.json();
+        if (!j || typeof j.days !== 'object' || j.days === null) throw new Error('bad_shape');
+        days = j.days; cache[y] = { days, at: nowMs }; changed = true;
+      } catch (_) {
+        days = (c && c.days) ? c.days : null;       // 만료 캐시라도 없는 것보다 낫다
+        if (days) ok = false;                         // 다만 최신이 아니니 '확인 실패' 로 알린다(Luna R1 P2)
+      }
+    }
+    if (days) Object.keys(days).forEach((k) => set.add(k)); else ok = false;
+  }
+  if (changed) await arrivalStorageSet({ ubArrivalHolidays: cache });
+  return { set, ok };
+}
+
+//  한 상태코드의 목록을 읽는다. 로그인 끊김·구조 변경·네트워크 오류는 Error('login' | 'parse:<코드>' | 'net:…') 로 던진다.
+async function arrivalFetchRows(code, range) {
+  const body = new URLSearchParams({
+    tcode: 'order_item', reqPage: '1', pageSize: '500', searchSortType: 'seq', searchShop: 'LT',
+    searchItemStatus: code, searchDateType: 'a.orderDate',
+    syear: range.syear, smonth: range.smonth, sday: range.sday, eyear: range.eyear, emonth: range.emonth, eday: range.eday
+  });
+  const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), ARRIVAL_FETCH_TIMEOUT_MS);
+  let r, buf;
+  try {
+    r = await fetch(ARRIVAL_LIST_URL, { method: 'POST', credentials: 'include', cache: 'no-store', signal: ctl.signal, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+    buf = await r.arrayBuffer();
+  } catch (e) { throw new Error('net:' + String(e && e.message || e)); }
+  finally { clearTimeout(to); }
+  let u = null; try { u = new URL(r.url); } catch (_) {}
+  if (!u || !/(^|\.)ubshop\.biz$/i.test(u.hostname) || u.pathname !== ARRIVAL_LIST_PATH) throw new Error('login');
+  if (!r.ok) throw new Error('net:http_' + r.status);
+  let html = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+  if ((html.match(/�/g) || []).length > 20) { try { html = new TextDecoder('euc-kr').decode(buf); } catch (_) {} }
+  const rows = self.ubArrival.arRows(html);
+  if (rows === null) throw new Error('parse:' + code);
+  return rows;
+}
+
+async function arrivalCheck(opts) {
+  if (arrivalRunning) return arrivalRunning;
+  arrivalRunning = arrivalCheckInner(opts || {}).catch((e) => ({ ok: false, error: 'internal:' + String(e && e.message || e) })).finally(() => { arrivalRunning = null; });
+  return arrivalRunning;
+}
+
+async function arrivalCheckInner(opts) {
+  const s = await arrivalStorageGet({ ubArrivalWatch: false, ubArrival: null, ubArrivalNotified: [], ubArrivalLastOk: '' });
+  if (!s.ubArrivalWatch) { await arrivalBadgeRefresh(); return { ok: false, error: 'off' }; }
+  const now = new Date(); const nowMs = now.getTime();
+  if (!opts.force) {
+    const h = now.getHours();
+    //  건너뛰어도 배지는 다시 그린다 — 배지는 크롬을 다시 켜면 사라져, 아침 9시 전엔 저장된 지연 건수가 안 보였다(Opus 4.7 R3 P2).
+    if (h < 9 || h >= 19) { await arrivalBadgeRefresh(); return { ok: true, skipped: 'hours' }; }
+    const last = Date.parse(s.ubArrivalLastOk || '');
+    if (Number.isFinite(last) && nowMs - last < ARRIVAL_MIN_GAP_MS) { await arrivalBadgeRefresh(); return { ok: true, skipped: 'gap' }; }
+  }
+  const todayYmd = arrivalYmd(now);
+  const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 365);
+  const p2 = (x) => String(x).padStart(2, '0');
+  const range = { syear: String(from.getFullYear()), smonth: p2(from.getMonth() + 1), sday: p2(from.getDate()), eyear: String(now.getFullYear()), emonth: p2(now.getMonth() + 1), eday: p2(now.getDate()) };
+  const years = []; for (let y = from.getFullYear(); y <= now.getFullYear(); y++) years.push(y);
+  const prev = s.ubArrival && typeof s.ubArrival === 'object' ? s.ubArrival : null;
+
+  let error = '', capped = false; const stageRows = [];
+  try {
+    for (const [code, stage] of ARRIVAL_STATUSES) {
+      const rows = await arrivalFetchRows(code, range);
+      if (rows.length >= 500) capped = true;
+      stageRows.push({ stage, rows });
+    }
+  } catch (e) { error = String(e && e.message || e); }
+
+  if (error) {
+    //  실패: 직전 성공 결과(items)는 지우지 않는다. 알림·배지 변경 없음.
+    await arrivalStorageSet({ ubArrival: Object.assign({}, prev || { items: [], capped: false, holidaysOk: true }, { at: nowMs, ok: false, error }) });
+    return { ok: false, error };
+  }
+
+  const hol = await arrivalHolidays(years, nowMs);
+  //  조회하는 사이 스위치가 꺼졌으면 결과를 내지 않는다 — 꺼진 뒤 알림이 뜨면 안 된다(Luna R1 P2).
+  if (!(await arrivalStorageGet({ ubArrivalWatch: false })).ubArrivalWatch) { await arrivalBadgeRefresh(); return { ok: false, error: 'off' }; }
+  const A = self.ubArrival;
+  let items = [];
+  for (const sr of stageRows) items = items.concat(A.arJudge(sr.rows, { stage: sr.stage, todayYmd, holidaySet: hol.set }));
+  items = A.arSort(items);
+  await arrivalStorageSet({ ubArrival: { at: nowMs, ok: true, error: '', capped, holidaysOk: hol.ok, items }, ubArrivalLastOk: now.toISOString() });
+  await arrivalBadgeRefresh();
+
+  const prevNotified = Array.isArray(s.ubArrivalNotified) ? s.ubArrivalNotified : [];
+  const nk = A.arNewKeys(items.map((x) => x.key), prevNotified);
+  let shown = !nk.fresh.length;
+  //  알림 직전에 스위치를 한 번 더 본다 — 저장·배지 await 사이에 꺼졌을 수 있다(Opus 4.7 R3 Nit).
+  const stillOn = nk.fresh.length ? (await arrivalStorageGet({ ubArrivalWatch: false })).ubArrivalWatch : true;
+  if (!stillOn) return { ok: false, error: 'off' };
+  if (nk.fresh.length) {
+    //  알림이 실제로 떴을 때만 '알렸다' 로 기록한다 — 실패한 채 기록하면 그 건은 영영 안 알린다(Luna R2 P2).
+    shown = await new Promise((res) => {
+      try {
+        chrome.notifications.create(ARRIVAL_NOTIFY_PREFIX + Date.now(), {
+          type: 'basic', iconUrl: 'icons/icon128.png',
+          title: '입고 지연 새로 ' + nk.fresh.length + '건',
+          message: '전체 ' + items.length + '건 · 가장 오래된 것 ' + items[0].elapsed + '영업일'
+        }, (id) => { res(!chrome.runtime.lastError && !!id); });
+      } catch (_) { res(false); }
+    });
+  }
+  //  500행으로 잘린 결과는 일부만 본 것 — 안 보인 건의 기록을 지우면 다시 보일 때 '새로' 로 또 알린다(Luna R2 P2). 잘렸으면 지우지 않는다.
+  const kept = capped ? Array.from(new Set(prevNotified.concat(nk.fresh))) : nk.nextNotified;
+  const next = shown ? kept : kept.filter((k) => nk.fresh.indexOf(k) < 0);
+  await arrivalStorageSet({ ubArrivalNotified: next });
+  return { ok: true, count: items.length, fresh: nk.fresh.length };
+}
+
+function arrivalOpenList() {
+  try { chrome.tabs.create({ url: chrome.runtime.getURL('pages/arrival.html') }); } catch (_) {}
+}
+
+try {
+  chrome.alarms.create(ARRIVAL_ALARM, { periodInMinutes: 30 });
+  chrome.alarms.onAlarm.addListener((a) => { if (a.name === ARRIVAL_ALARM) arrivalCheck({}); });
+} catch (_) {}
+chrome.runtime.onStartup.addListener(() => { arrivalCheck({}); });
+chrome.runtime.onInstalled.addListener(() => { arrivalCheck({}); });
+try {
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== 'local' || !ch || !ch.ubArrivalWatch) return;
+    if (ch.ubArrivalWatch.newValue) arrivalCheck({ force: true });
+    else arrivalBadgeRefresh();
+  });
+} catch (_) {}
+try {
+  chrome.notifications.onClicked.addListener((id) => {
+    if (id && id.indexOf(ARRIVAL_NOTIFY_PREFIX) === 0) {
+      try { chrome.notifications.clear(id); } catch (_) {}
+      arrivalOpenList();
+    }
+  });
+} catch (_) {}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.source !== 'ub' || msg.type !== 'arrivalRefresh') return;
+  arrivalCheck({ force: true }).then((r) => sendResponse({ ok: !!(r && r.ok), error: (r && r.error) || '' }));
+  return true;
+});

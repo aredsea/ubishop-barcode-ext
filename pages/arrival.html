@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>입고 지연 목록</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1b1b; --sub:#6b7280; --line:#e5e7eb; --on:#35C5F0; --soft:#f7f9fc; --bad:#e0483f; }
+  * { box-sizing:border-box; font-family:'Pretendard','Malgun Gothic',sans-serif; }
+  body { margin:0; padding:20px 24px; color:var(--fg); background:var(--bg); font-size:13px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  .meta { color:var(--sub); font-size:12px; margin-bottom:10px; }
+  .bar { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+  button { padding:7px 14px; background:var(--on); color:#fff; border:0; border-radius:6px; font-size:12px; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .note { padding:8px 12px; margin-bottom:8px; border-radius:8px; font-size:12px; line-height:1.5; background:var(--soft); border:1px solid var(--line); }
+  .note.warn { background:#fff3f3; border-color:#f0b4b4; color:#b42318; font-weight:700; }
+  .empty { padding:40px 0; text-align:center; color:var(--sub); }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { font-size:11px; color:var(--sub); background:var(--soft); white-space:nowrap; }
+  td.num, th.num { text-align:right; }
+  .el { font-weight:700; color:var(--bad); }
+  .tag { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:700; background:#e0f4fc; color:#0f8fb8; }
+  .tag.post { background:#eef4f8; color:#0f6f8c; }
+  a { color:#0f6f8c; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+  <h1 id="head">입고 지연 (FASHION · 14영업일 초과)</h1>
+  <div class="meta" id="meta"></div>
+  <div class="bar"><button id="refresh">지금 다시 확인</button></div>
+  <div id="notes"></div>
+  <div id="off" class="empty" hidden>팝업에서 입고 지연 알림을 켜세요</div>
+  <div id="none" class="empty" hidden>지연 없음</div>
+  <table id="tbl" hidden>
+    <thead><tr>
+      <th>단계</th><th class="num">경과 영업일</th><th>주문일</th><th>발주일</th><th>발주처</th>
+      <th>상품</th><th class="num">수량</th><th>상태</th><th>주문장번호</th>
+    </tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+  <script src="arrival.js"></script>
+</body>
+</html>
