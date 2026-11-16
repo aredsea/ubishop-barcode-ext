@@ -37,7 +37,8 @@ $patterns = @(
   'src/storeprice.js',
   'src/arrival-core.js',
   'pages/arrival.html',
-  'pages/arrival.js'
+  'pages/arrival.js',
+  'src/arrival-panel.js'
 )
 $textExt = @('.js', '.json', '.html', '.htm', '.css', '.xml', '.md', '.txt', '.svg')
 
