@@ -1,9 +1,9 @@
 {
-  "version": "4.5.4",
+  "version": "4.5.5",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "d5bdbeca31fc8473ca50a0dab1929bfc34bc6eb30a351e2e183ef8bce4668cee"
+      "sha256": "a1b4c33ebbe394cbafc39f3ead77d228ab0d0ffe117c6402a9ee416d6f20efbb"
     },
     {
       "path": "src/loader.js",
@@ -19,7 +19,7 @@
     },
     {
       "path": "src/background.js",
-      "sha256": "a220a4fdc770f005d1ab72fe806b845962ed666e311f5da0adc1ff23f2762eee"
+      "sha256": "2bb942070b9354fdd0b5210dc306d2ec234d31dfff2bd3223fd0dcf6257f20ce"
     },
     {
       "path": "src/skin.js",
@@ -27,11 +27,11 @@
     },
     {
       "path": "popup/popup.html",
-      "sha256": "831d21c75b8554bfa404e84935ff943ab113c2c9f0ebd129afcbd5e1bb94ad64"
+      "sha256": "4ffe2aa7975cfe5e2799381b893470d325e3bc7d73f4d180d1c84c5ad0a36fdb"
     },
     {
       "path": "popup/popup.js",
-      "sha256": "06efd94cb1bcbfda3b6a8552b334d84cbcd446c8d67671d27819810641cd17ee"
+      "sha256": "2edda4c57e1a5bf7d78ec1b2e4a080d335af1271d3b8b7e9e1951bf2f7eb9160"
     },
     {
       "path": "rules/cache.json",
@@ -95,11 +95,11 @@
     },
     {
       "path": "pages/arrival.js",
-      "sha256": "558c5fd14137f57a6d2b7bb21c35eab7aceb1d99796c67e2d772800372a93cb7"
+      "sha256": "9a5e35e2e06b0750618f4338059d19696228608e09f2af1c6e191581c1749e19"
     },
     {
       "path": "src/arrival-panel.js",
-      "sha256": "c851953c9a2aaaa41337a59280c0cffa8c5c7187a412b7c4168a2a83c0bf9996"
+      "sha256": "fceb88c08b9bc1d39fcb91bde1bcfa4253f812baaf143323d6d5d5a7d6624e17"
     },
     {
       "path": "icons/icon128.png",

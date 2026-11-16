@@ -1616,7 +1616,7 @@ async function ubAutoDispatchNativeWrite(req, writeFn) {
 /* =============================================================================
  *  입고 지연 알림 (v4.5.1) — FASHION(LT) 미입고 주문(O--·OS-·B--) 중 영업일 14일 초과를 조회·저장·알림·배지.
  *  스펙: docs/superpowers/specs/2026-11-13-arrival-delay-design.md · 판정 로직은 src/arrival-core.js(ubArrival).
- *  ⚠ 읽기 전용: 유비샵 주문전표 목록 검색 POST 와 공휴일 GET 만 한다. 스위치 ubArrivalWatch(기본 false)가 꺼져 있으면 아무 것도 안 한다.
+ *  ⚠ 읽기 전용: 유비샵 주문전표 목록 검색 POST 와 공휴일 GET 만 한다. 스위치 ubArrivalWatch(기본 true — 설치된 PC 모두 켜짐, 2026-11-16 사장님)가 꺼져 있으면 아무 것도 안 한다.
  *  ⚠ 서비스워커엔 DOMParser 가 없다 — HTML 파싱은 arrival-core(정규식/문자열 스캔)만 쓴다.
  *  storage: ubArrival {at,ok,error,capped,holidaysOk,items} · ubArrivalNotified [key…] · ubArrivalHolidays {YYYY:{days,at}} · ubArrivalLastOk ISO
  * ========================================================================== */
@@ -1646,7 +1646,7 @@ let arrivalBadgeGen = 0;
 async function arrivalBadgeRefresh(opts) {
   const gen = ++arrivalBadgeGen;
   try {
-    const s = await arrivalStorageGet({ ubArrivalWatch: false, ubArrival: null, ubUpdateAvailable: '' });
+    const s = await arrivalStorageGet({ ubArrivalWatch: true, ubArrival: null, ubUpdateAvailable: '' });
     if (gen !== arrivalBadgeGen) return;   // 그 사이 더 새 갱신이 시작됐으면 낡은 읽기로 덮지 않는다(Luna R2 P2)
     const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; } return false; };
     const upd = !(opts && opts.noUpdate) && s.ubUpdateAvailable && newer(s.ubUpdateAvailable, chrome.runtime.getManifest().version);
@@ -1717,7 +1717,7 @@ async function arrivalCheck(opts) {
 }
 
 async function arrivalCheckInner(opts) {
-  const s = await arrivalStorageGet({ ubArrivalWatch: false, ubArrival: null, ubArrivalNotified: [], ubArrivalLastOk: '' });
+  const s = await arrivalStorageGet({ ubArrivalWatch: true, ubArrival: null, ubArrivalNotified: [], ubArrivalLastOk: '' });
   if (!s.ubArrivalWatch) { await arrivalBadgeRefresh(); return { ok: false, error: 'off' }; }
   const now = new Date(); const nowMs = now.getTime();
   if (!opts.force) {
@@ -1751,7 +1751,7 @@ async function arrivalCheckInner(opts) {
 
   const hol = await arrivalHolidays(years, nowMs);
   //  조회하는 사이 스위치가 꺼졌으면 결과를 내지 않는다 — 꺼진 뒤 알림이 뜨면 안 된다(Luna R1 P2).
-  if (!(await arrivalStorageGet({ ubArrivalWatch: false })).ubArrivalWatch) { await arrivalBadgeRefresh(); return { ok: false, error: 'off' }; }
+  if (!(await arrivalStorageGet({ ubArrivalWatch: true })).ubArrivalWatch) { await arrivalBadgeRefresh(); return { ok: false, error: 'off' }; }
   const A = self.ubArrival;
   let items = [];
   for (const sr of stageRows) items = items.concat(A.arJudge(sr.rows, { stage: sr.stage, todayYmd, holidaySet: hol.set }));
@@ -1763,7 +1763,7 @@ async function arrivalCheckInner(opts) {
   const nk = A.arNewKeys(items.map((x) => x.key), prevNotified);
   let shown = !nk.fresh.length;
   //  알림 직전에 스위치를 한 번 더 본다 — 저장·배지 await 사이에 꺼졌을 수 있다(Opus 4.7 R3 Nit).
-  const stillOn = nk.fresh.length ? (await arrivalStorageGet({ ubArrivalWatch: false })).ubArrivalWatch : true;
+  const stillOn = nk.fresh.length ? (await arrivalStorageGet({ ubArrivalWatch: true })).ubArrivalWatch : true;
   if (!stillOn) return { ok: false, error: 'off' };
   if (nk.fresh.length) {
     //  알림이 실제로 떴을 때만 '알렸다' 로 기록한다 — 실패한 채 기록하면 그 건은 영영 안 알린다(Luna R2 P2).

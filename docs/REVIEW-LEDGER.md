@@ -746,3 +746,9 @@ replacement 문자를 동반, 16개가 소스 코드 에코 줄). 그래도 fail
 - **등급 T1**(읽기 전용 파서, fail-closed 유지). 라운드: 로컬 Codex(gpt-6.1-sol) 1R — P2 2 채택(#214 머리글 앞 번호 행 미검사, #215 중첩 표 첫 </table> 에서 끊김; 둘 다 코드 재현) · 2R — 1R 수정 확인, P2 1 채택(#216 <span>·&nbsp; 로 감싼 번호 놓침, 4.5.1 부터 있던 약점). 상한 2. 🔴 #216 수정은 재검수 없이 테스트(red-green)로만 확인.
 - 경로: 로컬 Codex 구독(OpenRouter 프로필은 exec 에서 401 로 미적용 — 비용 0).
 - 테스트 858 통과 · factory-live-search 2건 실패는 HEAD(d406db9) 깨끗한 사본에서도 같은 실패(이번 변경 무관, skin.js).
+
+### 2026-11-16 입고 지연 알림 스위치 기본 켜짐(4.5.5) — 지적 0
+
+- 계기: 사장님 — "옵션을 켜기만 해도 설치된 pc 에선 알림이 울려야지(카톡 PC 처럼)". 선택: **설치된 PC 전부 기본 켜짐**(끄면 그 PC만 꺼짐). ubArrivalWatch 기본값 false→true(background·패널·팝업·목록 페이지), 팝업 문구 수정, 기본값 false 잔존을 테스트로 금지.
+- **등급 T1**. 라운드: 로컬 Codex(gpt-6.1-sol) 1R — NO FINDINGS(저장소 전체 ubArrivalWatch 검색). 비용 0(구독).
+- 테스트 859 통과 · factory-live-search 실패는 이번 변경 무관(HEAD 동일).

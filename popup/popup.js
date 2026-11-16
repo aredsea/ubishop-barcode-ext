@@ -10,7 +10,7 @@
   const D = {
     ubSkin: false, ubAutoSync: false,
     ubEditPopup: false, ubHqConfirm: false, ubOrderImport: true, ubSaleImport: true,
-    ubArrivalWatch: false
+    ubArrivalWatch: true
   };
 
   const $ = id => document.getElementById(id);

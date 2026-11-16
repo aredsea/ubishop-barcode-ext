@@ -206,7 +206,7 @@
   }
   function load() {
     try {
-      chrome.storage.local.get({ ubArrivalWatch: false, ubArrival: null, ubArrivalAtelier: null }, (s) => {
+      chrome.storage.local.get({ ubArrivalWatch: true, ubArrival: null, ubArrivalAtelier: null }, (s) => {
         //  읽기 실패(확장 재시작 직후 등)면 옛 메뉴·패널을 남기지 않고 걷어 낸다(Luna R1 P2).
         if (chrome.runtime.lastError || !s) { state = { watch: false, arrival: null, atelier: null }; closePanel(); removeMenu(); return; }
         state = { watch: !!s.ubArrivalWatch, arrival: s.ubArrival || null, atelier: s.ubArrivalAtelier || null };

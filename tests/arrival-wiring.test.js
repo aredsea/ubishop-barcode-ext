@@ -28,7 +28,9 @@ test('background — ubArrivalWatch 가 꺼져 있으면 조회 전에 return', 
   const fetchAt = body.indexOf('arrivalFetchRows(');
   assert.ok(off >= 0, '스위치 OFF return 없음');
   assert.ok(fetchAt > off, '스위치 검사가 조회보다 먼저여야 한다');
-  assert.ok(/ubArrivalWatch:\s*false/.test(body), '스위치 기본값 false');
+  //  기본 켜짐 — 설치된 PC 모두 울린다(2026-11-16 사장님). 기본값 false 가 한 곳이라도 남으면 그 경로만 꺼진 것으로 읽는다.
+  assert.ok(/ubArrivalWatch:\s*true/.test(body), '스위치 기본값 true');
+  assert.ok(!/ubArrivalWatch:\s*false/.test(bg), 'background 에 기본값 false 가 남아 있다');
 });
 
 test('background — 쓰기 URL 패턴 없음(읽기 POST·공휴일 GET 만)', () => {
@@ -64,10 +66,11 @@ test('background — 알람·시작·스위치 변경·메시지 배선', () => 
   assert.ok(/msg\.type !== 'arrivalRefresh'/.test(arrivalBlock));
 });
 
-test('popup — 기본값 ubArrivalWatch: false · 스위치·버튼', () => {
+test('popup — 기본값 ubArrivalWatch: true · 스위치·버튼', () => {
   const js = read('popup/popup.js');
   const html = read('popup/popup.html');
-  assert.ok(/ubArrivalWatch:\s*false/.test(js), '팝업 기본값');
+  assert.ok(/ubArrivalWatch:\s*true/.test(js), '팝업 기본값 true');
+  for (const f of ['src/arrival-panel.js', 'pages/arrival.js', 'popup/popup.js']) assert.ok(!/ubArrivalWatch:\s*false/.test(read(f)), f + ' 에 기본값 false');
   assert.ok(/ubArrivalWatch:\s*arrivalWatch\.checked/.test(js));
   assert.ok(/pages\/arrival\.html/.test(js));
   assert.ok(/id="arrivalWatch"/.test(html) && /id="arrivalList"/.test(html));

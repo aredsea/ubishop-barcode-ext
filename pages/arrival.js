@@ -62,7 +62,7 @@
     $('tbl').hidden = false;
   }
 
-  function load() { chrome.storage.local.get({ ubArrivalWatch: false, ubArrival: null }, render); }
+  function load() { chrome.storage.local.get({ ubArrivalWatch: true, ubArrival: null }, render); }
   load();
   chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && (ch.ubArrival || ch.ubArrivalWatch)) load(); });
 
