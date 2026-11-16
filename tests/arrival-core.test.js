@@ -123,6 +123,24 @@ test('arRows — 머리글만 있는 0건 화면은 [] (본사확인 0건 같은
   assert.deepStrictEqual(A.arRows(table(HDR14, [])), []);
 });
 
+test('arRows — 실측 0건 화면: 합계 행이 머리글 위에 같은 표로 오고 "검색된 결과가 없습니다" 행 → [] (2026-11-16 parse:OS- 오보)', () => {
+  const sum = '<tr><td height="32">합&nbsp;&nbsp;계</td><td colspan="2">순금 : 0 g</td><td>0</td><td>0</td></tr>';
+  const hdr = '<tr>' + HDR14.map((h) => '<th>' + h + '</th>').join('') + '</tr>';
+  const none = '<tr><td colspan="20">검색된 결과가 없습니다.</td></tr>';
+  const html = '<html><body><table class="t_list">' + sum + hdr + none + '</table></body></html>';
+  assert.deepStrictEqual(A.arRows(html), []);
+  //  같은 구조에 번호 칸 행(idx 없음)이 섞이면 여전히 실패
+  assert.strictEqual(A.arRows(html.replace(none, '<tr><td>1</td><td>x</td></tr>')), null);
+  //  번호 행이 머리글보다 앞에 있어도 실패(Codex R1 P2)
+  assert.strictEqual(A.arRows(html.replace(sum, '<tr><td>1</td><td>x</td></tr>' + sum)), null);
+  //  머리글이 중첩 표 안이고 바깥 표에 번호 행이 있어도 실패(Codex R1 P2)
+  const nested = '<table class="t_list"><tr><td><table>' + sum + hdr + '</table></td></tr><tr><td>1</td><td>x</td></tr></table>';
+  assert.strictEqual(A.arRows(nested), null);
+  //  번호가 태그로 감싸이거나 &nbsp; 가 붙어도 번호 행(Codex R2 P2)
+  assert.strictEqual(A.arRows(html.replace(none, '<tr><td><span>1</span></td><td>x</td></tr>')), null);
+  assert.strictEqual(A.arRows(html.replace(none, '<tr><td>&nbsp;1&nbsp;</td><td>x</td></tr>')), null);
+});
+
 test('arRows — 번호 칸은 있는데 idx 체크박스가 없는 데이터 행이 있으면 null(0건으로 오인 금지, Luna R1 P1)', () => {
   const ok = row14({ seq: '9001', order: '26-11-13', jun: '0000002Z02', supplier: '키골드(F) 26-11-13', title: '상품 고객', status: '발주완료' });
   const noIdx = ok.replace(/<input[^>]*>/, '');

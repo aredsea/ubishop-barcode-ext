@@ -1,9 +1,9 @@
 {
-  "version": "4.5.3",
+  "version": "4.5.4",
   "files": [
     {
       "path": "manifest.json",
-      "sha256": "322dbd9cd972bda23f8c7fa87eba78e136cbf4a56cf329e7e64437974e62b27d"
+      "sha256": "d5bdbeca31fc8473ca50a0dab1929bfc34bc6eb30a351e2e183ef8bce4668cee"
     },
     {
       "path": "src/loader.js",
@@ -87,7 +87,7 @@
     },
     {
       "path": "src/arrival-core.js",
-      "sha256": "6f1c8cf1d7ef1753b91d599c4d1ab498edb85a391c7a2d3b8ba35349ad735b78"
+      "sha256": "300378bc35f27d4cf25a3be352dc4dc28681ac838d0e44eaba22c02c0a500589"
     },
     {
       "path": "pages/arrival.html",

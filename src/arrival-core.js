@@ -29,13 +29,23 @@
     const h = String(html == null ? '' : html);
     const tre = /<table\b[^>]*\bclass\s*=\s*["']?t_list["']?[^>]*>/gi; let tm;
     while ((tm = tre.exec(h))) {
-      const end = h.indexOf('</tr>', tm.index);
-      if (end < 0) continue;
-      const tx = nospace(h.slice(tm.index, end).replace(/<[^>]*>/g, ' '));
-      if (/주문일/.test(tx) && /고객명/.test(tx) && /상태/.test(tx)) {
-        //  표 안에 첫 칸이 번호인 행이 있으면 데이터가 있는데 idx 를 못 읽은 것 — '0건' 이 아니다(Luna R1 P1).
-        const close = h.indexOf('</table>', end); const body = h.slice(end, close < 0 ? h.length : close);
-        return !/<tr\b[^>]*>\s*<td\b[^>]*>\s*\d+\s*<\/td>/i.test(body);
+      //  표 끝 = 짝이 맞는 </table>(중첩 표 깊이 계산) — 첫 </table> 로 자르면 중첩 표 뒤 바깥 행을 못 본다(Codex R1 P2).
+      const tagRe = /<\/?table\b[^>]*>/gi; tagRe.lastIndex = tm.index; let depth = 0, tEnd = h.length, t;
+      while ((t = tagRe.exec(h))) { if (t[0][1] === '/') { if (--depth === 0) { tEnd = t.index; break; } } else depth++; }
+      const tbl = h.slice(tm.index, tEnd);
+      //  머리글은 첫 행이 아닐 수 있다 — 실측 0건 화면은 '합 계' 행이 같은 표 맨 위에 온다(2026-11-16 parse:OS- 오보).
+      let from = 0, end, hasHdr = false;
+      while ((end = tbl.indexOf('</tr>', from)) >= 0) {
+        const tx = nospace(tbl.slice(from, end).replace(/<[^>]*>/g, ' '));
+        if (/주문일/.test(tx) && /고객명/.test(tx) && /상태/.test(tx)) { hasHdr = true; break; }
+        from = end + 5;
+      }
+      //  표 어디든(머리글 앞 포함, Codex R1 P2) 첫 칸이 번호인 행이 있으면 데이터가 있는데 idx 를 못 읽은 것 — '0건' 이 아니다(Luna R1 P1).
+      //  첫 칸은 태그·&nbsp; 를 벗기고 본다 — <td><span>1</span></td>·<td>&nbsp;1</td> 도 번호다(Codex R2 P2).
+      if (hasHdr) {
+        const cellRe = /<tr\b[^>]*>\s*<td\b[^>]*>([\s\S]*?)<\/td>/gi; let cm;
+        while ((cm = cellRe.exec(tbl))) { if (/^\d+$/.test(nospace(cm[1].replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ')))) return false; }
+        return true;
       }
     }
     return false;
