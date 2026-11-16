@@ -125,7 +125,7 @@
     return n;
   }
 
-  //  stage 'pre'(O--·OS- 조회분: 기준 주문일) / 'post'(B-- 조회분: 기준 발주일, 없으면 주문일 + baseFallback). elapsed > days 만 반환.
+  //  stage 'pre'(O--·OS- 조회분: 기준 주문일) / 'post'(B-- 조회분: 기준 발주일, 없으면 주문일 + baseFallback). elapsed(기준일 포함 영업일 수) > days 만 반환.
   function arJudge(rows, opts) {
     const o = opts || {};
     const stage = o.stage === 'post' ? 'post' : 'pre';
@@ -137,7 +137,9 @@
         if (r.baljuDate) baseYmd = r.baljuDate; else baseFallback = true;
       }
       if (!baseYmd) continue;
-      const elapsed = arBizDaysAfter(baseYmd, o.todayYmd, o.holidaySet);
+      //  주문(발주) 당일을 1일째로 센다 — 기준일 전날 다음부터 = 기준일 포함(2026-11-16 사장님). 기준일이 주말·공휴일이면 그날은 안 센다.
+      const bu = ymdToUtc(baseYmd);
+      const elapsed = Number.isFinite(bu) ? arBizDaysAfter(utcToYmd(bu - 86400000), o.todayYmd, o.holidaySet) : 0;
       if (elapsed > days) out.push(Object.assign({}, r, { stage, baseYmd, baseFallback, elapsed, key: r.orderSeq + '|' + stage }));
     }
     return out;

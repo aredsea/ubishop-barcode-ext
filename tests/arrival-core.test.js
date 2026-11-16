@@ -46,17 +46,21 @@ test('arBizDaysAfter — 당일 0 · 주말 · 공휴일 · 연말 넘김', () =
   assert.strictEqual(A.arBizDaysAfter('2026-12-31', '2027-01-04'), 2);
 });
 
-test('arJudge — 경계 14 제외 · 15 포함', () => {
+test('arJudge — 주문 당일을 1일째로 센다 · 경계 14 제외 · 15 포함(2026-11-16 사장님)', () => {
   const S = new Set();
-  //  2026-10-26(월) 기준 → 14영업일 뒤 = 2026-11-13(금)
-  const row = { orderSeq: '1', orderDate: '2026-10-26', baljuDate: null };
-  assert.strictEqual(A.arBizDaysAfter('2026-10-26', '2026-11-13', S), 14);
+  //  2026-10-27(화) 주문 → 당일 포함 11-13(금) = 14일째, 11-16(월) = 15일째
+  const row = { orderSeq: '1', orderDate: '2026-10-27', baljuDate: null };
   assert.strictEqual(A.arJudge([row], { stage: 'pre', todayYmd: '2026-11-13', holidaySet: S }).length, 0);
   const r15 = A.arJudge([row], { stage: 'pre', todayYmd: '2026-11-16', holidaySet: S });
   assert.strictEqual(r15.length, 1);
   assert.strictEqual(r15[0].elapsed, 15);
   assert.strictEqual(r15[0].key, '1|pre');
-  assert.strictEqual(r15[0].baseYmd, '2026-10-26');
+  assert.strictEqual(r15[0].baseYmd, '2026-10-27');
+  //  주말 주문은 당일이 영업일이 아니라 더하지 않는다 — 11-01(일) 주문 → 11-02(월)이 1일째
+  assert.strictEqual(A.arJudge([{ orderSeq: '2', orderDate: '2026-11-01' }], { stage: 'pre', todayYmd: '2026-11-19', holidaySet: S }).length, 0);  // 14일째
+  assert.strictEqual(A.arJudge([{ orderSeq: '2', orderDate: '2026-11-01' }], { stage: 'pre', todayYmd: '2026-11-20', holidaySet: S })[0].elapsed, 15);
+  //  공휴일 주문도 당일을 세지 않는다
+  assert.strictEqual(A.arJudge([{ orderSeq: '3', orderDate: '2026-10-27' }], { stage: 'pre', todayYmd: '2026-11-16', holidaySet: new Set(['2026-10-27']) }).length, 0);
 });
 
 test('arJudge — pre 는 주문일, post 는 발주일, 발주일 없으면 주문일 + baseFallback', () => {
