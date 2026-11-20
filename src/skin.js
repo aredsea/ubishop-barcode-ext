@@ -150,6 +150,13 @@
     } catch (_) { return null; }
   })();
   const _IS_EP_FRAME = !!_EP_FRAME_ID;
+  //  ★기초상품관리 상품 수정 화면(v4.5.7). 이 화면은 masteredit.js 가 전용 레이아웃(큰 이미지
+  //   확대/축소 + 접이식 유비샵 메뉴)으로 다시 짠다. D102 도구 사이드바는 여기 뜨지 않는다.
+  //   팝업 판정(_IS_POPUP)에 기대지 않는다 — noopener 로 연 창은 판정이 빗나가 사이드바가 떴다.
+  const _IS_MASTER_EDIT = (() => {
+    try { return window === window.top && /\/master\/item\/masterItemModifyForm\.do/i.test(location.pathname); }
+    catch (_) { return false; }
+  })();
 
   //  버전은 manifest 에서 읽는다 — 하드코딩하면 릴리스마다 손으로 고쳐야 하고, 실제로 v3.6.1 이
   //   v3.8.8 까지 그대로 남아 배포 검증에서 '동기 실패' 로 오독될 뻔했다(2026-07-27).
@@ -206,6 +213,16 @@
 
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
+  //  상품 수정 창(v4.5.7) — 폼(980px) 옆에 큰 이미지 보기를 두려면 1100px 로는 모자란다.
+  //   화면이 허락하는 만큼(최대 1480×960) 연다. 작은 화면이면 masteredit.js 가 이미지를 위로 쌓는다.
+  function masterEditFeatures() {
+    let w = 1480, h = 960;
+    try {
+      w = Math.max(1040, Math.min(1480, (screen.availWidth || 1480) - 40));
+      h = Math.max(700, Math.min(960, (screen.availHeight || 960) - 40));
+    } catch (_) {}
+    return 'width=' + w + ',height=' + h + ',scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
+  }
 
   // 전표 자동 분할조회 캐시 대상 페이지.
   const CACHE_PAGES = {
@@ -287,7 +304,7 @@
       if (!on('ubThumbEdit')) return;
       e.preventDefault(); e.stopImmediatePropagation();
       // 같은 seq면 같은 윈도우 이름 → 한 번 열린 팝업 재사용(전환).
-      window.open(editUrl(seq), 'ubEdit_' + seq, POPUP_FEATURES);
+      window.open(editUrl(seq), 'ubEdit_' + seq, masterEditFeatures());
     };
 
     const a = img.closest('a');
@@ -3305,7 +3322,7 @@
 
   function renderSidebar() {
     // 팝업 창(상품수정/공장검색/imageView 등)·수정 패널 iframe 에서는 사이드바·핸들 안 뜨게.
-    if (_IS_POPUP || _IS_EP_FRAME) {
+    if (_IS_POPUP || _IS_EP_FRAME || _IS_MASTER_EDIT) {
       const old = document.getElementById(SIDEBAR_ID); if (old) old.remove();
       removeHandle();
       document.documentElement.classList.remove('ub-sidebar-docked');
