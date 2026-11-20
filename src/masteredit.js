@@ -118,7 +118,10 @@
   function findFormTable() {
     const form = document.forms && document.forms['form1'];
     const kids = Array.from(document.body.children);
-    return kids.find((c) => (form && c.contains(form)) || c.querySelector('img[src*="title_master_item"]')) || null;
+    //  form1 을 품은 블록이 먼저다. 제목 이미지는 form1 을 못 찾을 때만 쓰는 대체 단서
+    //   (제목만 든 머리 블록을 폼으로 오인하면 진짜 폼이 카드 밖에 남는다 — Luna 1R).
+    return (form && kids.find((c) => c.contains(form))) ||
+      kids.find((c) => c.querySelector('img[src*="title_master_item"]')) || null;
   }
   function findProductImg(scope) {
     return Array.from(scope.querySelectorAll('img')).find((i) => {
@@ -249,7 +252,12 @@
       show(native ? native.src : '', false);
     };
     if (native) {
-      try { new MutationObserver(syncNative).observe(native, { attributes: true, attributeFilter: ['src'] }); } catch (_) {}
+      //  네이티브 썸네일이 바뀌면(원래·삭제·이미지등록) 고른 파일 미리보기보다 그쪽이 최신이다.
+      const onNative = () => {
+        if (objUrl) { try { URL.revokeObjectURL(objUrl); } catch (_) {} objUrl = null; }
+        syncNative();
+      };
+      try { new MutationObserver(onNative).observe(native, { attributes: true, attributeFilter: ['src'] }); } catch (_) {}
       native.style.cursor = 'zoom-in';
       native.title = '오른쪽 크게 보기에서 확대/축소';
       native.addEventListener('click', () => { if (!objUrl) fit(); });
