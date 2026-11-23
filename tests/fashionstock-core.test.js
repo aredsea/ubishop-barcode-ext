@@ -51,7 +51,7 @@ test('fsSplitTitle — 상품명 코드 고객명 비고', () => {
 
 test('fsCandidates — 같은 상품코드 · 주문완료만', () => {
   const rows = [
-    { orderSeq: '11', junNum: '0000002Z2A', orderDate: '20261123', title: '[925실버]물방울오팔팔찌 F-BF-I-PG-PA-0091 김가명4672/카', status: '주문완료' },
+    { orderSeq: '11', junNum: '0000002Z2A', orderDate: '2026-11-23', title: '[925실버]물방울오팔팔찌 F-BF-I-PG-PA-0091 김가명4672/카', status: '주문완료' },
     { orderSeq: '12', junNum: '0000002Z2B', orderDate: '20261122', title: '[925실버]물방울오팔팔찌 F-BF-I-PG-PA-0091 박가명1111/쿠', status: '본사확인' },
     { orderSeq: '13', junNum: '0000002Z2C', orderDate: '20261121', title: '다른상품 F-RF-P-PG-PA-00G3 이가명2222/카', status: '주문완료' },
   ];
