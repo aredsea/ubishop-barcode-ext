@@ -322,8 +322,28 @@
     img.addEventListener('mouseenter', () => { if (on('ubThumbEdit')) img.style.outline = '2px solid #35C5F0'; });
     img.addEventListener('mouseleave', () => { img.style.outline = ''; });
   }
+  //  ★목록의 [수정] 아이콘(v4.5.8, 사장님 2026-11-23): 네이티브 modify(seq) 는 location.href 로
+  //   **같은 탭**을 수정폼으로 바꿔 목록이 사라진다. 썸네일과 같은 팝업 창으로 연다.
+  //   href 는 건드리지 않는다 — masterprice.js 가 javascript:modify('<seq>') 문자열에서 seq 를 읽는다.
+  //   Ctrl/Shift/가운데 클릭은 네이티브 그대로 둔다.
+  function bindListModifyPopup() {
+    if (!MASTER_RE.test(location.pathname)) return;
+    if (document.documentElement.dataset.ubModifyPopup === '1') return;
+    document.documentElement.dataset.ubModifyPopup = '1';
+    document.addEventListener('click', (e) => {
+      if (!on('ubThumbEdit')) return;
+      if (e.button !== 0 || e.ctrlKey || e.shiftKey || e.metaKey || e.altKey) return;
+      const a = e.target && e.target.closest ? e.target.closest('a[href^="javascript:modify("]') : null;
+      if (!a) return;
+      const m = /^javascript:modify\(\s*['"]?(\d+)['"]?\s*\)/.exec(a.getAttribute('href') || '');
+      if (!m) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      window.open(editUrl(m[1]), 'ubEdit_' + m[1], masterEditFeatures());
+    }, true);
+  }
   function bindThumbEdit(root) {
     if (!MASTER_RE.test(location.pathname)) return;
+    bindListModifyPopup();
     const scope = root || document;
     const nodes = [...scope.querySelectorAll('img, input[name=idx]')];
     let last = null;

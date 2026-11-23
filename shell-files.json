@@ -1,121 +1,121 @@
 {
-  "version": "4.5.7",
-  "files": [
-    {
-      "path": "manifest.json",
-      "sha256": "343c71a4177833617f55412f2af37dbac4eaa8fd36c234ac0055533f04c5ce51"
-    },
-    {
-      "path": "src/loader.js",
-      "sha256": "25f457b4e5f3c284244907928245788da3059cb2b0d28137b40f9b9a760c42e0"
-    },
-    {
-      "path": "src/localbridge.js",
-      "sha256": "5ce2c4bb2a9933fe645a36e78dfe24f13e35ca0b2e54eee60e096cc70d3a864a"
-    },
-    {
-      "path": "src/fsm.js",
-      "sha256": "09544b98795bee63e51a3c2ab82042bc44f40ceb30f9ef3ed781ec6dbff15c23"
-    },
-    {
-      "path": "src/background.js",
-      "sha256": "2bb942070b9354fdd0b5210dc306d2ec234d31dfff2bd3223fd0dcf6257f20ce"
-    },
-    {
-      "path": "src/skin.js",
-      "sha256": "8af97934b9965671ef84231f5379429777c3181c88c6c618c4c045b976a41d1a"
-    },
-    {
-      "path": "popup/popup.html",
-      "sha256": "4ffe2aa7975cfe5e2799381b893470d325e3bc7d73f4d180d1c84c5ad0a36fdb"
-    },
-    {
-      "path": "popup/popup.js",
-      "sha256": "2edda4c57e1a5bf7d78ec1b2e4a080d335af1271d3b8b7e9e1951bf2f7eb9160"
-    },
-    {
-      "path": "rules/cache.json",
-      "sha256": "bc0688cbcd2cba11ed4a902dcaf551eb91e59e1624d8b13d544c088bdf3bb3cc"
-    },
-    {
-      "path": "src/erp.js",
-      "sha256": "c5db02b69a4f934f137f2156b192d57a9d90b2639edb1a429b0c07a858c4c3bf"
-    },
-    {
-      "path": "src/orderimport-core.js",
-      "sha256": "d6a194fd6f89c98406395a5baaf0f95c7e04a5f6e684ea55023a50bcf72587a1"
-    },
-    {
-      "path": "src/orderimport-erp.js",
-      "sha256": "9a74d3c00d831c47861bef6381c82fc22dbd0fdf5a888355a9e8b60d6cdb3ad5"
-    },
-    {
-      "path": "src/orderimport.js",
-      "sha256": "b079c211f8dcb5b8bc311f433b895dee2fa4e206b72c497f18249915e23d501d"
-    },
-    {
-      "path": "src/orderimport-xls.js",
-      "sha256": "6f3990c21b7687d5743b14385068cb3b8baefea5b5e65b073402bee0ded2e307"
-    },
-    {
-      "path": "vendor/xlsx.full.min.js",
-      "sha256": "cc015130aa8521e7f088f88898eba949ccdcbfb38df0bd129b44b7273c3a6f41"
-    },
-    {
-      "path": "src/saleimport-core.js",
-      "sha256": "71592df38240924973ff280b9cf301cd06614746f255c9e9974f2ef47e6e1d05"
-    },
-    {
-      "path": "src/saleimport-erp.js",
-      "sha256": "c16d28e90d3568f6181827f3b93c538ef5381e6f72288ded3d47e96165cb08e1"
-    },
-    {
-      "path": "src/saleimport.js",
-      "sha256": "b12f7f1df26a9a4da1c90792b0533565e8d194a75b9d4068e1aa412660da554b"
-    },
-    {
-      "path": "src/storeprice-core.js",
-      "sha256": "61fed0eb4706102d6726844fd9add1682471e68317485a31ce29f525b4c1faed"
-    },
-    {
-      "path": "src/storeprice-erp.js",
-      "sha256": "826aa01928ee432961dc08979f54a718ab398edaec4f993533bf2d1d20a8527a"
-    },
-    {
-      "path": "src/storeprice.js",
-      "sha256": "e5fd4bbc7b32830fe3306492031b116fc91ad48cf776452c17400065ac7591ed"
-    },
-    {
-      "path": "src/arrival-core.js",
-      "sha256": "e359dd38b0d1a02ede48fa6db2828a033f3ebf705998b17446b31a5392432fdd"
-    },
-    {
-      "path": "pages/arrival.html",
-      "sha256": "7e8614b5a91651bcf78831a9f8abf61cae85b19adf8e8ec1c3c45e1d605ca19b"
-    },
-    {
-      "path": "pages/arrival.js",
-      "sha256": "9a5e35e2e06b0750618f4338059d19696228608e09f2af1c6e191581c1749e19"
-    },
-    {
-      "path": "src/arrival-panel.js",
-      "sha256": "fceb88c08b9bc1d39fcb91bde1bcfa4253f812baaf143323d6d5d5a7d6624e17"
-    },
-    {
-      "path": "src/masteredit.js",
-      "sha256": "082427a612beac852c5b4b93473beffecd2f93052588165e5a6f217e97eba52d"
-    },
-    {
-      "path": "icons/icon128.png",
-      "sha256": "1b8d2d09abf621e8ff49d4c9bcf1bedd1c13bcbb7bb031b6ed08a2dca3b81c30"
-    },
-    {
-      "path": "icons/icon16.png",
-      "sha256": "e609f046b9ec670a442e42206c37d659ca4c1944bb0c0ea90d20e94faa4ae3b5"
-    },
-    {
-      "path": "icons/icon48.png",
-      "sha256": "998f73b910ad24f41a3f3cfd7ad50f9a14802379e3894189bc67dfa924161fb3"
-    }
-  ]
+    "version":  "4.5.8",
+    "files":  [
+                  {
+                      "path":  "manifest.json",
+                      "sha256":  "3a013887990d2d85d948f7c73efd93d13526ef760f9e204986a7cea48dc7831f"
+                  },
+                  {
+                      "path":  "src/loader.js",
+                      "sha256":  "25f457b4e5f3c284244907928245788da3059cb2b0d28137b40f9b9a760c42e0"
+                  },
+                  {
+                      "path":  "src/localbridge.js",
+                      "sha256":  "5ce2c4bb2a9933fe645a36e78dfe24f13e35ca0b2e54eee60e096cc70d3a864a"
+                  },
+                  {
+                      "path":  "src/fsm.js",
+                      "sha256":  "09544b98795bee63e51a3c2ab82042bc44f40ceb30f9ef3ed781ec6dbff15c23"
+                  },
+                  {
+                      "path":  "src/background.js",
+                      "sha256":  "2bb942070b9354fdd0b5210dc306d2ec234d31dfff2bd3223fd0dcf6257f20ce"
+                  },
+                  {
+                      "path":  "src/skin.js",
+                      "sha256":  "22133ef6d850d799322ee30ef89456a27a7dc1b39fbee1d97b321233dd8e3c5c"
+                  },
+                  {
+                      "path":  "popup/popup.html",
+                      "sha256":  "4ffe2aa7975cfe5e2799381b893470d325e3bc7d73f4d180d1c84c5ad0a36fdb"
+                  },
+                  {
+                      "path":  "popup/popup.js",
+                      "sha256":  "2edda4c57e1a5bf7d78ec1b2e4a080d335af1271d3b8b7e9e1951bf2f7eb9160"
+                  },
+                  {
+                      "path":  "rules/cache.json",
+                      "sha256":  "bc0688cbcd2cba11ed4a902dcaf551eb91e59e1624d8b13d544c088bdf3bb3cc"
+                  },
+                  {
+                      "path":  "src/erp.js",
+                      "sha256":  "c5db02b69a4f934f137f2156b192d57a9d90b2639edb1a429b0c07a858c4c3bf"
+                  },
+                  {
+                      "path":  "src/orderimport-core.js",
+                      "sha256":  "d6a194fd6f89c98406395a5baaf0f95c7e04a5f6e684ea55023a50bcf72587a1"
+                  },
+                  {
+                      "path":  "src/orderimport-erp.js",
+                      "sha256":  "9a74d3c00d831c47861bef6381c82fc22dbd0fdf5a888355a9e8b60d6cdb3ad5"
+                  },
+                  {
+                      "path":  "src/orderimport.js",
+                      "sha256":  "b079c211f8dcb5b8bc311f433b895dee2fa4e206b72c497f18249915e23d501d"
+                  },
+                  {
+                      "path":  "src/orderimport-xls.js",
+                      "sha256":  "6f3990c21b7687d5743b14385068cb3b8baefea5b5e65b073402bee0ded2e307"
+                  },
+                  {
+                      "path":  "vendor/xlsx.full.min.js",
+                      "sha256":  "cc015130aa8521e7f088f88898eba949ccdcbfb38df0bd129b44b7273c3a6f41"
+                  },
+                  {
+                      "path":  "src/saleimport-core.js",
+                      "sha256":  "71592df38240924973ff280b9cf301cd06614746f255c9e9974f2ef47e6e1d05"
+                  },
+                  {
+                      "path":  "src/saleimport-erp.js",
+                      "sha256":  "c16d28e90d3568f6181827f3b93c538ef5381e6f72288ded3d47e96165cb08e1"
+                  },
+                  {
+                      "path":  "src/saleimport.js",
+                      "sha256":  "b12f7f1df26a9a4da1c90792b0533565e8d194a75b9d4068e1aa412660da554b"
+                  },
+                  {
+                      "path":  "src/storeprice-core.js",
+                      "sha256":  "61fed0eb4706102d6726844fd9add1682471e68317485a31ce29f525b4c1faed"
+                  },
+                  {
+                      "path":  "src/storeprice-erp.js",
+                      "sha256":  "826aa01928ee432961dc08979f54a718ab398edaec4f993533bf2d1d20a8527a"
+                  },
+                  {
+                      "path":  "src/storeprice.js",
+                      "sha256":  "e5fd4bbc7b32830fe3306492031b116fc91ad48cf776452c17400065ac7591ed"
+                  },
+                  {
+                      "path":  "src/arrival-core.js",
+                      "sha256":  "e359dd38b0d1a02ede48fa6db2828a033f3ebf705998b17446b31a5392432fdd"
+                  },
+                  {
+                      "path":  "pages/arrival.html",
+                      "sha256":  "7e8614b5a91651bcf78831a9f8abf61cae85b19adf8e8ec1c3c45e1d605ca19b"
+                  },
+                  {
+                      "path":  "pages/arrival.js",
+                      "sha256":  "9a5e35e2e06b0750618f4338059d19696228608e09f2af1c6e191581c1749e19"
+                  },
+                  {
+                      "path":  "src/arrival-panel.js",
+                      "sha256":  "fceb88c08b9bc1d39fcb91bde1bcfa4253f812baaf143323d6d5d5a7d6624e17"
+                  },
+                  {
+                      "path":  "src/masteredit.js",
+                      "sha256":  "082427a612beac852c5b4b93473beffecd2f93052588165e5a6f217e97eba52d"
+                  },
+                  {
+                      "path":  "icons/icon128.png",
+                      "sha256":  "1b8d2d09abf621e8ff49d4c9bcf1bedd1c13bcbb7bb031b6ed08a2dca3b81c30"
+                  },
+                  {
+                      "path":  "icons/icon16.png",
+                      "sha256":  "e609f046b9ec670a442e42206c37d659ca4c1944bb0c0ea90d20e94faa4ae3b5"
+                  },
+                  {
+                      "path":  "icons/icon48.png",
+                      "sha256":  "998f73b910ad24f41a3f3cfd7ad50f9a14802379e3894189bc67dfa924161fb3"
+                  }
+              ]
 }

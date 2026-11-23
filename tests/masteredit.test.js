@@ -46,3 +46,11 @@ test('배선 — manifest 가 수정 화면에만 top frame 으로 싣고, skin.
   assert.match(skin, /if \(_IS_POPUP \|\| _IS_EP_FRAME \|\| _IS_MASTER_EDIT\)/);
   assert.match(skin, /window\.open\(editUrl\(seq\), 'ubEdit_' \+ seq, masterEditFeatures\(\)\)/);
 });
+
+test('목록 [수정] 아이콘 — 같은 탭 이동 대신 팝업 창(4.5.8)', () => {
+  const skin = fs.readFileSync(path.join(ROOT, 'src/skin.js'), 'utf8');
+  assert.match(skin, /function bindListModifyPopup\(\)/);
+  assert.match(skin, /closest\('a\[href\^="javascript:modify\("\]'\)/);
+  assert.match(skin, /window\.open\(editUrl\(m\[1\]\), 'ubEdit_' \+ m\[1\], masterEditFeatures\(\)\)/);
+  assert.match(skin, /bindThumbEdit\(root\) \{\s*if \(!MASTER_RE\.test\(location\.pathname\)\) return;\s*bindListModifyPopup\(\);/);
+});
