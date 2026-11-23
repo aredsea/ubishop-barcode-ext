@@ -69,3 +69,29 @@ test('fsListParams — 오늘 포함 7일 · FASHION · 주문완료', () => {
   assert.equal(p.searchDateType, 'a.orderDate');
   assert.equal(p.pageSize, '500');
 });
+
+test('fsPriceSource — 카페24=주문가, 그 외 아는 마켓=아틀리에, 모르면 null', () => {
+  assert.deepEqual(F.fsPriceSource('김가명1234/카'), { kind: 'order' });
+  assert.deepEqual(F.fsPriceSource('김가명1234/쿠'), { kind: 'atelier', market: 'coupang' });
+  assert.deepEqual(F.fsPriceSource('김가명1234/아'), { kind: 'atelier', market: 'amonds' });
+  assert.equal(F.fsPriceSource('김가명1234/지'), null);
+  assert.equal(F.fsPriceSource('김가명1754/협찬'), null);
+});
+
+test('fsAtelierNames — 고객 꼬리·접두·소재 머리 뗀 후보', () => {
+  assert.deepEqual(F.fsAtelierNames('Silver925물방울오팔B/김가명1234'), ['Silver925물방울오팔B', '물방울오팔B']);
+  assert.deepEqual(F.fsAtelierNames('FD-Silver925 심플바게트오팔R'), ['Silver925 심플바게트오팔R', '심플바게트오팔R']);
+  assert.deepEqual(F.fsAtelierNames('14K 하트링R'), ['14K 하트링R', '하트링R']);
+  assert.deepEqual(F.fsAtelierNames('하트R'), ['하트R']);
+  assert.deepEqual(F.fsAtelierNames('a*b'), [], 'PostgREST 필터 문자는 보내지 않음');
+});
+
+test('fsOrderPrices — 주문가 열 → orderSeq 별 금액', () => {
+  const all = [
+    { idx: null, cells: ['No', '', '주문일', '발주처명', '이미지', '매입처상품코드', '구분', '상품정보', '수량', '주문가', '매장명', '인도예정일', '상태', '수정/취소'] },
+    { idx: '901,0000002Z2A', cells: ['1', '', '26-11-23 0000002Z2A', '가네샤', '', '...', '고객', '925', '1', '42,500', 'FASHION', '26-11-23', '주문완료', ''] },
+    { idx: '902,0000002Z2B', cells: ['2', '', '26-11-22 0000002Z2B', '가네샤', '', '...', '고객', '925', '1', '0', 'FASHION', '26-11-23', '주문완료', ''] },
+  ];
+  assert.deepEqual(F.fsOrderPrices(all), { '901': 42500, '902': 0 });
+  assert.equal(F.fsOrderPrices([{ idx: null, cells: ['No'] }]), null, '주문가 열이 없으면 null');
+});

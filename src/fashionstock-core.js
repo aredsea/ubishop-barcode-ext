@@ -72,7 +72,37 @@
     };
   }
 
-  const api = { fsSuffixMarket, fsNormCode, fsCategoryLetter, fsCustomerName, fsComposeDesc, fsPickPrice,
+  //  판매가 출처(사장님 2026-11-23): 카페24(/카) 고객 = 유비샵 주문전표의 그 주문 '주문가',
+  //   그 외 아는 마켓 = 아틀리에 API 마켓의 할인 전 판매가(직접 입력 가격이면 서버가 manual_price), 모르면 null(직접 입력).
+  function fsPriceSource(customer) {
+    const m = fsSuffixMarket(customer);
+    if (!m) return null;
+    return m === 'own' ? { kind: 'order' } : { kind: 'atelier', market: m };
+  }
+  //  아틀리에 제품 이름 후보 — 아틀리에는 「물방울오팔B」처럼 소재 머리 없이 적는다(2026-11-23 실측).
+  //  price-lookup 의 NAME_RE 와 같은 글자만 보낸다(필터 문법 문자 차단).
+  const NAME_RE = /^[0-9A-Za-z가-힣 (),.]{2,40}$/;
+  function fsAtelierNames(desc) {
+    const core = String(desc || '').replace(/\/.*$/, '').trim().replace(/^[A-Z]{1,4}-/, '').trim();
+    const bare = core.replace(/^(silver\s*925|s925|925|1[48]k(\s*[,/]\s*1[48]k)?)\s*/i, '').trim();
+    return [...new Set([core, bare])].filter((s) => NAME_RE.test(s));
+  }
+  //  주문 목록 전체 행(oiTListAllRows) → { orderSeq: 주문가 }. 주문가 열이 없으면 null(fail-closed).
+  function fsOrderPrices(allRows) {
+    const hdr = (allRows || []).find((r) => r.idx === null && (r.cells || []).some((t) => String(t).replace(/\s+/g, '') === '주문가'));
+    if (!hdr) return null;
+    const ci = hdr.cells.findIndex((t) => String(t).replace(/\s+/g, '') === '주문가');
+    const out = {};
+    for (const r of allRows) {
+      if (r.idx === null) continue;
+      const seq = String(r.idx).split(',')[0];
+      const d = String((r.cells || [])[ci] || '').replace(/[^\d]/g, '');
+      out[seq] = d ? +d : 0;
+    }
+    return out;
+  }
+
+  const api = { fsPriceSource, fsAtelierNames, fsOrderPrices, fsSuffixMarket, fsNormCode, fsCategoryLetter, fsCustomerName, fsComposeDesc, fsPickPrice,
     fsSplitTitle, fsCandidates, fsListParams, SUFFIX_MARKET };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   if (typeof globalThis !== 'undefined') { globalThis.ubFsCore = api; }
