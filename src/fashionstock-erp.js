@@ -132,7 +132,12 @@
       });
       const first = await Promise.race([nav.then(() => null), blocked]);
       if (first) return { ok: false, msg: '수정 화면 경고: ' + first };
-      const res = O.oiSubmitResult(fr.contentWindow.location.href);
+      //  세션이 끊기면 msg 없이 다른 곳(로그인)으로 간다 → 'msg 없음 = 성공' 이 뚫린다. 착지 주소부터 본다(T2 F1).
+      const landed = fr.contentWindow.location.href;
+      let host = '';
+      try { host = new URL(landed).host; } catch (_) {}
+      if (host !== location.host || /login/i.test(landed)) return { ok: false, msg: '저장 뒤 유비샵이 아닌 곳으로 이동했습니다(로그인 풀림?) — 입고장에서 직접 확인' };
+      const res = O.oiSubmitResult(landed);
       return res.ok ? { ok: true } : { ok: false, msg: res.msg };
     } catch (e) { return { ok: false, msg: String(e && e.message || e) }; }
     finally { fr.remove(); }

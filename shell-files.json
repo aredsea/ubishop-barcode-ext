@@ -107,15 +107,15 @@
                   },
                   {
                       "path":  "src/fashionstock-core.js",
-                      "sha256":  "beb5988da640af0647b0b3a8fb35eaa9f72f500bf8c996874e3b4eb23e4a3752"
+                      "sha256":  "67d8e68112d961bdf4dcbbe76ca57329b6d205e87caebc12af1c6853e56ed7a1"
                   },
                   {
                       "path":  "src/fashionstock-erp.js",
-                      "sha256":  "e2a6f2cc6f2d8dc6079b71a237687bf529c964e74b93490058d5bac4969108dd"
+                      "sha256":  "7ffc7bb64dd2fc8f90920a305b7d29eff2ab3b904ce9efa28aa86050203980e4"
                   },
                   {
                       "path":  "src/fashionstock.js",
-                      "sha256":  "a343f816e702bba15b6efea1b003abf21c8f43c1db1d687df59db71a31eadf6a"
+                      "sha256":  "c21e7e6e9dc5b2f3ab8969076727887bd293848a0642d399886701bf4cdbd716"
                   },
                   {
                       "path":  "icons/icon128.png",

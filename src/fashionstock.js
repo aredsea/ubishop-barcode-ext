@@ -135,11 +135,25 @@
       steps.appendChild(e);
       return (ok, m) => { e.textContent = (ok ? '✔ ' : '✖ ') + t + (m ? ' — ' + m : ''); e.className = ok ? '' : 'err'; };
     };
-    const held = await sget(LOCK);
-    if (held && held.bc === barcode && Date.now() - held.at < LOCK_MS) { li('잠금')(false, '같은 바코드를 다른 창에서 진행 중'); return; }
-    running = true;
+    running = true;                           // await 전에 세운다 — 두 번 눌러도 한 번만 들어온다
     root.querySelectorAll('input,button').forEach((el) => { el.disabled = true; });
-    await sset({ [LOCK]: { bc: barcode, at: Date.now() } });
+    //  다른 창 잠금: 쓰고 → 잠깐 뒤 다시 읽어 내 표식인지 확인한다(storage 는 원자적 비교-교환이 없다, T2 F3).
+    const token = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const held = await sget(LOCK);
+    let mine = false;
+    if (!(held && held.bc === barcode && Date.now() - held.at < LOCK_MS)) {
+      await sset({ [LOCK]: { bc: barcode, at: Date.now(), token } });
+      await new Promise((r) => setTimeout(r, 300));
+      const now = await sget(LOCK);
+      mine = !!(now && now.token === token);
+    }
+    if (!mine) {
+      li('잠금')(false, '같은 바코드를 다른 창에서 진행 중');
+      running = false;
+      const cb = root.querySelector('#ubfs-close');
+      if (cb) cb.disabled = false;
+      return;
+    }
     try {
       let s = li('품목 수정 · 추가설명 · 판매가 ' + comma(price));
       let r = await E.saveItem(item.modifyUrl, { desc, price });
@@ -157,7 +171,8 @@
       setStatus(barcode + ' → ' + cand.customer + ' 입고완료', 'ok');
     } finally {
       running = false;
-      await sdel(LOCK);
+      const cur = await sget(LOCK);
+      if (cur && cur.token === token) await sdel(LOCK);   // 남의 잠금은 지우지 않는다
       const cb = root.querySelector('#ubfs-close');
       if (cb) { cb.disabled = false; cb.focus(); }
     }

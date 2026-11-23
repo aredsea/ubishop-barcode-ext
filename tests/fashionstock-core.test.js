@@ -95,3 +95,7 @@ test('fsOrderPrices — 주문가 열 → orderSeq 별 금액', () => {
   assert.deepEqual(F.fsOrderPrices(all), { '901': 42500, '902': 0 });
   assert.equal(F.fsOrderPrices([{ idx: null, cells: ['No'] }]), null, '주문가 열이 없으면 null');
 });
+
+test('fsAtelierNames — 14K 18K 공백 조합 머리도 뗀다 (T2 F4)', () => {
+  assert.deepEqual(F.fsAtelierNames('14K 18K 하트펜던트'), ['14K 18K 하트펜던트', '하트펜던트']);
+});

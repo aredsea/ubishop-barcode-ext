@@ -84,7 +84,7 @@
   const NAME_RE = /^[0-9A-Za-z가-힣 (),.]{2,40}$/;
   function fsAtelierNames(desc) {
     const core = String(desc || '').replace(/\/.*$/, '').trim().replace(/^[A-Z]{1,4}-/, '').trim();
-    const bare = core.replace(/^(silver\s*925|s925|925|1[48]k(\s*[,/]\s*1[48]k)?)\s*/i, '').trim();
+    const bare = core.replace(/^(silver\s*925|s925|925|1[48]k(\s*[,/\s]\s*1[48]k)?)\s*/i, '').trim();
     return [...new Set([core, bare])].filter((s) => NAME_RE.test(s));
   }
   //  주문 목록 전체 행(oiTListAllRows) → { orderSeq: 주문가 }. 주문가 열이 없으면 null(fail-closed).
