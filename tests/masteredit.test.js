@@ -63,3 +63,15 @@ test('4.5.9 — 유비샵 메뉴 상시 숨김(버튼 없음) · 상품 확대 �
   assert.match(src, /id="ubme-view-toggle"/);
   assert.match(src, /#ubme-viewer\[hidden\], #ubme-viewer \[hidden\] \{ display: none !important; \}/);
 });
+
+test('4.6.0 — windowPlan: 접힘=폼 폭, 펼침=+간격+패널, 화면 밖이면 자르고 왼쪽으로', () => {
+  const base = { formW: 998, chromeW: 16, scrollW: 0, availLeft: 0, availWidth: 2560, screenX: 100 };
+  assert.deepEqual(M.windowPlan({ ...base, open: false }), { w: 1046, x: 100 });
+  assert.deepEqual(M.windowPlan({ ...base, open: true }), { w: 1046 + 16 + M.VIEW_W, x: 100 });
+  assert.deepEqual(M.windowPlan({ ...base, open: true, screenX: 1800 }), { w: 1622, x: 2560 - 1622 }, '오른쪽 끝을 넘으면 왼쪽으로');
+  assert.deepEqual(M.windowPlan({ ...base, open: true, availWidth: 1280, screenX: 0 }), { w: 1280, x: 0 }, '화면보다 넓으면 화면 폭');
+  assert.equal(M.windowPlan({ ...base, formW: 0, open: true }), null, '폼 폭 모르면 손대지 않음');
+  const src = fs.readFileSync(path.join(ROOT, 'src/masteredit.js'), 'utf8');
+  assert.match(src, /fitWindow\(open\);\s*\};/, 'setView 가 창 크기도 맞춘다');
+  assert.match(src, /fitWindow\(false\);/, '처음엔 접힌 폭');
+});

@@ -1,9 +1,9 @@
 {
-    "version":  "4.5.9",
+    "version":  "4.6.0",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "78ab92b0410a9eb4be998da1d5b82c56858169cb89b61c9485a380a6d910f569"
+                      "sha256":  "cfb2aa8ccaca798f28167bbb5ffbb9e09e748bd6155da6c5af2f995fb39d34cb"
                   },
                   {
                       "path":  "src/loader.js",
@@ -23,7 +23,7 @@
                   },
                   {
                       "path":  "src/skin.js",
-                      "sha256":  "22133ef6d850d799322ee30ef89456a27a7dc1b39fbee1d97b321233dd8e3c5c"
+                      "sha256":  "29bb23dd9508942849b1fd533a8b7aee7bcb5154077aa149adca886311533efc"
                   },
                   {
                       "path":  "popup/popup.html",
@@ -103,7 +103,7 @@
                   },
                   {
                       "path":  "src/masteredit.js",
-                      "sha256":  "a9744b851d49499f20d02d97a5a5fce016474faf3909fe68463d3231c8e1566c"
+                      "sha256":  "d652b67c45988f527873eee2b274ad10bb50e7f1c15d59c3d812cf39775d6361"
                   },
                   {
                       "path":  "icons/icon128.png",

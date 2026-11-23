@@ -47,8 +47,23 @@
     return m ? m[1] : '';
   }
 
+  // 창 가로 크기 계획. 접힘 = 폼 + 좌우 여백(16×2) + 창 테두리 + 세로 스크롤바.
+  //  펼침 = 접힘 + 간격 16 + 확대 패널 VIEW_W. 화면보다 넓으면 화면 폭으로 자르고,
+  //  오른쪽 끝을 넘으면 창을 왼쪽으로 민다. 폼 폭을 모르면 null(손대지 않음).
+  const VIEW_W = 560;
+  function windowPlan(o) {
+    if (!(o && o.formW > 0)) return null;
+    const base = o.formW + 32 + (o.chromeW || 0) + (o.scrollW || 0);
+    let w = o.open ? base + 16 + VIEW_W : base;
+    if (o.availWidth > 0) w = Math.min(w, o.availWidth);
+    let x = o.screenX || 0;
+    const right = (o.availLeft || 0) + (o.availWidth || 0);
+    if (o.availWidth > 0 && x + w > right) x = Math.max(o.availLeft || 0, right - w);
+    return { w: Math.round(w), x: Math.round(x) };
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { clampScale, fitView, zoomAt, pctLabel, parseMasterCode, MIN_SCALE, MAX_SCALE };
+    module.exports = { clampScale, fitView, zoomAt, pctLabel, parseMasterCode, windowPlan, VIEW_W, MIN_SCALE, MAX_SCALE };
     return;
   }
 
@@ -195,12 +210,33 @@
     //  펼치면 ResizeObserver 가 상자 크기를 받아 맞춤으로 다시 그린다.
     const viewer = root.querySelector('#ubme-viewer');
     const vt = root.querySelector('#ubme-view-toggle');
+    //  ★창 크기도 같이(4.6.0, 사장님 2026-11-23): 접으면 폼 폭에 딱 맞게 줄이고, 펼치면 그만큼
+    //   가로로 넓힌다. 팝업 창(window.open)에서만 먹는다 — 일반 탭이면 resizeTo 는 아무 일도 안 한다.
+    const formBox2 = root.querySelector('#ubme-form');
+    const fitWindow = (open) => {
+      try {
+        const sc = window.screen || {};
+        const p = windowPlan({
+          // 창이 폼보다 좁으면 offsetWidth 가 줄어든 값이라 내용 폭(scrollWidth + 테두리 2)을 함께 본다.
+          formW: Math.max(formBox2.offsetWidth, formBox2.scrollWidth + 2),
+          chromeW: Math.max(0, window.outerWidth - window.innerWidth),
+          scrollW: Math.max(0, window.innerWidth - document.documentElement.clientWidth),
+          open,
+          availLeft: sc.availLeft || 0, availWidth: sc.availWidth || 0, screenX: window.screenX || 0,
+        });
+        if (!p) return;
+        if (p.x !== (window.screenX || 0)) window.moveTo(p.x, window.screenY || 0);
+        window.resizeTo(p.w, window.outerHeight);
+      } catch (e) { log('창 크기 조절 실패', e); }
+    };
     const setView = (open) => {
       viewer.hidden = !open;
       vt.setAttribute('aria-expanded', open ? 'true' : 'false');
       vt.querySelector('.lbl').textContent = open ? '상품 확대 접기' : '상품 확대 펼치기';
+      fitWindow(open);
     };
     vt.addEventListener('click', () => setView(viewer.hidden));
+    fitWindow(false);   // 처음엔 접힌 폭으로
 
     setupViewer(root, formTable, setView);
     log('상품 수정 화면 구성 완료', code);

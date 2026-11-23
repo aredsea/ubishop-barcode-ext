@@ -214,11 +214,11 @@
   // 썸네일 → 상품수정 팝업 창(새 탭 아님). 작은 별도 윈도우.
   const POPUP_FEATURES = 'width=1100,height=820,scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
   //  상품 수정 창(v4.5.7) — 폼(980px) 옆에 큰 이미지 보기를 두려면 1100px 로는 모자란다.
-  //   화면이 허락하는 만큼(최대 1480×960) 연다. 작은 화면이면 masteredit.js 가 이미지를 위로 쌓는다.
+  //   4.6.0: 상품 확대는 기본 접힘이라 폼 폭(약 1080)으로 연다. 펼치면 masteredit.js 가 창을 넓힌다.
   function masterEditFeatures() {
-    let w = 1480, h = 960;
+    let w = 1080, h = 960;
     try {
-      w = Math.max(1040, Math.min(1480, (screen.availWidth || 1480) - 40));
+      w = Math.min(1080, (screen.availWidth || 1080));
       h = Math.max(700, Math.min(960, (screen.availHeight || 960) - 40));
     } catch (_) {}
     return 'width=' + w + ',height=' + h + ',scrollbars=yes,resizable=yes,toolbar=no,location=yes,menubar=no,noopener';
