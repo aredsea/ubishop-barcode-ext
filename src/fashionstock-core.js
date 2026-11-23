@@ -56,7 +56,7 @@
       if (String(r.status || '').replace(/\s+/g, '') !== '주문완료') continue;
       const s = fsSplitTitle(r.title);
       if (!s.code || fsNormCode(s.code) !== want || !s.customer) continue;
-      out.push({ orderSeq: r.orderSeq, junNum: r.junNum, orderDate: r.orderDate, customer: s.customer, code: s.code });
+      out.push({ orderSeq: r.orderSeq, junNum: r.junNum, orderDate: String(r.orderDate || '').replace(/-/g, ''), customer: s.customer, code: s.code });
     }
     return out;
   }

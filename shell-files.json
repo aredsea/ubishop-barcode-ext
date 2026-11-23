@@ -1,9 +1,9 @@
 {
-    "version":  "4.6.0",
+    "version":  "4.6.1",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "cfb2aa8ccaca798f28167bbb5ffbb9e09e748bd6155da6c5af2f995fb39d34cb"
+                      "sha256":  "4b1f9e8f7df9f2356fe1463a0a80624ffbb3375966f2c6148b1389a3e2da8aa8"
                   },
                   {
                       "path":  "src/loader.js",
@@ -23,7 +23,7 @@
                   },
                   {
                       "path":  "src/skin.js",
-                      "sha256":  "29bb23dd9508942849b1fd533a8b7aee7bcb5154077aa149adca886311533efc"
+                      "sha256":  "0aa6e692cbbcdc80cce95912941a8ebc5198559aacbe0fea903e3dd8f3a81f50"
                   },
                   {
                       "path":  "popup/popup.html",
@@ -79,7 +79,7 @@
                   },
                   {
                       "path":  "src/storeprice-erp.js",
-                      "sha256":  "826aa01928ee432961dc08979f54a718ab398edaec4f993533bf2d1d20a8527a"
+                      "sha256":  "597050aa67eed9f08a086796fec68d45917d8fa31a70d9387c56030e480285c5"
                   },
                   {
                       "path":  "src/storeprice.js",
@@ -104,6 +104,18 @@
                   {
                       "path":  "src/masteredit.js",
                       "sha256":  "d652b67c45988f527873eee2b274ad10bb50e7f1c15d59c3d812cf39775d6361"
+                  },
+                  {
+                      "path":  "src/fashionstock-core.js",
+                      "sha256":  "beb5988da640af0647b0b3a8fb35eaa9f72f500bf8c996874e3b4eb23e4a3752"
+                  },
+                  {
+                      "path":  "src/fashionstock-erp.js",
+                      "sha256":  "e2a6f2cc6f2d8dc6079b71a237687bf529c964e74b93490058d5bac4969108dd"
+                  },
+                  {
+                      "path":  "src/fashionstock.js",
+                      "sha256":  "a343f816e702bba15b6efea1b003abf21c8f43c1db1d687df59db71a31eadf6a"
                   },
                   {
                       "path":  "icons/icon128.png",

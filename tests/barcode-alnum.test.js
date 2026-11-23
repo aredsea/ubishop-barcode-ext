@@ -483,7 +483,7 @@ console.log('Task 7 — 배선');
   // (1) 사이드바 바코드 입력칸 네 개가 모두 같은 클래스를 달아야 일괄 배선이 전부를 덮는다.
   //  ⚠ 총 개수만 세면 뚫린다 — id 하나를 다른 id 로 바꿔치기해도 합계는 그대로다(외부 검수 지적
   //   2026-08-31, 실제로 ub-ms-in→ub-stk-in 변이가 통과했다). 그래서 **id 마다 정확히 1개**를 센다.
-  const IDS = ['ub-stk-in', 'ub-dcm-in', 'ub-rot-in', 'ub-ms-in'];
+  const IDS = ['ub-stk-in', 'ub-fs-in', 'ub-dcm-in', 'ub-rot-in', 'ub-ms-in'];
   const inputTags = SRC.match(/<input\b[^>]*>/g) || [];
   //  ⚠ `includes('id="..."')` 는 **`data-id="..."` 에도 걸린다**(검수 지적 2026-08-31).
   //   id 를 data-id 로 바꾸는 변이가 통과하는데, 그러면 querySelector('#ub-stk-in') 가 null 이라

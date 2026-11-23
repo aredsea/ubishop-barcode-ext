@@ -39,7 +39,10 @@ $patterns = @(
   'pages/arrival.html',
   'pages/arrival.js',
   'src/arrival-panel.js',
-  'src/masteredit.js'
+  'src/masteredit.js',
+  'src/fashionstock-core.js',
+  'src/fashionstock-erp.js',
+  'src/fashionstock.js'
 )
 $textExt = @('.js', '.json', '.html', '.htm', '.css', '.xml', '.md', '.txt', '.svg')
 

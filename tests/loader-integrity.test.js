@@ -86,7 +86,10 @@ const SHELL_PATTERNS = [
   //  4.5.1 입고 지연 알림
   'src/arrival-core.js','pages/arrival.html','pages/arrival.js','src/arrival-panel.js',
   //  4.5.7 기초상품관리 상품 수정 화면
-  'src/masteredit.js'
+  'src/masteredit.js',
+  'src/fashionstock-core.js',
+  'src/fashionstock-erp.js',
+  'src/fashionstock.js'
 ];
 //  ★icons 는 **목록을 박아 두면 안 된다** — 생성 스크립트가 `icons/*` 전체를 동적으로 담기
 //   때문이다. 박아 두면 아이콘을 새로 넣고 재생성을 잊었을 때, 인덱스도 기대 목록도 옛 3개라
