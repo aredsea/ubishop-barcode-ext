@@ -3446,6 +3446,14 @@
           <div class="ub-stk-st" id="ub-stk-st"></div>
         </div>
         <div class="ub-sb-sect">
+          <div class="ub-sb-sect-t">${ICONS.barcode}<span>패션 상품 재고화</span></div>
+          <div class="ub-stk-row">
+            <input id="ub-fs-in" class="ub-stk-in" placeholder="바코드 입력 후 Enter" autocomplete="off" spellcheck="false">
+            <button class="ub-sb-btn ub-stk-go" id="ub-fs-go">불러오기</button>
+          </div>
+          <div class="ub-stk-st" id="ub-fs-st"></div>
+        </div>
+        <div class="ub-sb-sect">
           <div class="ub-sb-sect-t">${ICONS.barcode}<span>출고취소 → 판매가 수정</span></div>
           <div class="ub-stk-row">
             <input id="ub-dcm-in" class="ub-stk-in" placeholder="바코드 입력 후 Enter" autocomplete="off" spellcheck="false">
@@ -3603,6 +3611,24 @@
         if (last && last.junNum) setStkStatus('직전: ' + last.barcode + ' → 입고장 ' + last.junNum + ' 불러옴 ✓', 'ok');
       } catch (_) {}
       setTimeout(() => { try { stkIn.focus(); } catch (_) {} }, 400);
+    }
+
+    // 패션 상품 재고화 배선 (inputItemWriteForm.do, v4.6.1). 확인 창·진행은 fashionstock.js(같은 ISOLATED 세계).
+    //  포커스는 뺏지 않는다(재고화가 기본).
+    const fsIn = bar.querySelector('#ub-fs-in');
+    const fsStEl = bar.querySelector('#ub-fs-st');
+    if (fsIn && fsStEl) {
+      const setFsStatus = (t, k) => { fsStEl.textContent = t || ''; fsStEl.className = 'ub-stk-st' + (k ? ' ' + k : ''); };
+      bindSidebarBcInput(fsIn, setFsStatus);
+      const goFs = () => {
+        const bc = bcRead(fsIn, setFsStatus);
+        if (bc === null || !bc) return;
+        if (!(globalThis.ubFs && globalThis.ubFs.open)) { setFsStatus('패션 재고화 모듈이 아직 로드되지 않았습니다 — 새로고침', 'err'); return; }
+        globalThis.ubFs.open(bc, setFsStatus);
+      };
+      const fsGoBtn = bar.querySelector('#ub-fs-go');
+      if (fsGoBtn) fsGoBtn.addEventListener('click', goFs);
+      fsIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goFs(); } });
     }
 
     // 출고취소 → 판매가 수정 배선 (inputItemWriteForm.do). 포커스는 뺏지 않는다(재고화가 기본).
@@ -6083,6 +6109,8 @@
       return { ok: false, msg: (e && e.message) || String(e) };
     }
   }
+  //  패션 상품 재고화(fashionstock-erp.js)가 같은 ISOLATED 세계에서 재사용한다 — 시그니처를 바꾸면 그쪽도 같이(4.6.1).
+  globalThis.ubHqApi = { cFetchSKey, cDoStandby, fetchOrderRow, cExtractRowArgs, cFetchCandidates, cDoAssign };
   //  성공한 행의 화면 갱신. rowHtml 이 있으면 행 전체 교체, 없으면 상태 셀만.
   //  §5.5: 중단하더라도 이미 처리된 건까지는 화면을 갱신한다.
   function cUpdateRow(orderSeq, rowInfo) {

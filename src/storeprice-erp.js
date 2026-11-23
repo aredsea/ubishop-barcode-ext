@@ -326,5 +326,5 @@
     return { ok: true, junNum: r.junNum, warn: warn };
   }
 
-  globalThis.ubSpErp = { log, lookup, deleteDeliv, findVoucherItem, savePrice, verifyPrice, redeliver, verifyRedeliv };
+  globalThis.ubSpErp = { log, lookup, deleteDeliv, findVoucherItem, savePrice, verifyPrice, redeliver, verifyRedeliv, openFrame, loadFrame, waitLoad };
 })();
