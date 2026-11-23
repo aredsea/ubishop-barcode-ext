@@ -772,3 +772,10 @@ replacement 문자를 동반, 16개가 소스 코드 에코 줄). 그래도 fail
 - 구현: Opus 5.5 직접. skin.js `bindListModifyPopup` — masterItemList 에서 `a[href^="javascript:modify("]` 클릭을 캡처로 가로채 썸네일과 같은 `ubEdit_<seq>` 팝업(masterEditFeatures)으로 연다. href 불변(masterprice.js 가 seq 파싱). 수식 클릭은 네이티브.
 - **등급 T1**. 로컬 Codex CLI 없음 → opus47-reviewer(자기 검수 회피) 1R — 지적 없음.
 - 테스트: masteredit 회귀 1건 추가(변이 시 실패 확인). factory-live-search 실패 1건은 기존 실패. 실제 목록 20행 링크 셀렉터 20/20 매치 확인, 배포 후 클릭 실기는 미확인.
+
+## 4.5.9 — 상품 수정 창: 상품 확대 접기(기본 접힘) · '이미지 없음' 겹침 수정 · 유비샵 메뉴 상시 숨김 (2026-11-23)
+- 계기: 사장님 — 오른쪽 상품 확대는 접고 펼 수 있게, 기본 접힘. 큰 이미지 위에 '이미지 없음' 이 뜬다. 팝업에는 유비샵 메뉴가 나올 필요가 절대 없다.
+- 원인('이미지 없음'): `#ubme-stage .empty { display:flex }` 가 hidden 속성을 이겨 늘 보였다.
+- 구현: Opus 5.5 직접. masteredit.js — #ubme-viewer 기본 hidden + 상단 바 토글(상태 기억 안 함), 네이티브 썸네일 클릭 시 펼침, `[hidden]{display:none !important}`, ERP 토글·localStorage 키 제거(노드는 숨긴 칸 유지).
+- 실기: 실제 수정 화면(seq 7660)에 주입 — 접힘 시작·메뉴 없음·펼침 시 맞춤 표시·'이미지 없음' display none·썸네일 클릭 펼침 확인(저장 클릭 없음).
+- **등급 T1**. 로컬 Codex CLI 없음 → opus47-reviewer 1R — 결함 없음(Nit: 펼친 뒤에도 썸네일 title '상품 확대 열기' — 기각, 정확성 무관).

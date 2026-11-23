@@ -1,9 +1,9 @@
 {
-    "version":  "4.5.8",
+    "version":  "4.5.9",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "3a013887990d2d85d948f7c73efd93d13526ef760f9e204986a7cea48dc7831f"
+                      "sha256":  "78ab92b0410a9eb4be998da1d5b82c56858169cb89b61c9485a380a6d910f569"
                   },
                   {
                       "path":  "src/loader.js",
@@ -103,7 +103,7 @@
                   },
                   {
                       "path":  "src/masteredit.js",
-                      "sha256":  "082427a612beac852c5b4b93473beffecd2f93052588165e5a6f217e97eba52d"
+                      "sha256":  "a9744b851d49499f20d02d97a5a5fce016474faf3909fe68463d3231c8e1566c"
                   },
                   {
                       "path":  "icons/icon128.png",

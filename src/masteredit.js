@@ -6,7 +6,7 @@
  *   ① D102 도구 사이드바 없이(억제는 skin.js 의 _IS_MASTER_EDIT)
  *   ② 폼의 모든 요소가 잘리지 않고 다 보이게
  *   ③ 상품 이미지를 크게, 확대/축소 가능하게
- *   ④ 유비샵 상단 메뉴(기초상품관리 화면의 머리 부분)도 포함하되 기본은 접어 둔다
+ *   ④ 유비샵 상단 메뉴는 숨긴다(4.5.9 — 펼치기 버튼도 없음) · 상품 확대는 접이식, 기본 접힘
  *
  *  ★원칙: 네이티브 폼 컨트롤은 **하나도 새로 만들지 않는다.** 노드를 옮기고(이동, 복제 아님)
  *   스타일만 입힌다. 저장(수정하기)·검색·이미지등록 버튼은 전부 원래 그대로 동작한다.
@@ -59,7 +59,6 @@
   if (!/\/master\/item\/masterItemModifyForm\.do/i.test(location.pathname)) return;
   if (document.getElementById('ubme-root')) return;
 
-  const ERP_OPEN_KEY = 'ubme_erp_open';
   const log = (...a) => { try { console.log('[UB][masteredit]', ...a); } catch (_) {} };
 
   const ICON = {
@@ -108,6 +107,8 @@
       transform-origin: 0 0; user-select: none; -webkit-user-drag: none; image-rendering: auto; }
     #ubme-stage .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       font-size: 14px; color: #6b7280; }
+    /* ★hidden 이 위 display:flex 에 져서 이미지 위에 '이미지 없음' 이 늘 겹쳐 떴다(4.5.9). */
+    #ubme-viewer[hidden], #ubme-viewer [hidden] { display: none !important; }
     @media (max-width: 1399px) {
       #ubme-main { flex-direction: column; }
       #ubme-viewer { position: relative; top: 0; width: 100%; min-width: 0; height: 460px; order: -1; }
@@ -150,13 +151,13 @@
         '<span class="t">기초상품관리 · 상품 수정</span>' +
         (code ? '<span class="code" title="마스터상품코드">' + code.replace(/[<>&"]/g, '') + '</span>' : '') +
         '<span class="sp"></span>' +
-        '<button type="button" class="ubme-btn" id="ubme-erp-toggle" aria-controls="ubme-erp" aria-expanded="false">' +
-          '<span class="lbl">유비샵 메뉴 펼치기</span>' + ICON.chev + '</button>' +
+        '<button type="button" class="ubme-btn" id="ubme-view-toggle" aria-controls="ubme-viewer" aria-expanded="false">' +
+          '<span class="lbl">상품 확대 펼치기</span>' + ICON.chev + '</button>' +
       '</div>' +
       '<div id="ubme-erp" hidden></div>' +
       '<div id="ubme-main">' +
         '<div id="ubme-form"></div>' +
-        '<section id="ubme-viewer" aria-label="상품 이미지">' +
+        '<section id="ubme-viewer" aria-label="상품 이미지" hidden>' +
           '<div class="tb">' +
             '<button type="button" class="ubme-btn icon" data-z="out" aria-label="축소">' + ICON.minus + '</button>' +
             '<span class="pct" aria-live="polite">-</span>' +
@@ -185,24 +186,27 @@
     });
     document.body.insertBefore(root, document.body.firstChild);
 
-    // 유비샵 메뉴 접기/펴기 — 기본 접힘, 마지막 상태 기억(이 PC 브라우저 한정).
-    const tg = root.querySelector('#ubme-erp-toggle');
-    const setErp = (open) => {
-      erpBox.hidden = !open;
-      tg.setAttribute('aria-expanded', open ? 'true' : 'false');
-      tg.querySelector('.lbl').textContent = open ? '유비샵 메뉴 접기' : '유비샵 메뉴 펼치기';
-      try { localStorage.setItem(ERP_OPEN_KEY, open ? '1' : '0'); } catch (_) {}
-    };
-    let erpOpen = false;
-    try { erpOpen = localStorage.getItem(ERP_OPEN_KEY) === '1'; } catch (_) {}
-    setErp(erpOpen);
-    tg.addEventListener('click', () => setErp(erpBox.hidden));
+    // 유비샵 메뉴는 이 창에서 보이지 않는다 — 사장님(2026-11-23): "팝업은 유비샵 메뉴가 나올
+    //  필요가 절대 없다". 펼치기 버튼도 없앴다. 노드는 지우지 않고 숨긴 칸에 둔다(페이지
+    //  스크립트가 머리 영역 요소를 참조할 수 있어 삭제는 위험).
+    erpBox.hidden = true;
 
-    setupViewer(root, formTable);
+    // 상품 확대 접기/펴기 — 사장님(2026-11-23): 매번 접힌 채로 연다(상태 기억 안 함).
+    //  펼치면 ResizeObserver 가 상자 크기를 받아 맞춤으로 다시 그린다.
+    const viewer = root.querySelector('#ubme-viewer');
+    const vt = root.querySelector('#ubme-view-toggle');
+    const setView = (open) => {
+      viewer.hidden = !open;
+      vt.setAttribute('aria-expanded', open ? 'true' : 'false');
+      vt.querySelector('.lbl').textContent = open ? '상품 확대 접기' : '상품 확대 펼치기';
+    };
+    vt.addEventListener('click', () => setView(viewer.hidden));
+
+    setupViewer(root, formTable, setView);
     log('상품 수정 화면 구성 완료', code);
   }
 
-  function setupViewer(root, formTable) {
+  function setupViewer(root, formTable, setView) {
     const stage = root.querySelector('#ubme-stage');
     const img = stage.querySelector('img');
     const empty = stage.querySelector('.empty');
@@ -259,8 +263,12 @@
       };
       try { new MutationObserver(onNative).observe(native, { attributes: true, attributeFilter: ['src'] }); } catch (_) {}
       native.style.cursor = 'zoom-in';
-      native.title = '오른쪽 크게 보기에서 확대/축소';
-      native.addEventListener('click', () => { if (!objUrl) fit(); });
+      native.title = '상품 확대 열기';
+      //  접혀 있으면 펼친다(ResizeObserver 가 맞춤). 이미 펼쳐져 있으면 맞춤으로 되돌린다.
+      native.addEventListener('click', () => {
+        if (root.querySelector('#ubme-viewer').hidden) { setView(true); return; }
+        if (!objUrl) fit();
+      });
     }
     syncNative();
 

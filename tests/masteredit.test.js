@@ -54,3 +54,12 @@ test('목록 [수정] 아이콘 — 같은 탭 이동 대신 팝업 창(4.5.8)',
   assert.match(skin, /window\.open\(editUrl\(m\[1\]\), 'ubEdit_' \+ m\[1\], masterEditFeatures\(\)\)/);
   assert.match(skin, /bindThumbEdit\(root\) \{\s*if \(!MASTER_RE\.test\(location\.pathname\)\) return;\s*bindListModifyPopup\(\);/);
 });
+
+test('4.5.9 — 유비샵 메뉴 상시 숨김(버튼 없음) · 상품 확대 기본 접힘 · hidden 이 display 에 지지 않음', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src/masteredit.js'), 'utf8');
+  assert.doesNotMatch(src, /ubme-erp-toggle/, '유비샵 메뉴 펼치기 버튼 없음');
+  assert.match(src, /erpBox\.hidden = true;/);
+  assert.match(src, /<section id="ubme-viewer" aria-label="상품 이미지" hidden>/, '확대 기본 접힘');
+  assert.match(src, /id="ubme-view-toggle"/);
+  assert.match(src, /#ubme-viewer\[hidden\], #ubme-viewer \[hidden\] \{ display: none !important; \}/);
+});
