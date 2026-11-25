@@ -42,7 +42,8 @@ $patterns = @(
   'src/masteredit.js',
   'src/fashionstock-core.js',
   'src/fashionstock-erp.js',
-  'src/fashionstock.js'
+  'src/fashionstock.js',
+  'src/baljuremark.js'
 )
 $textExt = @('.js', '.json', '.html', '.htm', '.css', '.xml', '.md', '.txt', '.svg')
 

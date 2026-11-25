@@ -1,9 +1,9 @@
 {
-    "version":  "4.6.1",
+    "version":  "4.6.2",
     "files":  [
                   {
                       "path":  "manifest.json",
-                      "sha256":  "4b1f9e8f7df9f2356fe1463a0a80624ffbb3375966f2c6148b1389a3e2da8aa8"
+                      "sha256":  "82bca5903a12cd5337a2604f63670a72488adb154b24adf8a02b48999cfa411a"
                   },
                   {
                       "path":  "src/loader.js",
@@ -116,6 +116,10 @@
                   {
                       "path":  "src/fashionstock.js",
                       "sha256":  "c21e7e6e9dc5b2f3ab8969076727887bd293848a0642d399886701bf4cdbd716"
+                  },
+                  {
+                      "path":  "src/baljuremark.js",
+                      "sha256":  "7d75ae0045458b59da413bc1d3e9d2b90bdd8e4c6f4a76ea888888efbfd8a351"
                   },
                   {
                       "path":  "icons/icon128.png",
