@@ -41,3 +41,10 @@ test('배선 — 주문전표 목록 top frame 에만 · 셸 목록 · 저장 �
   assert.match(src, /f\.elements\.remark/);
   assert.match(src, /fr\.dataset\.ubAutoJob = 'ubbr_'/);
 });
+
+test('brStrip — 정산 없는 줄은 탭·연속 공백·들여쓰기를 그대로 둔다 (T1 1R)', () => {
+  assert.deepEqual(B.brStrip('특이사항\t긴급\n정산 30,000 원'), { text: '특이사항\t긴급', changed: true });
+  assert.deepEqual(B.brStrip('각인:  (옵션A)\n정산 30,000 원'), { text: '각인:  (옵션A)', changed: true });
+  assert.deepEqual(B.brStrip('  들여쓰기\n정산 100원'), { text: '  들여쓰기', changed: true });
+  assert.deepEqual(B.brStrip('정산 100원\n둘째 줄\n\n셋째 줄'), { text: '둘째 줄\n\n셋째 줄', changed: true });
+});

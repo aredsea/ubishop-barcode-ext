@@ -17,14 +17,23 @@
    *  1) 순수 — tests/baljuremark.test.js
    * ------------------------------------------------------------------------- */
   //  '정산 756,124 원' · '정산 1,731원' · '정산 -2,000 원'. 뒤가 숫자·원이 아니면('정산 예정') 그대로.
-  const SETTLE_RE = /정산\s*-?\d[\d,]*\s*원/g;
+  //  ★줄 단위로만 본다(줄바꿈을 넘어 매치하지 않게). 문구가 **있는 줄만** 손대고 나머지 줄은 글자 그대로 —
+  //   탭·연속 공백·들여쓰기를 바꾸지 않는다(Opus 4.7 T1 1R). 문구를 지워 빈 줄이 된 줄은 뺀다.
+  const SETTLE_RE = /[ \t]*정산[ \t]*-?\d[\d,]*[ \t]*원[ \t]*/g;
   function brStrip(text) {
-    const s = String(text == null ? '' : text);
-    if (!s.match(SETTLE_RE)) return { text: s.trim(), changed: false };
-    const out = s.replace(SETTLE_RE, ' ')
-      .split('\n').map((l) => l.replace(/[ \t]+/g, ' ').trim()).filter((l, i, a) => l || (i > 0 && i < a.length - 1))
-      .join('\n').trim();
-    return { text: out, changed: true };
+    const s = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    const lines = s.split('\n');
+    let changed = false;
+    const out = [];
+    for (const line of lines) {
+      if (!new RegExp(SETTLE_RE.source).test(line)) { out.push(line); continue; }
+      changed = true;
+      const rest = line.replace(SETTLE_RE, ' ').replace(/^ +| +$/g, '');
+      if (rest.trim()) out.push(rest);
+    }
+    if (!changed) return { text: s.trim(), changed: false };
+    //  맨 앞·맨 뒤의 빈 줄만 걷는다 — 첫 줄 들여쓰기는 남긴다.
+    return { text: out.join('\n').replace(/^(?:[ \t]*\n)+/, '').replace(/\s+$/, ''), changed: true };
   }
 
   if (typeof module !== 'undefined' && module.exports) {
