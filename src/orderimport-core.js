@@ -367,6 +367,13 @@
   //  issues = 차단(체크 불가): 등록 자체가 안 되거나(판매처·주문번호·수령자·판매가·수량 없음, 20줄 초과) 매칭 문제(미매칭·매핑 불완전,
   //  그 마스터에 없는 품위, 셀렉트에 없는 색상 코드). warnings = 표시만(체크 가능): 색상 폴백 없음(빈칸으로 등록) · 미해석 토큰 · 휴대폰
   //  형식(빈칸 + 번호는 고객 비고) · 숫자 셀 · 수령자 불일치 — 사장님 지시 2026-09-22 "제품 매칭만 제대로 했다면 등록할 수 있게".
+  //  쿠팡 주문인데 사이즈가 1호·5호 → '반지 호수 확인!'(사장님 2026-11-25). 표시만 — 체크·등록을 막지 않는다.
+  //  판정은 화면 사이즈 칸 값(spec.itemSize)으로 한다 — 사람이 고치면 경고도 따라 사라진다.
+  function oiRingSizeAlert(line, itemSize) {
+    if (!line || !line.market || line.market.name !== '쿠팡') return false;
+    const s = String(itemSize == null ? '' : itemSize).trim();
+    return /^[15](\.0+)?$/.test(s);
+  }
   function oiLineReview(line, resolved) {
     const issues = [], warnings = [];
     if (line && line.gift && line.excluded) return { issues, warnings };
@@ -975,7 +982,7 @@
     MARKETS, COLS, REQUIRED, FORM1_NAMES, FORM10_NAMES, OI_MAX_LINES,
     oiMarket, oiHiddenSeller, oiSplitHidden, oiHeaderMap, oiNormPhone, oiClientName, oiMoney, oiMoney0, oiComma, oiRemark, oiPickName, oiParseRows,
     oiParseOption, oiColorFromCode, oiFallbackColor, oiNormName, oiMapKeys, oiLookupMap, oiLearn, oiValidMapEntry, oiSuggestQueries,
-    oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiLineReview, oiLineIssues, oiLineWarnings, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
+    oiGroupOrders, oiApplyMarket, oiApplyCustomer, oiRingSizeAlert, oiLineReview, oiLineIssues, oiLineWarnings, oiIsExcludedEntry, oiActiveLines, oiOrderReady, oiReferralRatio, oiClientJob, oiPhoneDupMsg,
     oiSelectOptions, oiFieldValue, oiExtractFields, oiExtractHidden, oiExtractArrays,
     oiTListAllRows, oiTListRows, oiWriteListRows, oiJunListRows, oiServerDupCheck, oiServerDupRange, oiClientSearchRows, oiMasterSearchRows,
     oiReadWriteForm, oiReadForm10, oiResolveK, oiLinePayload, oiForm10Payload, oiSubmitResult,

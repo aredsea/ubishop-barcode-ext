@@ -343,6 +343,10 @@
 #${PANEL_ID} tr.oi-l.oi-warn td:first-child{box-shadow:inset 3px 0 0 #f0c36d}
 #${PANEL_ID} tr.oi-l.oi-bad td:first-child{box-shadow:inset 3px 0 0 var(--oi-err)}
 #${PANEL_ID} tr.oi-l.oi-cur td{background:#fffbf1}
+#${PANEL_ID} tr.oi-l.oi-ring td{background:#fde8ef}
+#${PANEL_ID} tr.oi-l.oi-ring td:first-child{box-shadow:inset 3px 0 0 #d6336c}
+#${PANEL_ID} .oi-ring-msg{display:inline-flex;align-items:center;gap:4px;margin-top:3px;color:#c2255c;font-weight:700;font-size:12px}
+#${PANEL_ID} .oi-ring-msg svg.oi-ico{width:13px;height:13px}
 #${PANEL_ID} .oi-name{font-weight:500}
 #${PANEL_ID} .oi-opt{color:var(--ub-sub);font-size:12px;margin-top:1px}
 #${PANEL_ID} .oi-raw{display:grid;gap:4px}
@@ -442,7 +446,10 @@
     const nameNote = l.nameSource === 'seller' ? '<div class="oi-note">판매처 상품명을 따름 · 이지어드민 상품명: ' + esc(l.ezName) + '</div>' : '';
     const cur = S.phase === 'running' && S.progress.key === o.key && !o.result;
     const rawDis = l.excluded ? ' disabled' : dis;
-    return '<tr class="oi-l' + (l.issues.length ? ' oi-bad' : l.warnings.length ? ' oi-warn' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + nameNote + issues + '</td>'
+    //  쿠팡 1호·5호 — 다른 바탕색 + 문구(사장님 2026-11-25). 표시만, 체크·등록은 막지 않는다.
+    const ring = !l.excluded && C.oiRingSizeAlert(l, l.spec.itemSize);
+    const ringMsg = ring ? '<div class="oi-ring-msg">' + ico('warn') + '반지 호수 확인! (쿠팡 ' + esc(String(l.spec.itemSize).trim()) + '호)</div>' : '';
+    return '<tr class="oi-l' + (l.issues.length ? ' oi-bad' : l.warnings.length ? ' oi-warn' : '') + (ring ? ' oi-ring' : '') + (cur ? ' oi-cur' : '') + '"><td></td><td colspan="2"><div class="oi-raw"><input class="oi-in oi-name" aria-label="상품명" data-f="productName" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.productName) + '"' + rawDis + '><input class="oi-in oi-opt" aria-label="옵션명" data-f="optionText" data-o="' + oi + '" data-l="' + li + '" value="' + esc(l.optionText || '') + '" placeholder="옵션 없음"' + rawDis + '></div>' + ringMsg + nameNote + issues + '</td>'
       + '<td>' + prod + note + '</td><td>' + inp('k', l.spec.k) + '</td><td>' + inp('color', l.spec.color) + '</td><td>' + inp('itemSize', l.spec.itemSize) + '</td>'
       + '<td>' + inp('qty', l.spec.qty, 'sm num') + '</td><td>' + inp('price', Number.isInteger(l.spec.price) ? C.oiComma(l.spec.price) : l.spec.price, 'sm num') + '</td><td>' + inp('remark', l.spec.remark, '') + '</td></tr>';
   }

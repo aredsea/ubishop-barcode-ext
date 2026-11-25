@@ -43,7 +43,7 @@
                   },
                   {
                       "path":  "src/orderimport-core.js",
-                      "sha256":  "d6a194fd6f89c98406395a5baaf0f95c7e04a5f6e684ea55023a50bcf72587a1"
+                      "sha256":  "454815e362fae04af54b91f6184ffc017d530439ef8267aaba8ff64463828dcb"
                   },
                   {
                       "path":  "src/orderimport-erp.js",
@@ -51,7 +51,7 @@
                   },
                   {
                       "path":  "src/orderimport.js",
-                      "sha256":  "b079c211f8dcb5b8bc311f433b895dee2fa4e206b72c497f18249915e23d501d"
+                      "sha256":  "d71642e438eb44e5dc5237cde55739512ef4bb418579771e3ade0c5b101bf5d2"
                   },
                   {
                       "path":  "src/orderimport-xls.js",
